@@ -264,6 +264,23 @@ std::pair<std::string, std::string> split_combo(const std::string& combo)
 
 enum class zone_t { center, continuous, widget };
 
+enum class opacity_override_t { none, opaque, translucent };
+
+static constexpr double TRANSPARENCY_FOCUSED_OPACITY = 0.985;
+static constexpr double TRANSPARENCY_UNFOCUSED_OPACITY = 0.96;
+
+const char *opacity_override_name(opacity_override_t mode)
+{
+    switch (mode)
+    {
+      case opacity_override_t::opaque: return "opaque";
+      case opacity_override_t::translucent: return "translucent";
+      case opacity_override_t::none: return "none";
+    }
+
+    return "none";
+}
+
 struct placement_t
 {
     zone_t zone;
@@ -1243,8 +1260,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!frame) return;
         bool focused = wf::get_core().seat->get_active_view() == view;
         double target;
+        auto state = model.windows.find(view->get_id());
+        auto opacity_mode = state == model.windows.end() ? opacity_override_t::none : state->second.opacity_override;
+        // An active Window-mode filter controls rendered visibility before the
+        // user's retained per-window override. Clearing or exiting the filter
+        // reapplies that override without losing it.
         if (excluded)
             target = 0.0;
+        else if (opacity_mode == opacity_override_t::opaque)
+            target = 1.0;
+        else if (opacity_mode == opacity_override_t::translucent)
+            target = focused ? TRANSPARENCY_FOCUSED_OPACITY : TRANSPARENCY_UNFOCUSED_OPACITY;
+        // Without a user override, preserve pairing's one-time opaque presentation.
         else if (untouched_since_pairing(view))
             target = 1.0;  // pairing shows both fully opaque, once (WK36)
         else if (window_keys.active)
@@ -1766,6 +1793,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double scale = 1.0;                           // target, never an animation sample
         bool focused = false;
         bool above = false;
+        opacity_override_t opacity_override = opacity_override_t::none;
         std::optional<double> pinned_scale;          // kept by Shift during drag or arrow motion (L31)
         std::optional<scottland::windowing::window_memory> placement;
         std::optional<paired_placement_t> paired_placement;
@@ -4259,6 +4287,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 sources.append(source);
             }
             entry["attention"] = sources;
+            entry["opacity_override"] = opacity_override_name(state.opacity_override);
             if (slice != "attention")
             {
                 entry["app_id"] = state.app_id;
@@ -7350,6 +7379,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     fullscreen_filter->second.opacity->get_alpha() : 1.0);
             // Where it's going, as the desktop model publishes it, not a step of an animation.
             auto state = model.windows.find(view->get_id());
+            entry["opacity_override"] = state != model.windows.end() ?
+                opacity_override_name(state->second.opacity_override) : "none";
             entry["target_scale"] = state != model.windows.end() ? state->second.scale : 1.0;
             if (auto frame = frame_of(view, false))
             {
@@ -7461,6 +7492,94 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         apply_all();
         publish_model();
         return wf::ipc::json_ok();
+    };
+
+    /** IPC scottland/transparency {action: toggle|status, window?}: toggles the active
+     *  keyboard-focused toplevel atomically; status may name any mapped toplevel. */
+    wf::ipc::method_callback transparency = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (!data.has_member("action") || !data["action"].is_string())
+        {
+            return wf::ipc::json_error("transparency needs string \"action\" (toggle or status)");
+        }
+
+        auto action = data["action"].as_string();
+        wayfire_toplevel_view view;
+        if (action == "toggle")
+        {
+            if (data.has_member("window"))
+            {
+                return wf::ipc::json_error("transparency toggle always targets the focused window");
+            }
+
+            view = wf::toplevel_cast(wf::get_core().seat->get_active_view());
+            if (!view || !view->is_mapped())
+            {
+                return wf::ipc::json_error("no focused window");
+            }
+        } else if (action == "status")
+        {
+            if (data.has_member("window"))
+            {
+                if (!data["window"].is_int64() || data["window"].as_int64() <= 0)
+                {
+                    return wf::ipc::json_error("transparency status needs a positive integer \"window\"");
+                }
+
+                view = view_by_id((uint64_t)data["window"].as_int64());
+                if (!view || !view->is_mapped())
+                {
+                    return wf::ipc::json_error("no such window");
+                }
+            } else
+            {
+                view = wf::toplevel_cast(wf::get_core().seat->get_active_view());
+                if (!view || !view->is_mapped())
+                {
+                    return wf::ipc::json_error("no focused window");
+                }
+            }
+
+            auto state = model.windows.find(view->get_id());
+            auto reply = wf::ipc::json_ok();
+            reply["window"] = (int64_t)view->get_id();
+            reply["override"] = opacity_override_name(state == model.windows.end() ?
+                opacity_override_t::none : state->second.opacity_override);
+            return reply;
+        } else
+        {
+            return wf::ipc::json_error("transparency action must be toggle or status");
+        }
+
+        observe_view(view);
+        auto& state = model.windows[view->get_id()];
+        // A transparency toggle is a later user manipulation: end pairing's one-time opaque hold.
+        state.paired_placement.reset();
+        if (state.opacity_override == opacity_override_t::none)
+        {
+            // The frame target is the value already being eased toward, so a toggle during an
+            // animation samples the shown mode once instead of chasing its changing alpha.
+            double shown_opacity = 1.0;
+            if (!view->pending_fullscreen())
+            {
+                if (auto frame = frame_of(view, false))
+                {
+                    shown_opacity = frame->opacity_target;
+                }
+            }
+            state.opacity_override = shown_opacity < 1.0 ? opacity_override_t::opaque :
+                opacity_override_t::translucent;
+        } else
+        {
+            state.opacity_override = opacity_override_t::none;
+        }
+
+        apply_opacity(view);
+        publish_model();
+        auto reply = wf::ipc::json_ok();
+        reply["window"] = (int64_t)view->get_id();
+        reply["override"] = opacity_override_name(state.opacity_override);
+        return reply;
     };
 
     wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> ipc_repo;
@@ -7720,6 +7839,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
         ipc_repo->register_method("scottland/send-key", send_key);
         ipc_repo->register_method("scottland/layout-state", layout_state);
+        ipc_repo->register_method("scottland/transparency", transparency);
         wf::get_core().connect(&on_axis);
         wf::get_core().connect(&on_initial_app_id);
         wf::get_core().connect(&on_forget_app_id);
@@ -7877,6 +7997,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
         ipc_repo->unregister_method("scottland/layout-state");
+        ipc_repo->unregister_method("scottland/transparency");
         on_minimize_edge.disconnect();
         on_minimize_device_removed.disconnect();
         shortcuts.fini();

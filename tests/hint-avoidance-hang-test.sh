@@ -6,10 +6,10 @@ hdir=${SCOTTLAND_HEADLESS_DIR:?set a task-specific headless directory}
 case $(realpath -m "$hdir") in
   "$PWD"/build/*) ;;
   "${XDG_RUNTIME_DIR:?}"/scottland-headless-avoidance-animation-*) ;;
-  *) echo 'use this checkout build/ or its named, isolated plumbus runtime directory' >&2; exit 1 ;;
+  *) echo 'use this checkout build/ or its named, isolated test-host runtime directory' >&2; exit 1 ;;
 esac
 [[ ! -f $hdir/pid ]] || { echo 'headless directory is already running' >&2; exit 1; }
-artifacts=$PWD/build/avoidance-animation-plumbus
+artifacts=$PWD/build/avoidance-animation-evidence
 mkdir -p "$artifacts"
 cleanup() {
   cp "$hdir/wayfire.log" "$artifacts/hang-wayfire.log" 2>/dev/null || true
