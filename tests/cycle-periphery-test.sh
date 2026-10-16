@@ -1,6 +1,6 @@
 #!/bin/bash
 # WP4/WP8 Window-mode cycles reach the periphery, with real input and Mike's zone settings
-# (tests/cycle-periphery-test.py). Run only on a test host (plumbus), never on a daily desktop. The
+# (tests/cycle-periphery-test.py). Run only on an isolated test host, never on a daily desktop. The
 # caller supplies its own headless directory.
 # Builds this checkout's plugin and test helpers first (make test-hooks): without them
 # tests/headless.sh would fall back to whatever helpers the machine has dev-installed.

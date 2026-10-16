@@ -19,7 +19,7 @@ supports both the wide live-like numeric preset and shipped settings, optional
 app redraw, output refresh/scale, explicit test options, keyframe comparisons,
 and a goo-off pixel check. It does not read personal config.
 
-The earlier read-only osanwe snapshot showed a 941×940 breathing window partly
+The earlier read-only daily Intel desktop snapshot showed a 941×940 breathing window partly
 under a 992×1146 focused window at 2560×1600 and 120 Hz. Reach 33, thickness
 22, overlap film 10, wallpaper soak 0.9, custom falloff and 0.91 unfocused
 opacity differ from shipped values. One live sample reported 3.17 ms per
@@ -27,7 +27,7 @@ breathing draw; a 25 Hz timer makes that a meaningful idle cost. That old
 sample included both a window and a widget breathing and was not a matched
 test of this change.
 
-The shared plumbus RX 580 comparisons on the independent branches put the
+The shared AMD test host RX 580 comparisons on the independent branches put the
 single-window idle goo-on cost at 1.0–1.5% compositor GPU for Astra's exact
 direct draw and 0.6–0.9% for Fable's keyframes, against 1.9–2.4% baseline.
 They ran under uneven external GPU load (up to 35% whole-GPU busy); use these
@@ -114,7 +114,7 @@ remain in the test fixture.
 ## Limits and unverified cases
 
 Keyframes approximate intermediate geometry; the exact setting is available
-for immediate rollback. On plumbus, midpoint comparisons across the wide
+for immediate rollback. On AMD test host, midpoint comparisons across the wide
 breathing window differed from exact output by at most 20 channel levels in 20
 pixels at or above 16 levels, and 1,600 pixels at or above 8 levels in normal
 precision. Packed precision peaked at 243 and 1,861 pixels at those thresholds.
@@ -126,7 +126,7 @@ sampling also depends on padding and the tested density model. The denser
 sample lattice used when GO16 alpha shapes intersect breathing support still
 needs broader contour and custom-curve checks. Extreme settings, rotation,
 many outputs, allocation failure and physical-display animation also need
-targeted checks. The extra keyframe textures scale with output pixels. plumbus
+targeted checks. The extra keyframe textures scale with output pixels. AMD test host
 has an RX 580; the Intel Xe live target and Mike's visual acceptance on the
 120 Hz physical panel remain unmeasured. Shared-GPU contention makes short busy
 percentages noisy, so every idle sample records whole-GPU and compositor busy

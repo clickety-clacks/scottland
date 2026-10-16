@@ -6,17 +6,17 @@ Every agent working in this repository follows this. It replaces ad hoc integrat
 
 **Where things stand (2026-10-08)**
 
-- osanwe runs `v0.1.0` (`d3c8397`). `main` holds the next release, `v0.2.0` (cut 2): from now on only
+- The daily Intel desktop runs `v0.1.0` (`d3c8397`). `main` holds the next release, `v0.2.0` (cut 2): from now on only
   fixes land on `main` until `v0.2.0` ships.
 - `0.3` is open for new feature work (adapter-fixes, monitor translation, the env-import fix, goo on new
-  screens, middle-press drag, touchpad while typing, and what the Gooarchy PO targets at it).
-- No merge queue or CI exists yet; the Gooarchy PDO is setting them up. Until then, immediately before
+  screens, middle-press drag, touchpad while typing, and later planned features).
+- No merge queue or CI exists yet. Until they are available, immediately before
   merging: update your branch to the target branch's current tip and rerun the fast checks on that exact
   result.
 
 **Branches**
 
-- `main` is the released line: exactly what users run (Mike's osanwe, Omarchy users). Only fixes to the
+- `main` is the released line: exactly what users run (Mike's daily Intel desktop, Omarchy users). Only fixes to the
   shipped release land here, and every release on it is a tag.
 - One branch per upcoming release, named for its version (`0.3`, `0.4`, ...). Feature work targets the
   release it is planned for: open your PR against that branch, never against `main`.
@@ -38,17 +38,17 @@ Every agent working in this repository follows this. It replaces ad hoc integrat
 
 **Testing a release**
 
-- The full rehearsal (install and reload from the version osanwe runs, real-session checks, racter on
+- The full rehearsal (install and reload from the version the daily Intel desktop runs, real-session checks, NVIDIA test host on
   NVIDIA for rendering) runs on each release branch head regularly and before every release, not per PR.
-  Fixture runs (headless on plumbus/nacelle) are preflight, not acceptance.
-- osanwe is never a test host. It changes only when Mike says go.
+  Fixture runs (headless on isolated AMD and ARM test hosts) are preflight, not acceptance.
+- The daily Intel desktop is never a test host. It changes only when Mike says go.
 
 **Shipping**
 
 - When a release branch passes its full rehearsal: tag the candidate (`v0.3.0-rc1`), rehearse that exact
   tag, then merge the branch into `main`, tag `v0.3.0`, and open the next release branch if it does not
   already exist. Work not landed rides the next release; no release waits for a late feature.
-- Tell Mike "ready for osanwe" with the tag and its contents list (what users get, in product terms).
+- Tell Mike "ready for the daily desktop" with the tag and its contents list (what users get, in product terms).
 - A fix to a shipped release when `main` cannot take it directly: branch `release/0.3` from the tag,
   cherry-pick the fix from where it landed, tag `v0.3.1`, merge forward.
 
@@ -57,14 +57,14 @@ Every agent working in this repository follows this. It replaces ad hoc integrat
 - Gooarchy and gooarchy-flavorings consume this repository by tag, never by branch or untagged commit.
   Gooarchy's next-release branch may pin this repository's next release branch head for testing.
 
-## Test host on osanwe (Mike, 2026-10-02)
+## Isolated test hosts and daily desktop (Mike, 2026-10-02)
 
 Do not run Scottland tests, headless sessions, extra Wayfire/Quickshell instances,
-or test widget services on osanwe. Sync this checkout to its own directory on
-plumbus (or nacelle, the second test host: aarch64, Asahi GPU; spread load across both) and run headless tests there with a unique `SCOTTLAND_HEADLESS_DIR`.
+or test widget services on the daily Intel desktop. Sync this checkout to its own directory on
+an isolated AMD test host (or the ARM test host, the second test host: aarch64, Asahi GPU; spread load across both) and run headless tests there with a unique `SCOTTLAND_HEADLESS_DIR`.
 Keep logs and screenshots under that checkout's `build/`, stop every session,
 and remove only paths created for the test. Do not dev-install or reload the
-shared plumbus session. This host rule supersedes the local-headless default below.
+shared session on the test host. This host rule supersedes the local-headless default below.
 
 Scottland is a spatial desktop for Linux on Wayfire, after Scott Jenson's "working memory" concept.
 Windows scale down as they move from a full-scale center zone toward the screen edges, and turn
@@ -166,7 +166,7 @@ what it is now and why. A change that adds an override adds its reason to that r
 | C7 | Scottland may tune common apps (e.g. scroll feel), but only additively: it owns its own files (under `~/.config/scottland/apps/`) and adds at most one clearly marked, optional include line to an app's config, the way Omarchy includes its theme files. It never rewrites the user's own settings, and removing that line undoes it completely. Apps Omarchy ships are the first target (adapter); cross-distro apps can be core. |
 | C8 | Generic, not per-app: Hyprland IPC goes through the shim, Hyprland-config behavior through the Lua host, compositor abilities through the plugin. No code for one particular app. |
 | D1 | Nothing is hand-edited on a machine: files come from a package, or from the repo in dev mode. |
-| D2 | Nothing is reported as done until it has been exercised with real input on a real session (plumbus), and any already-running session was checked for predating the build. |
+| D2 | Nothing is reported as done until it has been exercised with real input on a real session (AMD test host), and any already-running session was checked for predating the build. |
 
 ## Build and dev mode
 
@@ -202,16 +202,16 @@ Before reporting anything as done:
      config and imported shortcuts (`start --omarchy` adds the Hyprland shim and Lua host).
      It touches nobody's display or services, so it's the default for logic, shortcuts and
      input handling. `run CMD` runs a command inside it; `ipc METHOD JSON` drives stipc.
-   - **plumbus** (Omarchy test machine on the tailnet) for anything that must be seen on a
-     real screen or needs a real login. `tests/deploy.sh plumbus [--reload]` syncs, builds and
-     dev-installs there. plumbus is shared: other agents run tests on it. Check what's on its
-     screen first (deploy prints it); don't start, stop or switch sessions while someone else
-     is using it. sudo there needs Mike's password; stage commands in its `scottland-install`
-     tmux session and open a terminal attached to it on Mike's screen.
+   - **Isolated physical-display test host** for anything that must be seen on a real screen or
+     needs a real login. `tests/deploy.sh HOST [--reload]` takes a caller-supplied test-host
+     address, then syncs, builds and dev-installs there. A shared host requires checking its
+     current session owner before deployment; don't start, stop or switch a session while
+     someone else is using it. The deploy script reports the active seat and sessions. Prepare
+     privileged commands in a terminal visible to the machine owner and wait for authorization.
 2. Use real input: Wayfire's `stipc` plugin (`tests/wfipc.py`, `tests/drag-test.py`). IPC calls
    that bypass input (e.g. `configure-view`) don't count as verification for input behavior.
-3. Look: screenshots with `grim` (through `scottland-exec`), and on plumbus the Lumina webcam
-   facing its screen (`/dev/video2`) when screenshots might lie.
+3. Look: screenshots with `grim` (through `scottland-exec`), and inspect the physical display
+   through an authorized camera route when screenshots might lie.
 4. Check whether a running session predates the build (`scottland-reload` loads it in place).
    **Before reloading anyone's live session, rehearse that exact reload headless**: start
    `tests/headless.sh` on the build the live session runs now (a `git worktree` at its commit),
@@ -222,7 +222,7 @@ Before reporting anything as done:
 5. Re-check every invariant the change could affect, and update its status.
 6. Test sessions never read personal config (`~/.config/scottland/layout.ini`, `overrides.ini`):
    `tests/headless.sh` builds from the checkout's shipped config only.
-7. Keep test output out of `XDG_RUNTIME_DIR`: it is a small tmpfs (1.6 GB on osanwe) shared with the
+7. Keep test output out of `XDG_RUNTIME_DIR`: it is a small tmpfs (1.6 GB on daily Intel desktop) shared with the
    live session. Put screenshots and logs under the checkout's `build/`, stop and remove headless
    dirs when done. Don't point `XDG_RUNTIME_DIR` itself elsewhere either: a private runtime dir
    restarts display names at wayland-1 and its widget units then share names with the live
