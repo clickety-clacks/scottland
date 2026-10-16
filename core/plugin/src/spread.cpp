@@ -449,6 +449,10 @@ class solver_t
             box r = rect(i, original.pos[i]);
             if (height < 0) height = r.height();
             else if (std::abs(r.height() - height) > 1.0) return false;
+            double border = side == 0 ? mid - S.center_half : mid + S.center_half;
+            // A zero clamped distance includes an overhang. Calm only applies when the
+            // original inner edge is on the border, so overhangs reach the placement pass.
+            if (side == 0 ? r.x1 > border + EPS : r.x0 < border - EPS) return false;
             if (gather_distance(i, side, original.pos[i]) > 1.0) return false;
         }
         if (side_windows.empty()) return false;
@@ -626,6 +630,12 @@ class solver_t
         const auto& w = win(i);
         box old = rect(i, original.pos[i]);
         double border = side == 0 ? mid - S.center_half : mid + S.center_half;
+        double rail = side == 0 ? S.rail_width : W - S.rail_width;
+        double available = side == 0 ? border - rail : rail - border;
+        // A resident that cannot fit across the rail-to-border interval at its displayed
+        // scale remains exactly where it is and blocks later residents, even if a new natural
+        // scale would make a candidate appear to fit.
+        if (w.width * original.pos[i].s > available + EPS) return std::nullopt;
         double old_distance = std::max(0.0, side == 0 ? border - old.x1 : old.x0 - border);
         std::vector<double> levels = gather_levels[side];
         for (const auto& b : obstacles)

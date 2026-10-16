@@ -751,16 +751,16 @@ static void gather_fixtures()
         auto again = solve(settled);
         CHECK(again.complete && again.moves.empty(), "gather: calm single-window column moved twice");
     }
-    // An overhanging periphery window moves out to, but never through, the center border.
+    // A centered overhang must not take the calm shortcut; it moves out to the border.
     {
         auto s = screen(2560, 1440);
         s.mode = mode_t::gather;
-        add_resident(s, 2, 700, 850, 800, 400);
+        add_resident(s, 2, 700, 850, 800, 720);
         auto r = solve(s);
         const auto& w = s.windows.front();
         auto f = final_layout(s, r).at(2);
         double border = s.screen_width / 2 - s.center_half;
-        CHECK(r.moves.size() == 1, "gather: overhang was not corrected");
+        CHECK(r.moves.size() == 1, "gather: centered overhang was not corrected");
         CHECK(std::abs(f.cx + w.width * f.s / 2 - border) <= 1.5,
             "gather: overhang ended beyond border (%.2f vs %.2f)", f.cx + w.width * f.s / 2, border);
     }
@@ -780,14 +780,108 @@ static void gather_fixtures()
             "gather: fallback crossed the center border");
         CHECK(std::abs(f.cx - w.cx) > 1, "gather: fixed obstacle fixture did not exercise fallback movement");
     }
-    // A periphery window too wide to fit between its rail and border stays unchanged.
+    // A current-scale over-wide resident stays fixed and remains an obstacle, although its
+    // natural scale at the rail would fit. The 800-versus-580 precondition is explicit.
     {
-        auto s = screen(2560, 1080);
+        auto s = screen(1920, 1080);
         s.mode = mode_t::gather;
-        s.windows.push_back(window(4, role_t::resident, 1000, 500, 600, 400, .8));
+        s.rail_width = 60;
+        s.windows.push_back(window(4, role_t::resident, 1000, 400, 420, 540, .8));
+        add_resident(s, 5, 400, 300, 300, 540);
+        double border = s.screen_width / 2 - s.center_half;
+        double available = border - s.rail_width;
+        CHECK(s.windows.front().width * s.windows.front().scale > available &&
+              s.windows.front().width * s.scale(s.rail_width) < available,
+            "gather: too-wide fixture must exceed 580 at its 800-point current scale but fit naturally");
         auto r = solve(s);
-        CHECK(r.complete && r.moves.empty(), "gather: too-wide window moved");
-        CHECK(r.status == status_t::clear, "gather: unchanged too-wide window status %s", status_name(r.status));
+        auto layout = final_layout(s, r);
+        const auto& frozen = s.windows.front();
+        const auto& later = s.windows.back();
+        CHECK(r.complete && std::none_of(r.moves.begin(), r.moves.end(), [] (const auto& m) { return m.id == 4; }),
+            "gather: too-wide window moved");
+        CHECK(layout.at(4).cx == frozen.cx && layout.at(4).cy == frozen.cy && layout.at(4).s == frozen.scale,
+            "gather: too-wide window position or scale changed");
+        CHECK(std::abs(layout.at(5).cy - later.cy) > 100 &&
+              normalized_overlap(rect_of(frozen, layout.at(4)), rect_of(later, layout.at(5))) <= 0.10 + 1e-9,
+            "gather: later resident did not treat the frozen too-wide window as an obstacle");
+    }
+    // GA-9: three equal-height windows form the example's 10% border column and settle calmly.
+    {
+        auto s = screen(1920, 1080);
+        s.mode = mode_t::gather;
+        s.scale = [] (double) { return 1.0; };
+        s.windows = {
+            window(10, role_t::resident, 300, 300, 500, 540),
+            window(11, role_t::resident, 300, 300, 300, 300),
+            window(12, role_t::resident, 300, 300, 150, 780),
+        };
+        auto first = solve(s);
+        auto layout = final_layout(s, first);
+        double border = s.screen_width / 2 - s.center_half;
+        CHECK(first.complete && first.moves.size() == 3, "gather: three-window example did not place all residents");
+        CHECK(std::abs(layout.at(10).cx + 150 - border) <= 1.0 && std::abs(layout.at(10).cy - 540) <= 0.5 &&
+              std::abs(layout.at(11).cx + 150 - border) <= 1.0 && std::abs(layout.at(11).cy - 270) <= 1.0 &&
+              std::abs(layout.at(12).cx + 150 - border) <= 1.0 && std::abs(layout.at(12).cy - 810) <= 1.0,
+            "gather: GA-9 column missed border/midline positions");
+        CHECK(normalized_overlap(rect_of(s.windows[0], layout.at(10)), rect_of(s.windows[1], layout.at(11))) <= 0.10 + 1e-9 &&
+              normalized_overlap(rect_of(s.windows[0], layout.at(10)), rect_of(s.windows[2], layout.at(12))) <= 0.10 + 1e-9 &&
+              normalized_overlap(rect_of(s.windows[1], layout.at(11)), rect_of(s.windows[2], layout.at(12))) <= 0.10 + 1e-9,
+            "gather: GA-9 column exceeds the overlap limit");
+        auto settled = s;
+        for (auto& w : settled.windows)
+        {
+            const auto& f = layout.at(w.id);
+            w.cx = f.cx; w.cy = f.cy; w.scale = f.s;
+        }
+        CHECK(solve(settled).moves.empty(), "gather: second press moved the settled three-window column");
+        auto sync = solve(s);
+        job_t sliced(s);
+        size_t slices = 0;
+        while (!sliced.step(std::chrono::nanoseconds(0)) && ++slices < 100000) {}
+        CHECK(sliced.finished() && same_moves(sync, sliced.current()),
+            "gather: sliced GA-9 solve differs from synchronous result");
+    }
+    // GA-10: unequal widths may share a border column with equal inner distances.
+    {
+        auto s = screen(1920, 1080);
+        s.mode = mode_t::gather;
+        s.scale = [] (double) { return 1.0; };
+        s.windows = {
+            window(20, role_t::resident, 200, 200, 150, 300), // narrower, starts farther out
+            window(21, role_t::resident, 400, 200, 390, 540), // wider, starts near the border
+        };
+        auto r = solve(s);
+        auto layout = final_layout(s, r);
+        double border = s.screen_width / 2 - s.center_half;
+        double narrow_distance = border - (layout.at(20).cx + 100);
+        double wide_distance = border - (layout.at(21).cx + 200);
+        CHECK(r.complete && std::abs(narrow_distance) <= 1.0 && std::abs(wide_distance) <= 1.0,
+            "gather: unequal-width column did not retain equal border distance (%.2f, %.2f)",
+            narrow_distance, wide_distance);
+        CHECK(layout.at(20).cy < layout.at(21).cy,
+            "gather: narrow far window did not settle above the wider near window");
+    }
+    // GA-10's larger-band exception: the tall first window blocks C from the border, but the
+    // later short B fits above it and may finish inward of C.
+    {
+        auto s = screen(1920, 1080);
+        s.mode = mode_t::gather;
+        s.scale = [] (double) { return 1.0; };
+        s.windows = {
+            window(30, role_t::resident, 300, 800, 480, 540), // inner distance 10
+            window(31, role_t::resident, 300, 400, 370, 864), // inner distance 120
+            window(32, role_t::resident, 300, 80, 240, 100),  // inner distance 250
+        };
+        auto r = solve(s);
+        auto layout = final_layout(s, r);
+        double border = s.screen_width / 2 - s.center_half;
+        double a = border - (layout.at(30).cx + 150);
+        double c = border - (layout.at(31).cx + 150);
+        double b = border - (layout.at(32).cx + 150);
+        CHECK(r.complete && std::abs(a) <= 1.0 && std::abs(b) <= 1.0 && c > b + 50,
+            "gather: larger-band exception did not put B inward of C (A %.2f, C %.2f, B %.2f)", a, c, b);
+        CHECK(layout.at(32).cy < layout.at(30).cy && std::abs(layout.at(32).cy - 108) <= 1.0,
+            "gather: short B did not fit above A at the border");
     }
     // A work-cap cut is deterministic and delivers no partial layout.
     {

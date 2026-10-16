@@ -226,6 +226,35 @@ try:
     start_drag(R, (500, 900)); end_drag(); time.sleep(.5)
     check(solves() == n, 'present, a hint tap and an ordinary drop never spread (P4)', f'{n} -> {solves()}')
 
+    # A solo finishing inside spread_tick must hand queued work to a later timer turn.
+    setup(scene, S)
+    ipc('scottland/spread-state', {'slow': True})
+    before = solves()
+    alt(True); press_hint(S, hold=.75)
+    running = wait(lambda: (lambda state: state if state['running'] and state['running_slices'] > 3 else None)(spread()),
+        5, 'first queued solo')
+    check(running['running'], 'queue: first solo is in flight before the second request')
+    press_hint(S, hold=.75)
+    wait(lambda: not spread()['running'] and solves() >= before + 2, 30, 'two serialized solos')
+    second_solo = spread()
+    check(second_solo['solves'] == before + 2 and second_solo['last'].get('purpose') == 'solo',
+        'queue: solo-to-solo requests both complete in press order', str(second_solo))
+
+    setup(scene, S)
+    before = solves()
+    alt(True); press_hint(S, hold=.75)
+    running = wait(lambda: (lambda state: state if state['running'] and state['running_slices'] > 3 else None)(spread()),
+        5, 'solo before gather')
+    check(running['running'], 'queue: solo is in flight before Gather is pressed')
+    key('SPACE', True); key('SPACE', False)
+    wait(lambda: not spread()['running'] and solves() >= before + 2, 30, 'solo followed by Gather')
+    queued_gather = spread()
+    check(queued_gather['solves'] == before + 2 and queued_gather['last'].get('purpose') == 'gather' and
+          len(queued_gather['last'].get('screens', [])) == 1,
+        'queue: solo-to-Gather completes both requests and records its screen', str(queued_gather))
+    alt(False)
+    ipc('scottland/spread-state', {'slow': False})
+
     (art / 'spread-state.json').write_text(json.dumps(spread(), indent=2))
 finally:
     for c in clients: c.terminate()
