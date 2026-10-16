@@ -241,9 +241,10 @@ try:
     check(actual_output == expected_output, 'GA-15 fixtures map to their intended outputs',
           {'expected': expected_output, 'actual': actual_output})
 
+    focus(left); hold()
+    settle([left, right, other, center0, center1])
     before_left, before_right, before_other = view('GatherLeft'), view('GatherRight'), view('GatherOther')
     before_center0, before_center1 = view('GatherCenter'), view('GatherOtherCenter')
-    focus(left); hold()
     before_widget = widget_snapshot(widget)
     before_gather = spread()['solves']
     tap('SPACE')
@@ -262,8 +263,7 @@ try:
           'GA-15 records each distinct output exactly once', gather_state)
     moves0 = {int(m['id']) for m in records.get(output0['name'], {}).get('moves', [])}
     moves1 = {int(m['id']) for m in records.get(output1['name'], {}).get('moves', [])}
-    check({left, right}.issubset(moves0) and other in moves1 and
-          not ({left, right, other} & moves1) and other not in moves0,
+    check(moves0 == {left, right} and moves1 == {other},
           'GA-15 each output moves only its own periphery windows',
           {'screen_moves': {output0['name']: sorted(moves0), output1['name']: sorted(moves1)},
            'expected': {'output0': sorted((left, right)), 'output1': other}})
