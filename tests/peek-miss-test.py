@@ -306,7 +306,16 @@ try:
         pointer(gx + 3, gy + 3); time.sleep(.3); release()
         until(lambda: (ipc('scottland/desktop-model').get('drag', {}).get('dragged', 0) in (0, None), 'dragging'), 3, 'grab ended')
         # Clear the cover off it again, back where it started, so the case's own cover starts clear.
-        pointer_drag(B, (40 + 760 / 2, 60 + 560 / 2)); release(); settled()
+        ipc('window-rules/focus-view', {'id': B})
+        until(lambda: (focused_id() == B, focused_id()), 3, 'Big focused before reset drag')
+        pointer_drag(B, (40 + 760 / 2, 60 + 560 / 2))
+        def dragged_id():
+            return ipc('scottland/desktop-model').get('drag', {}).get('dragged', 0)
+        until(lambda: (lambda dragged: (dragged == B, dragged))(dragged_id()),
+              3, 'Big is the actual reset drag target')
+        release()
+        until(lambda: (dragged_id() in (0, None), dragged_id()), 3, 'reset drag ended')
+        settled()
 
     def solo_big():
         ipc('window-rules/focus-view', {'id': B})
