@@ -9,10 +9,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <random>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -26,6 +28,36 @@ static int failures = 0, checks = 0, hanging = 0;
 struct zones_t
 {
     double W = 2560, center_pct = 33.333, rail_pct = 2, min_scale = 0.2, max_scale = 1, blend = 40;
+    std::vector<std::pair<double, double>> curve_points;
+    std::vector<double> curve_slopes;
+    bool loaded_settings_defaults = false;
+
+    double curve(double t) const
+    {
+        if (curve_points.size() < 2 || curve_slopes.size() != curve_points.size())
+            return max_scale - t * (max_scale - min_scale);
+
+        const size_t n = curve_points.size();
+        t = std::clamp(t, 0.0, 1.0);
+        size_t i = 0;
+        while (i + 2 < n && t > curve_points[i + 1].first) ++i;
+        double h = curve_points[i + 1].first - curve_points[i].first;
+        double u = (t - curve_points[i].first) / h;
+        double u2 = u * u, u3 = u2 * u;
+        double y = (2 * u3 - 3 * u2 + 1) * curve_points[i].second +
+            (u3 - 2 * u2 + u) * h * curve_slopes[i] +
+            (-2 * u3 + 3 * u2) * curve_points[i + 1].second +
+            (u3 - u2) * h * curve_slopes[i + 1];
+        return std::clamp(y, 0.05, 1.0);
+    }
+
+    double curve_start_slope() const
+    {
+        if (curve_points.size() < 2 || curve_slopes.size() != curve_points.size())
+            return -(max_scale - min_scale);
+        return curve_slopes.front();
+    }
+
     double scale(double x) const
     {
         double center_half = W * center_pct / 200, rail = W * rail_pct / 100;
@@ -34,11 +66,10 @@ struct zones_t
         if (from_middle >= to_rail) return min_scale;
         double span = std::max(1.0, to_rail - center_half);
         double b = std::clamp(blend, 0.0, span * 0.5);
-        auto curve = [&] (double t) { return max_scale - t * (max_scale - min_scale); };
         double into = from_middle - center_half;
         if (into < b)
         {
-            double u = into / b, p1 = curve(0), m1 = -(max_scale - min_scale) * b / (span - b);
+            double u = into / b, p1 = curve(0), m1 = curve_start_slope() * b / (span - b);
             double u2 = u * u, u3 = u2 * u;
             double s = (2 * u3 - 3 * u2 + 1) + (-2 * u3 + 3 * u2) * p1 + (u3 - u2) * m1;
             return std::clamp(s, 0.05, 1.0);
@@ -46,6 +77,81 @@ struct zones_t
         return curve((into - b) / std::max(1.0, span - b));
     }
 };
+
+static zones_t shipped_settings_zones()
+{
+    zones_t z;
+    std::ifstream in("tests/data/settings-defaults-20261013.ini");
+    std::string line;
+    bool section = false;
+    bool center = false, rail = false, minimum = false, maximum = false, blend = false, curve = false;
+    auto trim = [] (std::string value)
+    {
+        size_t first = value.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) return std::string{};
+        size_t last = value.find_last_not_of(" \t\r\n");
+        return value.substr(first, last - first + 1);
+    };
+    while (std::getline(in, line))
+    {
+        line = trim(line);
+        if (line.empty() || line[0] == '#') continue;
+        if (line.front() == '[')
+        {
+            section = line == "[scottland]";
+            continue;
+        }
+        if (!section) continue;
+        size_t equals = line.find('=');
+        if (equals == std::string::npos) continue;
+        std::string key = trim(line.substr(0, equals)), value = trim(line.substr(equals + 1));
+        try
+        {
+            if (key == "center_width") { z.center_pct = std::stod(value); center = true; }
+            else if (key == "rail_width") { z.rail_pct = std::stod(value); rail = true; }
+            else if (key == "min_scale") { z.min_scale = std::stod(value); minimum = true; }
+            else if (key == "max_scale") { z.max_scale = std::stod(value); maximum = true; }
+            else if (key == "blend_width") { z.blend = std::stod(value); blend = true; }
+            else if (key == "scale_curve")
+            {
+                std::istringstream points(value);
+                std::string point;
+                while (points >> point)
+                {
+                    size_t colon = point.find(':');
+                    if (colon == std::string::npos) return z;
+                    z.curve_points.emplace_back(std::stod(point.substr(0, colon)),
+                        std::stod(point.substr(colon + 1)));
+                }
+                curve = z.curve_points.size() >= 2;
+            }
+        } catch (...)
+        {
+            return z;
+        }
+    }
+    if (curve)
+    {
+        size_t n = z.curve_points.size();
+        std::vector<double> delta(n - 1);
+        z.curve_slopes.assign(n, 0.0);
+        for (size_t i = 0; i + 1 < n; ++i)
+            delta[i] = (z.curve_points[i + 1].second - z.curve_points[i].second) /
+                (z.curve_points[i + 1].first - z.curve_points[i].first);
+        z.curve_slopes.front() = delta.front();
+        z.curve_slopes.back() = delta.back();
+        for (size_t i = 1; i + 1 < n; ++i)
+        {
+            if (delta[i - 1] * delta[i] <= 0) continue;
+            double h0 = z.curve_points[i].first - z.curve_points[i - 1].first;
+            double h1 = z.curve_points[i + 1].first - z.curve_points[i].first;
+            double w1 = 2 * h1 + h0, w2 = h1 + 2 * h0;
+            z.curve_slopes[i] = (w1 + w2) / (w1 / delta[i - 1] + w2 / delta[i]);
+        }
+    }
+    z.loaded_settings_defaults = in.eof() && center && rail && minimum && maximum && blend && curve;
+    return z;
+}
 
 static snapshot_t screen(double W, double H, zones_t z = {}, double bar = 0)
 {
@@ -808,7 +914,10 @@ static void gather_fixtures()
     // On shipped settings, alternating residents start at the border and well outside it.
     // Those that have room to come in must finish at the border with a larger natural scale.
     {
-        auto s = screen(1920, 1080);
+        auto settings = shipped_settings_zones();
+        CHECK(settings.loaded_settings_defaults,
+            "gather: could not read shipped zone defaults and scale curve");
+        auto s = screen(1920, 1080, settings);
         s.mode = scottland::spread::mode_t::gather;
         const double border = s.screen_width / 2 - s.center_half;
         constexpr double width = 600, height = 120;
