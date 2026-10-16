@@ -805,6 +805,63 @@ static void gather_fixtures()
               normalized_overlap(rect_of(frozen, layout.at(4)), rect_of(later, layout.at(5))) <= 0.10 + 1e-9,
             "gather: later resident did not treat the frozen too-wide window as an obstacle");
     }
+    // On shipped settings, alternating residents start at the border and well outside it.
+    // Those that have room to come in must finish at the border with a larger natural scale.
+    {
+        auto s = screen(1920, 1080);
+        s.mode = scottland::spread::mode_t::gather;
+        const double border = s.screen_width / 2 - s.center_half;
+        constexpr double width = 600, height = 120;
+        auto center_at_border = [&] ()
+        {
+            double lo = s.rail_width + 1, hi = border;
+            for (int i = 0; i < 64; ++i)
+            {
+                double mid = (lo + hi) / 2;
+                if (mid + width * s.scale(mid) / 2 < border) lo = mid;
+                else hi = mid;
+            }
+            return (lo + hi) / 2;
+        };
+        double at_border = representable(center_at_border(), width);
+        double outer_scale = s.scale(150);
+        double border_scale = s.scale(at_border);
+        s.windows = {
+            window(40, role_t::resident, width, height, 150, 170, outer_scale, false, 1),
+            window(41, role_t::resident, width, height, at_border, 420, border_scale, false, 2),
+            window(42, role_t::resident, width, height, 150, 690, outer_scale, false, 3),
+            window(43, role_t::resident, width, height, at_border, 940, border_scale, false, 4),
+        };
+        for (size_t i : {0u, 2u})
+        {
+            const auto& w = s.windows[i];
+            double inner_edge = w.cx + w.width * w.scale / 2;
+            CHECK(inner_edge < border - 50 && s.scale(at_border) > w.scale + 0.05,
+                "gather: alternating growth precondition failed for %llu (edge %.2f, border %.2f, scale %.3f -> %.3f)",
+                (unsigned long long)w.id, inner_edge, border, w.scale, s.scale(at_border));
+        }
+        for (size_t i : {1u, 3u})
+        {
+            const auto& w = s.windows[i];
+            CHECK(std::abs(w.cx + w.width * w.scale / 2 - border) <= 1.5,
+                "gather: alternating border precondition failed for %llu",
+                (unsigned long long)w.id);
+        }
+        auto r = solve(s);
+        auto layout = final_layout(s, r);
+        CHECK(r.complete && r.status == status_t::clear && r.moves.size() == s.windows.size(),
+            "gather: alternating growth scene did not place every resident (%s, %zu moves)",
+            status_name(r.status), r.moves.size());
+        for (size_t i : {0u, 2u})
+        {
+            const auto& before = s.windows[i];
+            const auto& after = layout.at(before.id);
+            double inner_edge = after.cx + before.width * after.s / 2;
+            CHECK(after.s > before.scale + 0.05 && std::abs(inner_edge - border) <= 1.5,
+                "gather: outward resident %llu did not grow to the border (scale %.3f -> %.3f, edge %.2f)",
+                (unsigned long long)before.id, before.scale, after.s, inner_edge);
+        }
+    }
     // GA-9: three equal-height windows form the example's 10% border column and settle calmly.
     {
         auto s = screen(1920, 1080);
