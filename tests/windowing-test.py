@@ -761,7 +761,9 @@ try:
     border = width / 2 - width * 33.333 / 200
     pending_inner = center(pending_after)[0] + pending_after['geometry']['width'] * pending_after['applied_scale'] / 2
     check(pending in pending_moves and pending_after['zone'] == 'continuous' and abs(pending_inner - border) < 3,
-          'GA-3 pending focused hint acts before Gather places the newly peripheral window')
+          'GA-3 pending focused hint acts before Gather places the newly peripheral window',
+          {'spread': pending_state, 'window': pending_after, 'moves': sorted(pending_moves),
+           'expected_id': pending, 'border': border, 'inner': pending_inner})
     release()
     committed_pending = view('GatherPending')
     check(center(committed_pending) == center(pending_after) and
@@ -785,7 +787,10 @@ try:
     other = launch('GatherOther', g1['x'] + g1['width'] * .86, g1['y'] + g1['height'] * .5)
     check(output_id(left) == output0['id'] and output_id(right) == output0['id'] and
           output_id(center0) == output0['id'] and output_id(center1) == output1['id'] and
-          output_id(other) == output1['id'], 'GA-15 fixtures are assigned to their intended outputs')
+          output_id(other) == output1['id'], 'GA-15 fixtures are assigned to their intended outputs',
+          {'outputs': outputs, 'fixtures': {str(identifier): output_id(identifier)
+           for identifier in (left, right, center0, center1, other)},
+           'expected': {'output0': output0['id'], 'output1': output1['id']}})
     before_left, before_right, before_other = view('GatherLeft'), view('GatherRight'), view('GatherOther')
     before_center0, before_center1 = view('GatherCenter'), view('GatherOtherCenter')
     before_solves = ipc('scottland/spread-state')['solves']
@@ -799,12 +804,14 @@ try:
           {result.get('screen_index') for result in screen_results} == set(range(len(outputs))) and
           all(result.get('purpose') == 'gather' and
           'status' in result and 'work' in result and 'moves' in result for result in screen_results),
-          'Gather records each distinct output exactly once')
+          'Gather records each distinct output exactly once', gather_state['last'])
     moves0 = {int(move['id']) for move in records_by_output.get(output0['id'], {}).get('moves', [])}
     moves1 = {int(move['id']) for move in records_by_output.get(output1['id'], {}).get('moves', [])}
     check({left, right}.issubset(moves0) and other in moves1 and not ({left, right, other} & moves1) and
           other not in moves0,
-          'GA-15 each output moves only its own periphery windows')
+          'GA-15 each output moves only its own periphery windows',
+          {'screen_results': screen_results, 'expected': {'output0': sorted((left, right)),
+           'output1': other}, 'moves0': sorted(moves0), 'moves1': sorted(moves1)})
     after_left, after_right, after_other = view('GatherLeft'), view('GatherRight'), view('GatherOther')
     check(hints()['active'], 'Space gathers without leaving Window mode')
     check(before_left['zone'] == 'continuous' and before_right['zone'] == 'continuous' and
@@ -818,12 +825,16 @@ try:
           before_center1['geometry'] == after_center1['geometry'] and
           before_center0['applied_scale'] == after_center0['applied_scale'] and
           before_center1['applied_scale'] == after_center1['applied_scale'],
-          'GA-5 center windows remain unchanged on both outputs')
+          'GA-5 center windows remain unchanged on both outputs',
+          {'before': [before_center0, before_center1], 'after': [after_center0, after_center1]})
     widget_after = next(w for w in ipc('scottland/widgets')['widgets'] if int(w['id']) == widget_id)
     widget_view_after = next(v for v in views() if v['id'] == widget_after['widget_view'])
     check(widget_after['widget_view'] == widget_before['widget_view'] and
           widget_after['rail'] == widget_before['rail'] and widget_view_after['frame'] == widget_view_before['frame'] and
-          view('GatherWidget')['widgetized'], 'GA-5 rail widget remains unchanged during Gather')
+          view('GatherWidget')['widgetized'], 'GA-5 rail widget remains unchanged during Gather',
+          {'before': {'widget': widget_before, 'view': widget_view_before},
+           'after': {'widget': widget_after, 'view': widget_view_after,
+                     'owner': view('GatherWidget')}})
     gathered_solves = ipc('scottland/spread-state')['solves']
     key('LEFTCTRL', True); tap('SPACE'); key('LEFTCTRL', False)
     time.sleep(.1)
