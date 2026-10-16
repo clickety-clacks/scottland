@@ -5181,6 +5181,22 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
+        auto focus = wf::get_core().get_cursor_focus();
+        auto cursor_view = wf::get_core().get_cursor_focus_view();
+        auto seat = wf::get_core().get_current_seat();
+        auto recipient = seat ? seat->pointer_state.focused_surface : nullptr;
+        auto frame = focus ? dynamic_cast<scottland::frame_t*>(focus.get()) : nullptr;
+        LOGI("scottland: middle diagnostic state=", (int)ev->event->state,
+            " mode=", (int)ev->mode,
+            " focus=", focus ? focus->stringify() : "<none>",
+            " frame=", frame ? "yes" : "no",
+            " cursor_view=", cursor_view ? cursor_view->get_id() : 0,
+            " recipient=", recipient ? "surface" : "null",
+            " layer_shell=", pointer_focus_is_layer_shell(),
+            " gesture_active=", middle_gesture_active(),
+            " drag=", drag->view ? drag->view->get_id() : 0,
+            " device=", ev->device ? "yes" : "null");
+
         if (ev->event->state == WL_POINTER_BUTTON_STATE_PRESSED)
         {
             if ((ev->mode != wf::input_event_processing_mode_t::FULL) || middle_gesture_active() ||
@@ -5195,8 +5211,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             auto view = middle_press_target();
-            auto seat = wf::get_core().get_current_seat();
-            auto recipient = seat ? seat->pointer_state.focused_surface : nullptr;
+            LOGI("scottland: middle target diagnostic view=", view ? view->get_id() : 0,
+                " mapped=", view && view->is_mapped(),
+                " allowed_actions=", view ? view->get_allowed_actions() : 0);
             if (!view || !(view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE))
             {
                 return;  // only a movable framed window can claim the middle press

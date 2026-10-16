@@ -100,7 +100,11 @@ def mouse_after_reload(view_id, label):
     focused = ipc.call('window-rules/get-focused-view')['info']['id']
     reload_plugin()
     # Releasing the stale focus moves keyboard focus for a moment; it must come back.
-    assert ipc.call('window-rules/get-focused-view')['info']['id'] == focused, 'reload lost keyboard focus'
+    after_reload = ipc.call('window-rules/get-focused-view')
+    after_id = (after_reload.get('info') or {}).get('id')
+    if after_id != focused:
+        print(f'DIAG  focus across reload: expected {focused}, actual {after_reload!r}', flush=True)
+    assert after_id == focused, 'reload lost keyboard focus'
     ipc.call('stipc/move_cursor', {'x': round(x), 'y': round(y + 30)})  # leaves touch mode
     time.sleep(.2)
     ipc.call('stipc/move_cursor', {'x': round(x + 10), 'y': round(y + 30)})
