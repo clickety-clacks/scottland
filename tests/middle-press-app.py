@@ -41,10 +41,10 @@ def make(name, layer=False):
     window.set_default_size(360, 260)
     window.set_decorated(False)
     area = Gtk.DrawingArea()
-    def draw(_area, context, _width, _height):
+    def draw(_area, context, _width, _height, _user_data=None):
         context.set_source_rgb(.12, .68, .28)
         context.paint()
-    area.set_draw_func(draw)
+    area.set_draw_func(draw, None)
     window.set_child(area)
     click = Gtk.GestureClick.new()
     click.set_button(0)
