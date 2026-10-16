@@ -46,7 +46,18 @@ def key(code, state): ipc.call('stipc/feed_key', {'key': code, 'state': state})
 
 
 def frame(view_id):
-    return next(v for v in ipc.call('scottland/layout-state')['views'] if v['id'] == view_id)['frame']
+    return layout_view(view_id)['frame']
+
+
+def layout_view(view_id):
+    return next(v for v in ipc.call('scottland/layout-state')['views'] if v['id'] == view_id)
+
+
+def view_id_for_identity(identity):
+    match = next((v for v in ipc.call('scottland/layout-state')['views']
+                  if (v.get('app_id'), v.get('title')) == identity), None)
+    assert match is not None, f'logical view is missing after reload: {identity!r}'
+    return match['id']
 
 
 def center(view_id):
@@ -139,6 +150,8 @@ try:
     time.sleep(1)
     link = next(w for w in ipc.call('scottland/desktop-model')['widgets'] if w['window'] == card_window)
     card = link['widget_view']
+    card_entry = layout_view(card)
+    card_identity = (card_entry['app_id'], card_entry['title'])
     before = frame(card)
     finger_drag(card, 0, 120, hold=False)
     assert abs(frame(card)['y'] - before['y']) > 40, 'fixture must move the card with a finger'
@@ -185,6 +198,7 @@ try:
 
     collapse_toggle()
     time.sleep(.8)
+    card = view_id_for_identity(card_identity)
     x, y = center(card)
     ipc.call('stipc/move_cursor', {'x': round(x), 'y': round(y)})
     deadline = time.monotonic() + 3  # hover a collapsed card: it peeks open

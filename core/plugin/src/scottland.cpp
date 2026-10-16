@@ -5004,8 +5004,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return view;
     }
 
-    /** Middle press can focus the frame node rather than its client surface. Resolve that frame's
-     * toplevel so a press on the visible halo can start the same move as a press on the client. */
+    /** The halo can have no pointer focus node or client surface, so resolve its scene hit to the
+     * frame's toplevel before applying the same middle-button move as on the client. */
     wayfire_toplevel_view middle_press_target()
     {
         auto& core = wf::get_core();
@@ -5020,6 +5020,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto view = frame ? frame->toplevel() : (hit ?
             wf::toplevel_cast(wf::node_to_view(hit->node->shared_from_this())) :
             wf::toplevel_cast(core.get_cursor_focus_view()));
+        auto cursor_view = wf::toplevel_cast(core.get_cursor_focus_view());
+        LOGI("scottland: middle target diagnostic cursor=", core.get_cursor_position().x, ",",
+            core.get_cursor_position().y,
+            " focus=", focus ? focus->stringify() : "<none>",
+            " hit=", hit ? hit->node->stringify() : "<none>",
+            " hit_frame=", frame ? "yes" : "no",
+            " cursor_view=", cursor_view ? cursor_view->get_id() : 0,
+            " target=", view ? view->get_id() : 0);
         if (!view || !view->is_mapped() || view->pending_fullscreen() || !frame_of(view, false))
         {
             return nullptr;
