@@ -304,17 +304,22 @@ try:
             ((sx1 + sx2) / 2, sy1 + 8) if sy1 < fx[1] - 10 else ((sx1 + sx2) / 2, sy2 - 8)
         pointer(gx, gy); time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.2)
         pointer(gx + 3, gy + 3); time.sleep(.3); release()
-        until(lambda: (ipc('scottland/desktop-model').get('drag', {}).get('dragged', 0) in (0, None), 'dragging'), 3, 'grab ended')
+        def drag_state():
+            return ipc('scottland/desktop-model').get('drag', {})
+        def drag_ended():
+            state = drag_state()
+            return not state.get('started'), state
+        until(drag_ended, 3, 'grab ended')
         # Clear the cover off it again, back where it started, so the case's own cover starts clear.
         ipc('window-rules/focus-view', {'id': B})
         until(lambda: (focused_id() == B, focused_id()), 3, 'Big focused before reset drag')
         pointer_drag(B, (40 + 760 / 2, 60 + 560 / 2))
-        def dragged_id():
-            return ipc('scottland/desktop-model').get('drag', {}).get('dragged', 0)
-        until(lambda: (lambda dragged: (dragged == B, dragged))(dragged_id()),
-              3, 'Big is the actual reset drag target')
+        def drag_started_for_big():
+            state = drag_state()
+            return state.get('started') and state.get('window') == B, state
+        until(drag_started_for_big, 3, 'Big is the actual reset drag target')
         release()
-        until(lambda: (dragged_id() in (0, None), dragged_id()), 3, 'reset drag ended')
+        until(drag_ended, 3, 'reset drag ended')
         settled()
 
     def solo_big():
