@@ -46,7 +46,18 @@ def key(code, state): ipc.call('stipc/feed_key', {'key': code, 'state': state})
 
 
 def frame(view_id):
-    return next(v for v in ipc.call('scottland/layout-state')['views'] if v['id'] == view_id)['frame']
+    return layout_view(view_id)['frame']
+
+
+def layout_view(view_id):
+    return next(v for v in ipc.call('scottland/layout-state')['views'] if v['id'] == view_id)
+
+
+def view_id_for_identity(identity):
+    match = next((v for v in ipc.call('scottland/layout-state')['views']
+                  if (v.get('app_id'), v.get('title')) == identity), None)
+    assert match is not None, f'logical view is missing after reload: {identity!r}'
+    return match['id']
 
 
 def center(view_id):
@@ -97,14 +108,19 @@ def reload_plugin():
 
 def mouse_after_reload(view_id, label):
     x, y = center(view_id)
-    focused = ipc.call('window-rules/get-focused-view')['info']['id']
+    focused = ipc.call('window-rules/get-focused-view')['info']
     reload_plugin()
-    # Releasing the stale focus moves keyboard focus for a moment; it must come back.
-    assert ipc.call('window-rules/get-focused-view')['info']['id'] == focused, 'reload lost keyboard focus'
+    # A reload can recreate a widget with a new view ID; keyboard focus should stay on the same target.
+    after_reload = ipc.call('window-rules/get-focused-view')
+    actual_focus = after_reload.get('info') or {}
+    same_target = (actual_focus.get('app-id'), actual_focus.get('title')) == \
+        (focused.get('app-id'), focused.get('title'))
+    assert same_target, f'reload changed keyboard focus from {focused!r} to {actual_focus!r}'
+    reloaded_view_id = actual_focus.get('id')
     ipc.call('stipc/move_cursor', {'x': round(x), 'y': round(y + 30)})  # leaves touch mode
     time.sleep(.2)
     ipc.call('stipc/move_cursor', {'x': round(x + 10), 'y': round(y + 30)})
-    assert any(v['id'] == view_id for v in ipc.call('scottland/layout-state')['views'])
+    assert any(v['id'] == reloaded_view_id for v in ipc.call('scottland/layout-state')['views'])
     print(f'PASS  {label}', flush=True)
 
 
@@ -134,6 +150,8 @@ try:
     time.sleep(1)
     link = next(w for w in ipc.call('scottland/desktop-model')['widgets'] if w['window'] == card_window)
     card = link['widget_view']
+    card_entry = layout_view(card)
+    card_identity = (card_entry['app_id'], card_entry['title'])
     before = frame(card)
     finger_drag(card, 0, 120, hold=False)
     assert abs(frame(card)['y'] - before['y']) > 40, 'fixture must move the card with a finger'
@@ -180,6 +198,7 @@ try:
 
     collapse_toggle()
     time.sleep(.8)
+    card = view_id_for_identity(card_identity)
     x, y = center(card)
     ipc.call('stipc/move_cursor', {'x': round(x), 'y': round(y)})
     deadline = time.monotonic() + 3  # hover a collapsed card: it peeks open

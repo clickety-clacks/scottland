@@ -477,21 +477,35 @@ std::function<double(double)> scale_function(double width, double center_pct, do
  */
 static void release_stale_pointer_focus()
 {
-    auto focus = wf::get_core().get_cursor_focus();
+    auto& core = wf::get_core();
+    auto focus = core.get_cursor_focus();
     if (!focus || (typeid(*focus) == typeid(wf::scene::node_t))) return;  // none, or already inert
+
+    // Transferring the stale pointer grab also takes keyboard focus. Remember a view only when it
+    // owned keyboard focus before that transfer; refocusing a layer-shell or other scene node must
+    // remain Wayfire's job.
+    auto active_view = core.seat->get_active_view();
+    auto active_node = core.seat->get_active_node();
+    bool restore_active_view = active_view && active_view->is_mapped() && active_node &&
+        ((wf::node_to_view(active_node) == active_view) || (active_node == focus));
+
     auto top = focus.get();
     while (top->parent()) top = top->parent();
-    if (top == wf::get_core().scene().get()) return;
+    if (top == core.scene().get()) return;
     LOGI("scottland: released stale pointer focus ", focus->stringify());
     focus.reset();
     // A core node_t has core code only, but its shared_ptr control block is instantiated here: it
     // is never released, so Wayfire dropping it later can't call into an unloaded library.
     auto inert = new wf::scene::node_ptr(std::make_shared<wf::scene::node_t>(false));
-    wf::get_core().transfer_grab(*inert);
+    core.transfer_grab(*inert);
     // The transfer also took keyboard focus and made the inert node an explicit pointer grab: an
     // input-state update ends that grab (the node isn't in the scene) and refocus restores keys.
-    wf::scene::update(wf::get_core().scene(), wf::scene::update_flag::INPUT_STATE);
-    wf::get_core().seat->refocus();
+    wf::scene::update(core.scene(), wf::scene::update_flag::INPUT_STATE);
+    core.seat->refocus();
+    if (restore_active_view && active_view->is_mapped())
+    {
+        core.seat->focus_view(active_view);
+    }
 }
 
 /**
@@ -4990,6 +5004,43 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return view;
     }
 
+    /** The halo can have no pointer focus node or client surface. Resolve that empty scene hit
+     * with the same topmost-frame selection used to track the halo under the cursor. */
+    wayfire_toplevel_view middle_press_target()
+    {
+        auto& core = wf::get_core();
+        auto focus = core.get_cursor_focus();
+        auto hit = core.scene()->find_node_at(core.get_cursor_position());
+        auto frame = focus ? dynamic_cast<scottland::frame_t*>(focus.get()) : nullptr;
+        if (!frame && hit)
+        {
+            frame = dynamic_cast<scottland::frame_t*>(hit->node.get());
+        }
+
+        auto cursor_view = wf::toplevel_cast(core.get_cursor_focus_view());
+        auto view = frame ? frame->toplevel() : (hit ?
+            wf::toplevel_cast(wf::node_to_view(hit->node->shared_from_this())) : cursor_view);
+        if (!focus && !hit && !cursor_view)
+        {
+            auto cursor = core.get_cursor_position();
+            auto output = core.output_layout->find_closest_output(cursor);
+            if (output && !output->is_plugin_active("move") &&
+                !output->is_plugin_active("scottland-resize"))
+            {
+                auto local = cursor - wf::origin(output->get_layout_geometry());
+                auto halo_frame = frame_near(output, local);
+                view = halo_frame ? halo_frame->toplevel() : nullptr;
+            }
+        }
+
+        if (!view || !view->is_mapped() || view->pending_fullscreen() || !frame_of(view, false))
+        {
+            return nullptr;
+        }
+
+        return view;
+    }
+
     bool pointer_focus_is_layer_shell()
     {
         auto seat = wf::get_core().get_current_seat();
@@ -5156,7 +5207,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 return;  // layer-shell clients are not framed Scottland windows
             }
 
-            auto view = gesture_target();
+            auto view = middle_press_target();
             auto seat = wf::get_core().get_current_seat();
             auto recipient = seat ? seat->pointer_state.focused_surface : nullptr;
             if (!view || !(view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE))
@@ -8102,7 +8153,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             },
             [this](wf::output_t *) { apply_all(); });
         refresh_layout_avoidance();
-        LOGI("scottland: plugin loaded");
     }
 
     void fini() override
