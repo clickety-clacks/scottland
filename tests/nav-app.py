@@ -17,7 +17,10 @@ def activate(application):
     window.set_default_size(width, height)
     window.set_decorated(False)
     area = Gtk.DrawingArea()
-    area.set_draw_func(lambda widget, context, w, h: (context.set_source_rgb(*rgb), context.paint()))
+    def draw(_widget, context, _width, _height, _user_data):
+        context.set_source_rgb(*rgb)
+        context.paint()
+    area.set_draw_func(draw)
     keys = Gtk.EventControllerKey.new()
     keys.connect('key-pressed', lambda c, keyval, code, state: record(key=Gdk.keyval_name(keyval)) or False)
     window.add_controller(keys)
