@@ -227,7 +227,12 @@ try:
     check(solves() == n, 'present, a hint tap and an ordinary drop never spread (P4)', f'{n} -> {solves()}')
 
     # A solo finishing inside spread_tick must hand queued work to a later timer turn.
-    setup(scene, S)
+    queue_scene = list(scene)
+    for index, fixture in enumerate(((60, 80, 600, 400), (60, 520, 600, 400),
+                                     (1900, 80, 600, 400), (1900, 520, 600, 400),
+                                     (900, 100, 500, 350), (1200, 300, 500, 350))):
+        queue_scene.append((launch(f'Queue{index}'), *fixture))
+    setup(queue_scene, S)
     ipc('scottland/spread-state', {'slow': True})
     before = solves()
     alt(True); press_hint(S, hold=.75)
@@ -240,7 +245,7 @@ try:
     check(second_solo['solves'] == before + 2 and second_solo['last'].get('purpose') == 'solo',
         'queue: solo-to-solo requests both complete in press order', str(second_solo))
 
-    setup(scene, S)
+    setup(queue_scene, S)
     before = solves()
     alt(True); press_hint(S, hold=.75)
     running = wait(lambda: (lambda state: state if state['running'] and state['running_slices'] > 3 else None)(spread()),
