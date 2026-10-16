@@ -97,18 +97,19 @@ def reload_plugin():
 
 def mouse_after_reload(view_id, label):
     x, y = center(view_id)
-    focused = ipc.call('window-rules/get-focused-view')['info']['id']
+    focused = ipc.call('window-rules/get-focused-view')['info']
     reload_plugin()
-    # Releasing the stale focus moves keyboard focus for a moment; it must come back.
+    # A reload can recreate a widget with a new view ID; keyboard focus should stay on the same target.
     after_reload = ipc.call('window-rules/get-focused-view')
-    after_id = (after_reload.get('info') or {}).get('id')
-    if after_id != focused:
-        print(f'DIAG  focus across reload: expected {focused}, actual {after_reload!r}', flush=True)
-    assert after_id == focused, 'reload lost keyboard focus'
+    actual_focus = after_reload.get('info') or {}
+    same_target = (actual_focus.get('app-id'), actual_focus.get('title')) == \
+        (focused.get('app-id'), focused.get('title'))
+    assert same_target, f'reload changed keyboard focus from {focused!r} to {actual_focus!r}'
+    reloaded_view_id = actual_focus.get('id')
     ipc.call('stipc/move_cursor', {'x': round(x), 'y': round(y + 30)})  # leaves touch mode
     time.sleep(.2)
     ipc.call('stipc/move_cursor', {'x': round(x + 10), 'y': round(y + 30)})
-    assert any(v['id'] == view_id for v in ipc.call('scottland/layout-state')['views'])
+    assert any(v['id'] == reloaded_view_id for v in ipc.call('scottland/layout-state')['views'])
     print(f'PASS  {label}', flush=True)
 
 

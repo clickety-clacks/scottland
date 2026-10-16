@@ -488,10 +488,6 @@ static void release_stale_pointer_focus()
     auto active_node = core.seat->get_active_node();
     bool restore_active_view = active_view && active_view->is_mapped() && active_node &&
         ((wf::node_to_view(active_node) == active_view) || (active_node == focus));
-    LOGI("scottland: stale pointer focus state active_view_mapped=",
-        active_view && active_view->is_mapped(), " active_node=",
-        active_node ? active_node->stringify() : "<none>", " pointer_focus=", focus->stringify(),
-        " restore_active_view=", restore_active_view);
 
     auto top = focus.get();
     while (top->parent()) top = top->parent();
@@ -509,11 +505,6 @@ static void release_stale_pointer_focus()
     if (restore_active_view && active_view->is_mapped())
     {
         core.seat->focus_view(active_view);
-        auto restored_view = core.seat->get_active_view();
-        LOGI("scottland: stale pointer focus restore requested_view=", active_view->get_id(),
-            " actual_view=", restored_view ? restored_view->get_id() : 0,
-            " active_node=", core.seat->get_active_node() ?
-                core.seat->get_active_node()->stringify() : "<none>");
     }
 }
 
@@ -5017,9 +5008,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
      * toplevel so a press on the visible halo can start the same move as a press on the client. */
     wayfire_toplevel_view middle_press_target()
     {
-        auto focus = wf::get_core().get_cursor_focus();
+        auto& core = wf::get_core();
+        auto focus = core.get_cursor_focus();
+        auto hit = core.scene()->find_node_at(core.get_cursor_position());
         auto frame = focus ? dynamic_cast<scottland::frame_t*>(focus.get()) : nullptr;
-        auto view = frame ? frame->toplevel() : wf::toplevel_cast(wf::get_core().get_cursor_focus_view());
+        if (!frame && hit)
+        {
+            frame = dynamic_cast<scottland::frame_t*>(hit->node.get());
+        }
+
+        auto view = frame ? frame->toplevel() : (hit ?
+            wf::toplevel_cast(wf::node_to_view(hit->node->shared_from_this())) :
+            wf::toplevel_cast(core.get_cursor_focus_view()));
         if (!view || !view->is_mapped() || view->pending_fullscreen() || !frame_of(view, false))
         {
             return nullptr;
@@ -5181,22 +5181,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
-        auto focus = wf::get_core().get_cursor_focus();
-        auto cursor_view = wf::get_core().get_cursor_focus_view();
-        auto seat = wf::get_core().get_current_seat();
-        auto recipient = seat ? seat->pointer_state.focused_surface : nullptr;
-        auto frame = focus ? dynamic_cast<scottland::frame_t*>(focus.get()) : nullptr;
-        LOGI("scottland: middle diagnostic state=", (int)ev->event->state,
-            " mode=", (int)ev->mode,
-            " focus=", focus ? focus->stringify() : "<none>",
-            " frame=", frame ? "yes" : "no",
-            " cursor_view=", cursor_view ? cursor_view->get_id() : 0,
-            " recipient=", recipient ? "surface" : "null",
-            " layer_shell=", pointer_focus_is_layer_shell(),
-            " gesture_active=", middle_gesture_active(),
-            " drag=", drag->view ? drag->view->get_id() : 0,
-            " device=", ev->device ? "yes" : "null");
-
         if (ev->event->state == WL_POINTER_BUTTON_STATE_PRESSED)
         {
             if ((ev->mode != wf::input_event_processing_mode_t::FULL) || middle_gesture_active() ||
@@ -5211,9 +5195,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             auto view = middle_press_target();
-            LOGI("scottland: middle target diagnostic view=", view ? view->get_id() : 0,
-                " mapped=", view && view->is_mapped(),
-                " allowed_actions=", view ? view->get_allowed_actions() : 0);
+            auto seat = wf::get_core().get_current_seat();
+            auto recipient = seat ? seat->pointer_state.focused_surface : nullptr;
             if (!view || !(view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE))
             {
                 return;  // only a movable framed window can claim the middle press
@@ -8157,10 +8140,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             },
             [this](wf::output_t *) { apply_all(); });
         refresh_layout_avoidance();
-        auto active_view = wf::get_core().seat->get_active_view();
-        auto active_node = wf::get_core().seat->get_active_node();
-        LOGI("scottland: plugin loaded active_view=", active_view ? active_view->get_id() : 0,
-            " active_node=", active_node ? active_node->stringify() : "<none>");
     }
 
     void fini() override
