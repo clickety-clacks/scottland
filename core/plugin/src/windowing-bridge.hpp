@@ -384,15 +384,20 @@
             view->get_output()->get_relative_geometry().width) ?
             Z::center : z;
     }
-    wayfire_toplevel_view represented_view(uint64_t id)
+    wayfire_toplevel_view represented_view(wayfire_toplevel_view window)
     {
-        auto window = wf::toplevel_cast(view_by_id(id));
+        if (!window) return nullptr;
+        uint64_t id = window->get_id();
         if (auto link = link_of_window(window); link && link->docked())
         {
             if (widget_transitions.count(id) && entering_widget(id)) return window;
             return wf::toplevel_cast(link->widget.lock());
         }
         return window;
+    }
+    wayfire_toplevel_view represented_view(uint64_t id)
+    {
+        return represented_view(wf::toplevel_cast(view_by_id(id)));
     }
     scottland::windowing::window_memory& ensure_window_memory(uint64_t id)
     {
@@ -1915,7 +1920,12 @@
         else if (first || arrow_key(code)) window_keys.interrupt();
         if (arrow_key(code)) { press_arrow(code, keyboard, first); return; }
         if (!first) return;
-        if (code == KEY_ESC) { cancel_keyboard_motion(); end_window_keys(); }
+        if (code == KEY_SPACE)
+        {
+            uint32_t blockers = modifier_mask(keyboard->keymap, "CTRL SHIFT SUPER");
+            if (!(keyboard->modifiers.depressed & blockers)) gather_screens();
+        }
+        else if (code == KEY_ESC) { cancel_keyboard_motion(); end_window_keys(); }
         else if (code == KEY_TAB)
             window_keys.tab(held_keys.count(KEY_LEFTSHIFT) || held_keys.count(KEY_RIGHTSHIFT));
         else if (code == KEY_F4) window_keys.close_selected();
