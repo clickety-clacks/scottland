@@ -731,7 +731,7 @@ static void gather_fixtures()
     // A lone periphery window reaches its border and midline at the natural scale there.
     {
         auto s = screen(2560, 1440);
-        s.mode = mode_t::gather;
+        s.mode = scottland::spread::mode_t::gather;
         add_resident(s, 1, 500, 400, 420, 250);
         const auto before = s.windows.front();
         auto r = solve(s);
@@ -754,7 +754,7 @@ static void gather_fixtures()
     // A centered overhang must not take the calm shortcut; it moves out to the border.
     {
         auto s = screen(2560, 1440);
-        s.mode = mode_t::gather;
+        s.mode = scottland::spread::mode_t::gather;
         add_resident(s, 2, 700, 850, 800, 720);
         auto r = solve(s);
         const auto& w = s.windows.front();
@@ -767,7 +767,7 @@ static void gather_fixtures()
     // A fixed obstacle that spans the workarea forces the bounded least-overlap fallback.
     {
         auto s = screen(2560, 1080);
-        s.mode = mode_t::gather;
+        s.mode = scottland::spread::mode_t::gather;
         s.fixed.push_back({200, 0, 900, 1080});
         add_resident(s, 3, 500, 400, 400, 300);
         auto r = solve(s);
@@ -784,7 +784,7 @@ static void gather_fixtures()
     // natural scale at the rail would fit. The 800-versus-580 precondition is explicit.
     {
         auto s = screen(1920, 1080);
-        s.mode = mode_t::gather;
+        s.mode = scottland::spread::mode_t::gather;
         s.rail_width = 60;
         s.windows.push_back(window(4, role_t::resident, 1000, 400, 420, 540, .8));
         add_resident(s, 5, 400, 300, 300, 540);
@@ -808,7 +808,7 @@ static void gather_fixtures()
     // GA-9: three equal-height windows form the example's 10% border column and settle calmly.
     {
         auto s = screen(1920, 1080);
-        s.mode = mode_t::gather;
+        s.mode = scottland::spread::mode_t::gather;
         s.scale = [] (double) { return 1.0; };
         s.windows = {
             window(10, role_t::resident, 300, 300, 500, 540),
@@ -844,7 +844,7 @@ static void gather_fixtures()
     // GA-10: unequal widths may share a border column with equal inner distances.
     {
         auto s = screen(1920, 1080);
-        s.mode = mode_t::gather;
+        s.mode = scottland::spread::mode_t::gather;
         s.scale = [] (double) { return 1.0; };
         s.windows = {
             window(20, role_t::resident, 200, 200, 150, 300), // narrower, starts farther out
@@ -865,7 +865,7 @@ static void gather_fixtures()
     // later short B fits above it and may finish inward of C.
     {
         auto s = screen(1920, 1080);
-        s.mode = mode_t::gather;
+        s.mode = scottland::spread::mode_t::gather;
         s.scale = [] (double) { return 1.0; };
         s.windows = {
             window(30, role_t::resident, 300, 800, 480, 540), // inner distance 10
@@ -886,7 +886,7 @@ static void gather_fixtures()
     // A work-cap cut is deterministic and delivers no partial layout.
     {
         auto s = screen(2560, 1080);
-        s.mode = mode_t::gather;
+        s.mode = scottland::spread::mode_t::gather;
         s.work_cap = 1;
         add_resident(s, 5, 500, 400, 420, 250);
         auto a = solve(s), b = solve(s);
