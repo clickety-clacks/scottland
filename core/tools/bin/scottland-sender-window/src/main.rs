@@ -5,7 +5,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_INPUT_BYTES: usize = 262_144;
 const MAX_RESOLVER_OUTPUT_BYTES: usize = 1_048_576;
@@ -158,7 +158,88 @@ fn run() -> Result<Value, String> {
         .get("visible_exact")
         .ok_or_else(|| "resolver omitted visible_exact result".to_string())?;
     let linked = results.get("linked_client");
-    Ok(format_result(shows, linked))
+    Ok(resolve_session_fallback(
+        has_tmux,
+        sender,
+        &resolver_dir,
+        &windows,
+        &window_facts,
+        &local_machine,
+        shows,
+        linked,
+        &call_resolver,
+    ))
+}
+
+fn resolve_session_fallback(
+    has_tmux: bool,
+    sender: &Value,
+    resolver_dir: &Path,
+    windows: &[Value],
+    window_facts: &BTreeMap<String, WindowFact>,
+    local_machine: &str,
+    shows: &RelationResult,
+    linked: Option<&RelationResult>,
+    resolve: &impl Fn(&Path, &Value) -> Result<Value, String>,
+) -> Value {
+    if !shows.complete || linked.is_some_and(|result| !result.complete) {
+        return format_result(shows, linked);
+    }
+    if has_tmux && shows.windows.is_empty() && linked.is_none_or(|result| result.windows.is_empty())
+    {
+        let session = sender["tmux"]["session"]
+            .as_str()
+            .expect("validated tmux session");
+        let machine = sender["identity"]["machine"]
+            .as_str()
+            .expect("validated sender machine");
+        let (attributed, et_unproved) = match session_attributions(
+            resolver_dir,
+            windows,
+            window_facts,
+            local_machine,
+            machine,
+            session,
+            resolve,
+        ) {
+            Ok(ids) => ids,
+            Err(mut reasons) => {
+                if !shows.complete {
+                    extend_unique(&mut reasons, &shows.reasons);
+                }
+                if let Some(linked) = linked.filter(|result| !result.complete) {
+                    extend_unique(&mut reasons, &linked.reasons);
+                }
+                return unknown_from_reasons(reasons);
+            }
+        };
+        return format_attribution_result(shows, linked, attributed, et_unproved);
+    }
+    format_result(shows, linked)
+}
+
+fn format_attribution_result(
+    shows: &RelationResult,
+    linked: Option<&RelationResult>,
+    attributed: BTreeSet<u64>,
+    et_unproved: bool,
+) -> Value {
+    if !attributed.is_empty() {
+        return json!({
+            "status": "found",
+            "windows": attributed.into_iter().map(|id| json!({"window": id, "relation": "attributed"})).collect::<Vec<_>>(),
+            "reasons": [],
+        });
+    }
+    if et_unproved {
+        return unknown_from_reasons(vec![reason(
+            "et_hint_not_exact_proof",
+            "transport",
+            "a same-host et window could not be attributed to a current session",
+            false,
+        )]);
+    }
+    format_result(shows, linked)
 }
 
 fn read_input() -> Result<Vec<u8>, String> {
@@ -601,6 +682,239 @@ fn call_resolver(resolver_dir: &Path, request: &Value) -> Result<Value, String> 
     })
 }
 
+fn session_attributions(
+    resolver_dir: &Path,
+    windows: &[Value],
+    facts: &BTreeMap<String, WindowFact>,
+    local_machine: &str,
+    sender_machine: &str,
+    sender_session: &str,
+    resolve: &impl Fn(&Path, &Value) -> Result<Value, String>,
+) -> Result<(BTreeSet<u64>, bool), Vec<Value>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let identities: Vec<Value> = windows
+        .iter()
+        .map(|window| {
+            json!({
+                "stableId": window["stableId"],
+                "address": window["address"],
+                "pid": window["pid"],
+                "startTimeTicks": window["startTimeTicks"],
+            })
+        })
+        .collect();
+    let mut found = BTreeSet::new();
+    let mut et_unproved = false;
+    let mut failures = Vec::new();
+    for selected in &identities {
+        let remaining = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis();
+        if remaining == 0 {
+            failures.push(reason(
+                "attribution_deadline",
+                "scottland",
+                "window-session lookup deadline expired",
+                true,
+            ));
+            break;
+        }
+        let request = json!({
+            "schema": "agent-window-resolver.window-session.request.v1",
+            "requestId": format!("{}-{}", request_id("attributed"), selected["stableId"].as_str().unwrap_or("")),
+            "operation": "window-session",
+            "window": selected,
+            "windows": identities,
+            "local": {"machine": local_machine},
+            "limits": {"deadlineMs": remaining.min(5000)},
+        });
+        let response = match resolve(resolver_dir, &request) {
+            Ok(response) => response,
+            Err(message) => {
+                failures.push(reason("resolver_unavailable", "resolver", &message, true));
+                continue;
+            }
+        };
+        match attributed_response(&request, &response, facts, sender_machine, sender_session) {
+            Ok(AttributionObservation::Window(id)) => {
+                found.insert(id);
+            }
+            Ok(AttributionObservation::RelevantEtHint) => et_unproved = true,
+            Ok(AttributionObservation::None) => {}
+            Err(mut reasons) => failures.append(&mut reasons),
+        }
+    }
+    if failures.is_empty() {
+        Ok((found, et_unproved))
+    } else {
+        Err(failures)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum AttributionObservation {
+    Window(u64),
+    RelevantEtHint,
+    None,
+}
+
+fn attributed_response(
+    request: &Value,
+    response: &Value,
+    facts: &BTreeMap<String, WindowFact>,
+    sender_machine: &str,
+    sender_session: &str,
+) -> Result<AttributionObservation, Vec<Value>> {
+    let invalid = || {
+        vec![reason(
+            "resolver_protocol_error",
+            "resolver",
+            "window-session response did not match its request",
+            true,
+        )]
+    };
+    if response["schema"] != "agent-window-resolver.window-session.response.v1"
+        || response["operation"] != "window-session"
+        || response["requestId"] != request["requestId"]
+    {
+        return Err(invalid());
+    }
+    if response["status"] != "none" && response.get("uncertainty").is_some() {
+        return Err(invalid());
+    }
+    match response["status"].as_str() {
+        Some("none") if response["session"].is_null() => {
+            let Some(hint) = response.get("uncertainty") else {
+                return Ok(AttributionObservation::None);
+            };
+            let object = hint.as_object().ok_or_else(invalid)?;
+            if object.len() != 4
+                || hint["code"] != "et_hint_not_exact_proof"
+                || hint["transport"] != "et"
+                || hint["window"] != request["window"]
+            {
+                return Err(invalid());
+            }
+            let host = hint["host"].as_str().ok_or_else(invalid)?;
+            let stable_id = hint["window"]["stableId"].as_str().ok_or_else(invalid)?;
+            let fact = facts.get(stable_id).ok_or_else(invalid)?;
+            if hint["window"]["address"] != fact.address
+                || hint["window"]["pid"] != fact.pid
+                || hint["window"]["startTimeTicks"] != fact.ticks
+            {
+                return Err(invalid());
+            }
+            if machine_matches(host, sender_machine) {
+                Ok(AttributionObservation::RelevantEtHint)
+            } else {
+                Ok(AttributionObservation::None)
+            }
+        }
+        Some("unknown") => {
+            let reasons = response["reasons"]
+                .as_array()
+                .filter(|reasons| !reasons.is_empty())
+                .cloned()
+                .unwrap_or_else(invalid);
+            // These codes come only after the resolver found no transport in the window tree.
+            if reasons.iter().all(|reason| {
+                matches!(
+                    reason["code"].as_str(),
+                    Some(
+                        "local_tmux_unavailable"
+                            | "tmux_client_ambiguous"
+                            | "tmux_socket_ambiguous"
+                            | "tmux_client_unattributed"
+                    )
+                )
+            }) {
+                Ok(AttributionObservation::None)
+            } else {
+                Err(reasons)
+            }
+        }
+        Some("found") => {
+            let session = response["session"].as_object().ok_or_else(invalid)?;
+            let basis = session
+                .get("basis")
+                .and_then(Value::as_str)
+                .ok_or_else(invalid)?;
+            if basis == "current"
+                && session.get("method").and_then(Value::as_str) == Some("local-client")
+            {
+                return Ok(AttributionObservation::None);
+            }
+            let host = session
+                .get("host")
+                .and_then(Value::as_str)
+                .ok_or_else(invalid)?;
+            if !machine_matches(host, sender_machine) {
+                return Ok(AttributionObservation::None);
+            }
+            if basis == "launch" {
+                return Err(response["reasons"]
+                    .as_array()
+                    .filter(|reasons| !reasons.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        vec![reason(
+                            "current_unattributed",
+                            "resolver",
+                            "remote current session was not attributed",
+                            true,
+                        )]
+                    }));
+            }
+            if basis != "current"
+                || !matches!(
+                    session.get("method").and_then(Value::as_str),
+                    Some("remote-ancestry" | "remote-unique-connection")
+                )
+            {
+                return Err(invalid());
+            }
+            let name = session
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(invalid)?;
+            if name != sender_session {
+                return Ok(AttributionObservation::None);
+            }
+            let stable_id = request["window"]["stableId"].as_str().ok_or_else(invalid)?;
+            let fact = facts.get(stable_id).ok_or_else(invalid)?;
+            if request["window"]["address"] != fact.address
+                || request["window"]["pid"] != fact.pid
+                || request["window"]["startTimeTicks"] != fact.ticks
+            {
+                return Err(invalid());
+            }
+            Ok(AttributionObservation::Window(fact.id))
+        }
+        _ => Err(invalid()),
+    }
+}
+
+fn machine_matches(left: &str, right: &str) -> bool {
+    let left = left.strip_suffix('.').unwrap_or(left).to_ascii_lowercase();
+    let right = right
+        .strip_suffix('.')
+        .unwrap_or(right)
+        .to_ascii_lowercase();
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+    if left == right {
+        return true;
+    }
+    if !left.contains('.') {
+        return right.split('.').next() == Some(left.as_str());
+    }
+    if !right.contains('.') {
+        return left.split('.').next() == Some(right.as_str());
+    }
+    false
+}
+
 #[derive(Debug)]
 enum ResolutionError {
     Invalid(String),
@@ -832,7 +1146,6 @@ fn diagnostic(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::cell::Cell;
-
     fn resolver_v1_accepts_target(target: &Value) -> bool {
         let script = r#"
 import json, sys
@@ -866,13 +1179,170 @@ print("valid")
             ),
         }
     }
-
     fn complete(windows: &[u64], reason_code: &str) -> RelationResult {
         RelationResult {
             complete: true,
             windows: windows.iter().copied().collect(),
             reasons: vec![reason(reason_code, "caller", "test reason", false)],
         }
+    }
+
+    fn proof_case() -> (Value, Vec<Value>, BTreeMap<String, WindowFact>) {
+        let facts = BTreeMap::from([
+            (
+                "17".into(),
+                WindowFact {
+                    id: 17,
+                    address: "0x11".into(),
+                    pid: 41,
+                    ticks: "123".into(),
+                },
+            ),
+            (
+                "21".into(),
+                WindowFact {
+                    id: 21,
+                    address: "0x15".into(),
+                    pid: 42,
+                    ticks: "124".into(),
+                },
+            ),
+        ]);
+        let windows = vec![
+            json!({"stableId": "17", "address": "0x11", "pid": 41, "startTimeTicks": "123", "class": "ssh"}),
+            json!({"stableId": "21", "address": "0x15", "pid": 42, "startTimeTicks": "124", "class": "mosh"}),
+        ];
+        let sender =
+            json!({"identity": {"machine": "example-host"}, "tmux": {"session": "deploy"}});
+        (sender, windows, facts)
+    }
+
+    fn v1_relation(relation: &str, selected: &[Value]) -> Value {
+        let candidates: Vec<Value> = selected
+            .iter()
+            .map(|window| {
+                json!({
+                    "window": window,
+                    "proof": {"state": "complete", "relation": relation},
+                })
+            })
+            .collect();
+        json!({
+            "schema": "agent-window-resolver.response.v1", "operation": "resolve",
+            "requestedRelation": relation,
+            "status": if candidates.is_empty() { "unresolved" } else if candidates.len() == 1 { "matched" } else { "ambiguous" },
+            "candidates": candidates,
+            "reasons": if selected.is_empty() { vec![reason("candidate_count", "resolver", "none", false)] } else { vec![] },
+        })
+    }
+
+    #[test]
+    fn r3_distinct_v1_endpoint_proofs_survive_without_session_heuristic() {
+        let (sender, windows, facts) = proof_case();
+        let shows = parse_relation(
+            &v1_relation("visible_exact", &windows[..1]),
+            "visible_exact",
+            &facts,
+        )
+        .unwrap();
+        let linked = parse_relation(
+            &v1_relation("linked_client", &windows[1..]),
+            "linked_client",
+            &facts,
+        )
+        .unwrap();
+        let calls = Cell::new(0);
+        let result = resolve_session_fallback(
+            true,
+            &sender,
+            Path::new("."),
+            &windows,
+            &facts,
+            "desktop",
+            &shows,
+            Some(&linked),
+            &|_, _| {
+                calls.set(calls.get() + 1);
+                Err("session heuristic should not run after valid v1 proof".into())
+            },
+        );
+        assert_eq!(calls.get(), 0);
+        assert_eq!(result["status"], "found");
+        assert_eq!(
+            result["windows"],
+            json!([
+                {"window": 17, "relation": "shows"},
+                {"window": 21, "relation": "linked"},
+            ])
+        );
+    }
+
+    #[test]
+    fn r3_unproved_ambiguous_connections_are_not_attributed() {
+        let (sender, windows, facts) = proof_case();
+        let shows =
+            parse_relation(&v1_relation("visible_exact", &[]), "visible_exact", &facts).unwrap();
+        let linked =
+            parse_relation(&v1_relation("linked_client", &[]), "linked_client", &facts).unwrap();
+        let calls = Cell::new(0);
+        let result = resolve_session_fallback(
+            true,
+            &sender,
+            Path::new("."),
+            &windows,
+            &facts,
+            "desktop",
+            &shows,
+            Some(&linked),
+            &|_, request| {
+                calls.set(calls.get() + 1);
+                Ok(json!({
+                    "schema": "agent-window-resolver.window-session.response.v1",
+                    "operation": "window-session", "requestId": request["requestId"],
+                    "status": "unknown", "session": null,
+                    "reasons": [reason("transport_ambiguous", "proc", "two connections", false)],
+                }))
+            },
+        );
+        assert_eq!(calls.get(), 2);
+        assert_eq!(result["status"], "unknown");
+        assert_eq!(result["windows"], json!([]));
+        assert_eq!(result["reasons"][0]["code"], "transport_ambiguous");
+    }
+
+    #[test]
+    fn incomplete_v1_relation_keeps_its_unknown_reason_without_session_fallback() {
+        let (sender, windows, facts) = proof_case();
+        let shows = RelationResult {
+            complete: false,
+            windows: BTreeSet::new(),
+            reasons: vec![reason(
+                "remote_unreachable",
+                "transport",
+                "host unavailable",
+                true,
+            )],
+        };
+        let linked = complete(&[], "candidate_count");
+        let calls = Cell::new(0);
+        let result = resolve_session_fallback(
+            true,
+            &sender,
+            Path::new("."),
+            &windows,
+            &facts,
+            "desktop",
+            &shows,
+            Some(&linked),
+            &|_, _| {
+                calls.set(calls.get() + 1);
+                Err("session fallback must not erase v1 uncertainty".into())
+            },
+        );
+        assert_eq!(calls.get(), 0);
+        assert_eq!(result["status"], "unknown");
+        assert_eq!(result["windows"], json!([]));
+        assert_eq!(result["reasons"][0]["code"], "remote_unreachable");
     }
 
     #[test]
@@ -949,6 +1419,206 @@ print("valid")
                 .unwrap_err()
                 .contains("sender.identity.startTimeTicks")
         );
+    }
+
+    fn session_case(
+        id: u64,
+        name: &str,
+        host: &str,
+        basis: &str,
+        method: &str,
+    ) -> (Value, Value, BTreeMap<String, WindowFact>) {
+        let selected = json!({"stableId": id.to_string(), "address": format!("0x{id:x}"), "pid": 41, "startTimeTicks": "123"});
+        let request = json!({"requestId": "sr5-test", "window": selected});
+        let response = json!({
+            "schema": "agent-window-resolver.window-session.response.v1",
+            "operation": "window-session", "requestId": "sr5-test", "status": "found",
+            "session": {"name": name, "host": host, "basis": basis, "method": method},
+            "reasons": [],
+        });
+        let facts = BTreeMap::from([(
+            id.to_string(),
+            WindowFact {
+                id,
+                address: format!("0x{id:x}"),
+                pid: 41,
+                ticks: "123".into(),
+            },
+        )]);
+        (request, response, facts)
+    }
+
+    #[test]
+    fn sr5_accepts_only_current_remote_attribution_for_matching_host_and_session() {
+        for method in ["remote-ancestry", "remote-unique-connection"] {
+            let (request, response, facts) =
+                session_case(17, "deploy", "example-host.local", "current", method);
+            assert_eq!(
+                attributed_response(&request, &response, &facts, "EXAMPLE-HOST", "deploy").unwrap(),
+                AttributionObservation::Window(17)
+            );
+            assert_eq!(
+                attributed_response(&request, &response, &facts, "other-host", "deploy").unwrap(),
+                AttributionObservation::None
+            );
+            assert_eq!(
+                attributed_response(&request, &response, &facts, "example-host", "other").unwrap(),
+                AttributionObservation::None
+            );
+        }
+        let (request, response, facts) =
+            session_case(17, "deploy", "example-host", "launch", "launch");
+        assert!(
+            attributed_response(&request, &response, &facts, "example-host", "deploy").is_err()
+        );
+    }
+
+    #[test]
+    fn sr5_collects_every_qualifying_window_in_id_order() {
+        let windows = vec![
+            json!({"stableId": "21", "address": "0x15", "pid": 42, "startTimeTicks": "124"}),
+            json!({"stableId": "17", "address": "0x11", "pid": 41, "startTimeTicks": "123"}),
+        ];
+        let facts = BTreeMap::from([
+            (
+                "21".into(),
+                WindowFact {
+                    id: 21,
+                    address: "0x15".into(),
+                    pid: 42,
+                    ticks: "124".into(),
+                },
+            ),
+            (
+                "17".into(),
+                WindowFact {
+                    id: 17,
+                    address: "0x11".into(),
+                    pid: 41,
+                    ticks: "123".into(),
+                },
+            ),
+        ]);
+        let ids = session_attributions(
+            Path::new("."),
+            &windows,
+            &facts,
+            "desktop",
+            "example-host",
+            "deploy",
+            &|_, request| {
+                Ok(json!({
+                    "schema": "agent-window-resolver.window-session.response.v1",
+                    "operation": "window-session", "requestId": request["requestId"], "status": "found",
+                    "session": {"name": "deploy", "host": "example-host", "basis": "current", "method": "remote-ancestry"},
+                    "reasons": [],
+                }))
+            },
+        );
+        assert_eq!(ids.unwrap(), (BTreeSet::from([17, 21]), false));
+    }
+
+    #[test]
+    fn sr5_preserves_unknown_when_a_window_cannot_be_read() {
+        let windows =
+            vec![json!({"stableId": "17", "address": "0x11", "pid": 41, "startTimeTicks": "123"})];
+        let facts = BTreeMap::from([(
+            "17".into(),
+            WindowFact {
+                id: 17,
+                address: "0x11".into(),
+                pid: 41,
+                ticks: "123".into(),
+            },
+        )]);
+        let result = session_attributions(
+            Path::new("."),
+            &windows,
+            &facts,
+            "desktop",
+            "example-host",
+            "deploy",
+            &|_, request| {
+                Ok(json!({
+                    "schema": "agent-window-resolver.window-session.response.v1",
+                    "operation": "window-session", "requestId": request["requestId"], "status": "unknown",
+                    "session": null, "reasons": [reason("remote_unreachable", "transport", "host unavailable", true)],
+                }))
+            },
+        );
+        assert_eq!(result.unwrap_err()[0]["code"], "remote_unreachable");
+    }
+
+    #[test]
+    fn sr5_ignores_local_tmux_failures_outside_remote_candidates() {
+        let (request, mut response, facts) =
+            session_case(17, "deploy", "example-host", "current", "remote-ancestry");
+        response["status"] = json!("unknown");
+        response["session"] = Value::Null;
+        response["reasons"] = json!([reason(
+            "local_tmux_unavailable",
+            "tmux",
+            "local tmux read failed",
+            true
+        )]);
+        assert_eq!(
+            attributed_response(&request, &response, &facts, "example-host", "deploy").unwrap(),
+            AttributionObservation::None
+        );
+    }
+
+    #[test]
+    fn sr4_uses_only_same_host_et_uncertainty_with_matching_window_identity() {
+        let (request, mut response, facts) =
+            session_case(17, "deploy", "example-host", "current", "remote-ancestry");
+        response["status"] = json!("none");
+        response["session"] = Value::Null;
+        response["uncertainty"] = json!({
+            "code": "et_hint_not_exact_proof", "transport": "et",
+            "host": "example-host.local", "window": request["window"],
+        });
+        assert_eq!(
+            attributed_response(&request, &response, &facts, "EXAMPLE-HOST", "deploy").unwrap(),
+            AttributionObservation::RelevantEtHint
+        );
+        assert_eq!(
+            attributed_response(&request, &response, &facts, "different-host", "deploy").unwrap(),
+            AttributionObservation::None
+        );
+        response["uncertainty"]["window"]["startTimeTicks"] = json!("124");
+        assert!(
+            attributed_response(&request, &response, &facts, "example-host", "deploy").is_err()
+        );
+    }
+
+    #[test]
+    fn sr4_et_hint_is_unknown_only_without_a_qualifying_window() {
+        let shows = complete(&[], "candidate_count");
+        let linked = complete(&[], "candidate_count");
+        let unresolved = format_attribution_result(&shows, Some(&linked), BTreeSet::new(), true);
+        assert_eq!(unresolved["status"], "unknown");
+        assert_eq!(unresolved["windows"], json!([]));
+        assert_eq!(unresolved["reasons"][0]["code"], "et_hint_not_exact_proof");
+
+        let absent = format_attribution_result(&shows, Some(&linked), BTreeSet::new(), false);
+        assert_eq!(absent["status"], "none");
+
+        let attributed =
+            format_attribution_result(&shows, Some(&linked), BTreeSet::from([17]), true);
+        assert_eq!(attributed["status"], "found");
+        assert_eq!(
+            attributed["windows"],
+            json!([{"window": 17, "relation": "attributed"}])
+        );
+    }
+
+    #[test]
+    fn vendored_v1_package_entry_point_returns_json() {
+        let vendor =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/agent_window_resolver");
+        let response = call_resolver(&vendor, &json!({})).unwrap();
+        assert_eq!(response["status"], "invalid");
+        assert_eq!(response["schema"], "agent-window-resolver.response.v1");
     }
 
     #[test]

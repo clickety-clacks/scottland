@@ -70,7 +70,7 @@ Every window (every representation of an object) is a channel for that object's 
 be high priority and not be represented on the desktop at all. Both coexist: there is an entire desktop
 to render them.
 
-## Sender-window lookup (part 2)
+## Sender-window lookup
 
 The `scottland-sender-window` command accepts a resolver-v1 sender target and reports every mapped
 window with a complete `visible_exact` proof as `shows`, followed by every complete
@@ -78,8 +78,19 @@ window with a complete `visible_exact` proof as `shows`, followed by every compl
 same window from `linked`. It returns `none` only when all applicable resolver collections finish
 with no match; an incomplete or unreachable observation returns `unknown` with no windows. An
 invalid sender is an error with no status. The command only reports: it does not focus, raise, move,
-switch a window or tmux client, or open a terminal. This candidate covers SR-1..4 and SR-6..7 only;
-terminal naming, attribution, and knock delivery or presentation remain outside this part.
+switch a window or tmux client, or open a terminal. Terminal attribution is described below; knock
+delivery and presentation are separate from this lookup.
+
+## Terminal attribution
+
+For a tmux sender with no `shows` or `linked` window, the lookup asks the separate read-only
+window-session resolver operation about each sole-owner window. A current session attributed to
+the sender's host and tmux session returns that window as `attributed`; a parsed launch target
+alone cannot do so. If no window qualifies but an et window to the sender's host remains
+unattributed, the lookup returns `unknown`, no windows, and `et_hint_not_exact_proof`. The hint
+keeps the observed host and exact window process identity; it neither proves an endpoint nor
+names a terminal. An et window to another host does not block a complete `none` result, and a
+failed remote read keeps its actual failure reason. The command remains report-only.
 
 ## Open
 
