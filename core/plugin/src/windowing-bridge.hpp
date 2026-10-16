@@ -2007,7 +2007,10 @@
         }
         else if (code == KEY_ESC)
         {
-            cancel_keyboard_motion(); end_window_keys(); capture_chord = false;
+            cancel_keyboard_motion(); end_window_keys();
+            // Keep consuming this physical Alt chord after the mode closes.
+            // The Alt-release path clears capture_chord once the final Alt is up.
+            if (alt_keys.empty()) capture_chord = false;
             alt_bypassed = true; // this canceled Alt chord must not start a new latch on release
         }
         else if (code == KEY_ENTER || code == KEY_KPENTER)
