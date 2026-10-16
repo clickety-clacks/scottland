@@ -70,15 +70,15 @@
         auto views = output->wset()->get_views(wf::WSET_MAPPED_ONLY);
         // Gather admits a bounded per-output snapshot. Keep the validation signature on that
         // same bound instead of rebuilding an unbounded compositor-side list after the solve.
-        if (bounded && views.size() > scottland::spread::MAX_OBSTACLES * 2) return "";
+        if (bounded && views.size() > scottland::spread::MAX_SNAPSHOT_VIEWS) return "";
         for (auto& view : views)
         {
-            if (view->get_id() == excluded) continue;
-            if (auto link = link_of_widget(view); link && link->window_id == excluded) continue;
+            auto widget = link_of_widget(view);
+            if (view->get_id() == excluded || (widget && widget->window_id == excluded)) continue;
             auto g = view->get_geometry();
             auto found = model.windows.find(view->get_id());
             out << view->get_id() << ':' << g.x << ',' << g.y << ',' << g.width << ',' << g.height << ',' <<
-                view->pending_fullscreen() << ',' << is_widget(view) << ',' <<
+                view->pending_fullscreen() << ',' << bool(widget) << ',' <<
                 (found != model.windows.end() && found->second.pinned_scale ? *found->second.pinned_scale : 0.0) << ';';
         }
         return out.str();
@@ -126,11 +126,15 @@
             return s.windows.size() + s.fixed.size() <= sp::MAX_OBSTACLES;
         };
         size_t movable = 0;
+        std::map<uint64_t, uint32_t> recency_rank;
+        if (mode == sp::mode_t::solo)
+            for (size_t rank = 0; rank < focus_recency.size(); ++rank)
+                recency_rank.emplace(focus_recency[rank], uint32_t(rank));
         auto collect_window = [&] (uint64_t id, wayfire_toplevel_view window) {
             if (solo && id == solo) return true;
             if (!window || !window->is_mapped() || !window->get_output() || window->get_output() != output)
                 return true;
-            auto shown = represented_view(id);
+            auto shown = represented_view(window);
             if (!shown || !shown->is_mapped() || shown->get_output() != output) return true;
             if (shown != window)
             {
@@ -163,8 +167,8 @@
                 (placement == zone_t::continuous ? sp::role_t::resident : sp::role_t::fixed);
             if (mode == sp::mode_t::solo)
             {
-                auto rank = std::find(focus_recency.begin(), focus_recency.end(), id);
-                w.recency = uint32_t(rank - focus_recency.begin());
+                auto rank = recency_rank.find(id);
+                w.recency = rank == recency_rank.end() ? uint32_t(focus_recency.size()) : rank->second;
                 w.side_memory = int8_t(ensure_window_memory(id).last_side);
             }
             if (mode == sp::mode_t::gather && w.role == sp::role_t::resident && ++movable > sp::MAX_MOVABLE)
@@ -176,16 +180,30 @@
         {
             // Do not refresh the whole desktop's hint entries here. Gather is per-output; walk
             // only this output and stop as soon as its raw-view or solver admission bound is hit.
+            // get_views() materializes Wayfire's list, so reject above the explicit raw-view cap
+            // before any per-view model, widget, process or geometry work.
             auto views = output->wset()->get_views(wf::WSET_MAPPED_ONLY);
-            if (views.size() > sp::MAX_OBSTACLES * 2) return std::nullopt;
+            if (views.size() > sp::MAX_SNAPSHOT_VIEWS)
+            {
+                s.unavailable_reason = "more compositor views than the bounded snapshot admits";
+                return s;
+            }
             for (auto& view : views)
             {
                 auto window = wf::toplevel_cast(view);
                 if (!window) continue;
-                auto found = model.windows.find(window->get_id());
-                if (found == model.windows.end() || window->role != wf::VIEW_ROLE_TOPLEVEL || is_widget(window) ||
+                auto id = window->get_id();
+                auto found = model.windows.find(id);
+                if (found == model.windows.end() || window->role != wf::VIEW_ROLE_TOPLEVEL ||
+                    is_widget(window) ||
                     runs_as_widget(found->second.pid)) continue;
-                if (!collect_window(window->get_id(), window)) return std::nullopt;
+                if (!collect_window(id, window))
+                {
+                    if (s.unavailable_reason.empty())
+                        s.unavailable_reason = movable > sp::MAX_MOVABLE ?
+                            "more movable windows than spread considers" : "more obstacles than spread considers";
+                    return s;
+                }
             }
         } else
         {
@@ -215,13 +233,20 @@
             auto captured = std::chrono::steady_clock::now();
             auto snapshot = spread_snapshot(output, 0, {}, scottland::spread::mode_t::gather);
             if (!snapshot) continue;
-            auto signature = spread_signature(output, 0, true);
-            if (signature.empty()) continue;
+            std::string signature;
+            if (snapshot->unavailable_reason.empty())
+            {
+                signature = spread_signature(output, 0, true);
+                if (signature.empty())
+                    snapshot->unavailable_reason = "screen changed before the bounded snapshot could be validated";
+            }
+            bool admission_stopped = !snapshot->unavailable_reason.empty();
             double snapshot_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - captured).count();
             spread_start(std::move(*snapshot), "gather", std::chrono::nanoseconds(0),
                 std::chrono::nanoseconds(0), [=] (const scottland::spread::result_t& result) {
-                    if (output_alive(output) && spread_signature(output, 0, true) == signature)
+                    if (output_alive(output) && (admission_stopped ||
+                        (!signature.empty() && spread_signature(output, 0, true) == signature)))
                     {
                         auto started = std::chrono::steady_clock::now();
                         double started_cpu = thread_cpu_ms();

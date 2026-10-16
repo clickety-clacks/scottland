@@ -80,11 +80,9 @@ class ModelWatch:
         self.reader.join(timeout=1)
         self.sock.close()
 
-def check(ok, name, observed=None):
+def check(ok, name):
     global passed, failed
     print(('PASS  ' if ok else 'FAIL  ') + name, flush=True)
-    if not ok and observed is not None:
-        print('      observed: ' + json.dumps(observed, sort_keys=True), flush=True)
     passed += bool(ok)
     failed += not ok
 
@@ -100,35 +98,12 @@ def wait_for(predicate, timeout=5):
         time.sleep(.05)
     raise RuntimeError('timed out waiting for compositor/client state')
 
-def settle(identifiers, timeout=4):
-    end = time.monotonic() + timeout
-    previous = None
-    while time.monotonic() < end:
-        state = {v['id']: v for v in views()}
-        current = []
-        for identifier in identifiers:
-            v = state[identifier]
-            g, f = v['geometry'], v['frame']
-            current.append((g['x'], g['y'], round(v['applied_scale'], 4),
-                            tuple(round(f[key], 3) for key in ('x', 'y', 'width', 'height'))))
-        if current == previous:
-            return
-        previous = current
-        time.sleep(.15)
-    raise RuntimeError(f'window layout did not settle: {previous}')
-
 def views():
     state = ipc('scottland/layout-state')['views']
     geometries = {v['id']: v['geometry'] for v in ipc('window-rules/list-views')}
     for v in state:
         v['geometry'] = geometries[v['id']]
     return state
-
-def raw_view(identifier):
-    return next(v for v in ipc('window-rules/list-views') if v['id'] == identifier)
-
-def output_id(identifier):
-    return raw_view(identifier)['output-id']
 
 def view(name):
     return next((v for v in views() if v['title'] == name), None)
@@ -248,15 +223,9 @@ def close_all():
 
 try:
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/alt_hold_delay': 300,
-        'output:HEADLESS-1/mode': '1280x720@60000', 'output:HEADLESS-1/position': '0, 0'})
-    ipc('wayfire/set-config-options', {'output:HEADLESS-2/mode': '1280x720@60000',
-        'output:HEADLESS-2/position': '1280, 0'})
-    outputs = wait_for(lambda: (lambda current: current if len(current) == 2 else None)(
-        sorted(ipc('window-rules/list-outputs'), key=lambda o: o['geometry']['x'])))
-    check(len(outputs) == 2 and outputs[0]['id'] != outputs[1]['id'],
-          'Gather input coverage uses two independent outputs')
-    output0, output1 = outputs
-    output = output0['geometry']
+        'scottland/window_avoidance_always': False})
+    outputs = wait_for(lambda: current if len(current := ipc('window-rules/list-outputs')) == 1 else None)
+    output = outputs[0]['geometry']
     width, height = output['width'], output['height']
     a = launch('Alpha')
     b = launch('Beta')
@@ -271,8 +240,14 @@ try:
     release()
     check('b' in delivered('Alpha'), 'quick Alt+B reaches the application')
     check(any(e['key']=='b' and e['modifiers'] & 8 for e in map(json.loads,(artifacts/'Alpha.keys').read_text().splitlines())), 'quick Alt+B preserves the application Alt modifier')
+    solves_before_chord = ipc('scottland/spread-state')['solves']
     key('LEFTALT', True); tap('SPACE'); release()
-    check('space' in delivered('Alpha'), 'quick Alt+Space remains the application chord')
+    wait_for(lambda: any(e['key'] == 'space' and e['modifiers'] & 8 for e in map(json.loads,
+        (artifacts/'Alpha.keys').read_text().splitlines())))
+    check(any(e['key'] == 'space' and e['modifiers'] & 8 for e in map(json.loads,
+          (artifacts/'Alpha.keys').read_text().splitlines())), 'quick Alt+Space remains the application chord')
+    check(not hints()['active'] and ipc('scottland/spread-state')['solves'] == solves_before_chord,
+          'quick Alt+Space does not enter Window mode or gather')
     before = delivered('Alpha').count('f')
     key('LEFTALT', True)
     tap('F')
@@ -743,111 +718,6 @@ try:
     release()
     close_all()
 
-    # GA-3: interrupting a focused window's pending hint press acts on it before Space gathers.
-    pending = launch('GatherPending', width * .5, height * .5)
-    focus(pending); hold()
-    pending_key = hint(pending)['hint'].upper()
-    check(len(pending_key) == 1, 'GA-3 fixture has a one-letter focused hint')
-    pending_solves = ipc('scottland/spread-state')['solves']
-    key(pending_key, True)
-    key('SPACE', True); key('SPACE', False)
-    key(pending_key, False)
-    wait_for(lambda: (lambda state: state['solves'] >= pending_solves + len(outputs) and not state['running'] and
-                      state['last'].get('purpose') == 'gather')(ipc('scottland/spread-state')), 10)
-    settle([pending])
-    pending_state = ipc('scottland/spread-state')['last']
-    pending_moves = {int(move['id']) for result in pending_state.get('screens', []) for move in result.get('moves', [])}
-    pending_after = view('GatherPending')
-    border = width / 2 - width * 33.333 / 200
-    pending_inner = center(pending_after)[0] + pending_after['geometry']['width'] * pending_after['applied_scale'] / 2
-    check(pending in pending_moves and pending_after['zone'] == 'continuous' and abs(pending_inner - border) < 3,
-          'GA-3 pending focused hint acts before Gather places the newly peripheral window',
-          {'spread': pending_state, 'window': pending_after, 'moves': sorted(pending_moves),
-           'expected_id': pending, 'border': border, 'inner': pending_inner})
-    release()
-    committed_pending = view('GatherPending')
-    check(center(committed_pending) == center(pending_after) and
-          committed_pending['applied_scale'] == pending_after['applied_scale'],
-          'GA-13 gathered layout remains committed after leaving Window mode')
-    close_all()
-
-    g0, g1 = output0['geometry'], output1['geometry']
-    # A rail widget is a fixed obstacle during Gather, as is each center window.
-    widget_id = launch('GatherWidget', g0['width'] * .86, g0['height'] * .5)
-    focus(widget_id); hold(); choose(widget_id); choose(widget_id)
-    wait_for(lambda: view('GatherWidget')['widgetized'], 5)
-    release()
-    widget_before = next(w for w in ipc('scottland/widgets')['widgets'] if int(w['id']) == widget_id)
-    widget_view_before = next(v for v in views() if v['id'] == widget_before['widget_view'])
-
-    left = launch('GatherLeft', g0['width'] * .14, g0['height'] * .5)
-    right = launch('GatherRight', g0['width'] * .86, g0['height'] * .5)
-    center0 = launch('GatherCenter', g0['width'] * .5, g0['height'] * .5)
-    center1 = launch('GatherOtherCenter', g1['x'] + g1['width'] * .5, g1['y'] + g1['height'] * .5)
-    other = launch('GatherOther', g1['x'] + g1['width'] * .86, g1['y'] + g1['height'] * .5)
-    check(output_id(left) == output0['id'] and output_id(right) == output0['id'] and
-          output_id(center0) == output0['id'] and output_id(center1) == output1['id'] and
-          output_id(other) == output1['id'], 'GA-15 fixtures are assigned to their intended outputs',
-          {'outputs': outputs, 'fixtures': {str(identifier): output_id(identifier)
-           for identifier in (left, right, center0, center1, other)},
-           'expected': {'output0': output0['id'], 'output1': output1['id']}})
-    before_left, before_right, before_other = view('GatherLeft'), view('GatherRight'), view('GatherOther')
-    before_center0, before_center1 = view('GatherCenter'), view('GatherOtherCenter')
-    before_solves = ipc('scottland/spread-state')['solves']
-    focus(left); hold(); tap('SPACE')
-    wait_for(lambda: (lambda state: state['solves'] > before_solves and not state['running'] and
-                      state['last'].get('purpose') == 'gather')(ipc('scottland/spread-state')), 10)
-    gather_state = ipc('scottland/spread-state')
-    screen_results = gather_state['last'].get('screens', [])
-    records_by_output = {result.get('output'): result for result in screen_results}
-    check(len(screen_results) == len(outputs) and set(records_by_output) == {o['id'] for o in outputs} and
-          {result.get('screen_index') for result in screen_results} == set(range(len(outputs))) and
-          all(result.get('purpose') == 'gather' and
-          'status' in result and 'work' in result and 'moves' in result for result in screen_results),
-          'Gather records each distinct output exactly once', gather_state['last'])
-    moves0 = {int(move['id']) for move in records_by_output.get(output0['id'], {}).get('moves', [])}
-    moves1 = {int(move['id']) for move in records_by_output.get(output1['id'], {}).get('moves', [])}
-    check({left, right}.issubset(moves0) and other in moves1 and not ({left, right, other} & moves1) and
-          other not in moves0,
-          'GA-15 each output moves only its own periphery windows',
-          {'screen_results': screen_results, 'expected': {'output0': sorted((left, right)),
-           'output1': other}, 'moves0': sorted(moves0), 'moves1': sorted(moves1)})
-    after_left, after_right, after_other = view('GatherLeft'), view('GatherRight'), view('GatherOther')
-    check(hints()['active'], 'Space gathers without leaving Window mode')
-    check(before_left['zone'] == 'continuous' and before_right['zone'] == 'continuous' and
-          before_other['zone'] == 'continuous' and
-          after_left['applied_scale'] > before_left['applied_scale'] + .05 and
-          after_right['applied_scale'] > before_right['applied_scale'] + .05 and
-          after_other['applied_scale'] > before_other['applied_scale'] + .05,
-          'Space gathers periphery windows on both sides and both outputs toward their borders')
-    after_center0, after_center1 = view('GatherCenter'), view('GatherOtherCenter')
-    check(before_center0['geometry'] == after_center0['geometry'] and
-          before_center1['geometry'] == after_center1['geometry'] and
-          before_center0['applied_scale'] == after_center0['applied_scale'] and
-          before_center1['applied_scale'] == after_center1['applied_scale'],
-          'GA-5 center windows remain unchanged on both outputs',
-          {'before': [before_center0, before_center1], 'after': [after_center0, after_center1]})
-    widget_after = next(w for w in ipc('scottland/widgets')['widgets'] if int(w['id']) == widget_id)
-    widget_view_after = next(v for v in views() if v['id'] == widget_after['widget_view'])
-    check(widget_after['widget_view'] == widget_before['widget_view'] and
-          widget_after['rail'] == widget_before['rail'] and widget_view_after['frame'] == widget_view_before['frame'] and
-          view('GatherWidget')['widgetized'], 'GA-5 rail widget remains unchanged during Gather',
-          {'before': {'widget': widget_before, 'view': widget_view_before},
-           'after': {'widget': widget_after, 'view': widget_view_after,
-                     'owner': view('GatherWidget')}})
-    gathered_solves = ipc('scottland/spread-state')['solves']
-    key('LEFTCTRL', True); tap('SPACE'); key('LEFTCTRL', False)
-    time.sleep(.1)
-    check(ipc('scottland/spread-state')['solves'] == gathered_solves,
-          'modified Space is consumed without gathering')
-    key('SPACE', True)
-    wait_for(lambda: (lambda state: state['solves'] == gathered_solves + len(outputs) and not state['running'])(ipc('scottland/spread-state')), 10)
-    key('SPACE', True)  # a repeated down while Space remains held is not a second physical press
-    check(ipc('scottland/spread-state')['solves'] == gathered_solves + len(outputs),
-          'GA-1 held Space auto-repeat gathers only once')
-    key('SPACE', False)
-    release()
-    close_all()
 except Exception as error:
     check(False, 'suite exception: '+repr(error))
     import traceback

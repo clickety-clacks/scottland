@@ -897,6 +897,17 @@ static void gather_fixtures()
         CHECK(b.status == a.status && b.work == a.work && b.moves.empty(),
             "gather: fixed-work budget result was not deterministic");
     }
+    // A compositor admission stop is an explicit unavailable result, never a dropped or partial solve.
+    {
+        auto s = screen(1920, 1080);
+        s.mode = scottland::spread::mode_t::gather;
+        s.unavailable_reason = "more obstacles than spread considers";
+        add_resident(s, 6, 500, 400, 420, 250);
+        auto r = solve(s);
+        CHECK(r.status == status_t::unavailable && !r.complete && r.moves.empty() &&
+              r.reason == s.unavailable_reason,
+            "gather: compositor admission failure was not reported without moves");
+    }
 }
 
 int main(int argc, char **argv)

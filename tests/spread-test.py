@@ -230,7 +230,9 @@ try:
     queue_scene = list(scene)
     for index, fixture in enumerate(((60, 80, 600, 400), (60, 520, 600, 400),
                                      (1900, 80, 600, 400), (1900, 520, 600, 400),
-                                     (900, 100, 500, 350), (1200, 300, 500, 350))):
+                                     (900, 100, 500, 350), (1200, 300, 500, 350),
+                                     (220, 120, 400, 300), (220, 760, 400, 300),
+                                     (2120, 120, 400, 300), (2120, 760, 400, 300))):
         queue_scene.append((launch(f'Queue{index}'), *fixture))
     setup(queue_scene, S)
     ipc('scottland/spread-state', {'slow': True})

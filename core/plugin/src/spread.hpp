@@ -27,6 +27,7 @@ inline constexpr double TOLERANCE = 1.0;        // overlap deeper than this is r
 inline constexpr double EDGE_MARGIN = 2.0;      // rounding-safe distance of a center from a zone edge
 inline constexpr size_t MAX_MOVABLE = 128;      // arrivals plus residents
 inline constexpr size_t MAX_OBSTACLES = 256;    // fixed rectangles plus every window
+inline constexpr size_t MAX_SNAPSHOT_VIEWS = MAX_OBSTACLES * 2; // bounded raw compositor views per output
 // About 12 ms of solving on the x86 test machine at -O2 (90 units per microsecond, tests/spread-unit.sh
 // timing); final.md started at 150,000 with a prototype that counted coarser units.
 inline constexpr uint64_t WORK_CAP = 1000000;
@@ -67,6 +68,7 @@ struct window_t
 struct snapshot_t
 {
     mode_t mode = mode_t::solo;
+    std::string unavailable_reason; // compositor-side admission stopped before solver input was complete
     double screen_width = 0, screen_height = 0;
     box workarea;                  // output-local; panels are outside it
     double padding = 0;            // WP7 screen-edge padding, kept whenever the window fits with it

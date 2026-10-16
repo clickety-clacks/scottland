@@ -362,6 +362,8 @@ class solver_t
         auto fail = [&] (status_t status, const char *reason) {
             result.status = status; result.reason = reason; return false;
         };
+        if (!S.unavailable_reason.empty())
+            return fail(status_t::unavailable, S.unavailable_reason.c_str());
         if (!(W > 0) || !(S.screen_height > 0) || !S.scale)
             return fail(status_t::unavailable, "no screen");
         if (S.windows.size() + S.fixed.size() > MAX_OBSTACLES)
