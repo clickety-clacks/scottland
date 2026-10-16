@@ -8,19 +8,18 @@ import gi
 gi.require_version('Gtk', '4.0')
 from gi.repository import Gdk, Gtk
 title, color, width, height, log_path = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
-rgb = [int(color[i:i + 2], 16) / 255 for i in (0, 2, 4)]
 log = open(log_path, 'a', buffering=1)
 def record(**event): log.write(json.dumps(event) + '\n')
 app = Gtk.Application(application_id='org.scottland.Nav' + title.replace('-', ''))
 def activate(application):
+    css = Gtk.CssProvider()
+    css.load_from_string(f"window, window * {{ background: #{color}; }}")
+    Gtk.StyleContext.add_provider_for_display(
+        Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_USER)
     window = Gtk.ApplicationWindow(application=application, title=title)
     window.set_default_size(width, height)
     window.set_decorated(False)
     area = Gtk.DrawingArea()
-    def draw(_widget, context, _width, _height, _user_data=None):
-        context.set_source_rgb(*rgb)
-        context.paint()
-    area.set_draw_func(draw, None)
     keys = Gtk.EventControllerKey.new()
     keys.connect('key-pressed', lambda c, keyval, code, state: record(key=Gdk.keyval_name(keyval)) or False)
     window.add_controller(keys)

@@ -509,6 +509,11 @@ static void release_stale_pointer_focus()
     if (restore_active_view && active_view->is_mapped())
     {
         core.seat->focus_view(active_view);
+        auto restored_view = core.seat->get_active_view();
+        LOGI("scottland: stale pointer focus restore requested_view=", active_view->get_id(),
+            " actual_view=", restored_view ? restored_view->get_id() : 0,
+            " active_node=", core.seat->get_active_node() ?
+                core.seat->get_active_node()->stringify() : "<none>");
     }
 }
 
@@ -8135,7 +8140,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             },
             [this](wf::output_t *) { apply_all(); });
         refresh_layout_avoidance();
-        LOGI("scottland: plugin loaded");
+        auto active_view = wf::get_core().seat->get_active_view();
+        auto active_node = wf::get_core().seat->get_active_node();
+        LOGI("scottland: plugin loaded active_view=", active_view ? active_view->get_id() : 0,
+            " active_node=", active_node ? active_node->stringify() : "<none>");
     }
 
     void fini() override

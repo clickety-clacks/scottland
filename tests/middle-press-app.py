@@ -7,7 +7,7 @@ import sys
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gtk4LayerShell", "1.0")
-from gi.repository import Gio, GLib, Gtk, Gtk4LayerShell as Layer
+from gi.repository import Gdk, Gio, GLib, Gtk, Gtk4LayerShell as Layer
 
 root = Path(sys.argv[1])
 events = root / "buttons.jsonl"
@@ -41,10 +41,6 @@ def make(name, layer=False):
     window.set_default_size(360, 260)
     window.set_decorated(False)
     area = Gtk.DrawingArea()
-    def draw(_area, context, _width, _height, _user_data=None):
-        context.set_source_rgb(.12, .68, .28)
-        context.paint()
-    area.set_draw_func(draw, None)
     window.set_child(area)
     click = Gtk.GestureClick.new()
     click.set_button(0)
@@ -76,6 +72,10 @@ def commands():
 
 
 def activate(_application):
+    css = Gtk.CssProvider()
+    css.load_from_string("window, window * { background: #1fad47; }")
+    Gtk.StyleContext.add_provider_for_display(
+        Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_USER)
     make("A")
     make("B")
     GLib.timeout_add(25, commands)
