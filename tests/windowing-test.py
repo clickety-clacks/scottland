@@ -100,6 +100,23 @@ def wait_for(predicate, timeout=5):
         time.sleep(.05)
     raise RuntimeError('timed out waiting for compositor/client state')
 
+def settle(identifiers, timeout=4):
+    end = time.monotonic() + timeout
+    previous = None
+    while time.monotonic() < end:
+        state = {v['id']: v for v in views()}
+        current = []
+        for identifier in identifiers:
+            v = state[identifier]
+            g, f = v['geometry'], v['frame']
+            current.append((g['x'], g['y'], round(v['applied_scale'], 4),
+                            tuple(round(f[key], 3) for key in ('x', 'y', 'width', 'height'))))
+        if current == previous:
+            return
+        previous = current
+        time.sleep(.15)
+    raise RuntimeError(f'window layout did not settle: {previous}')
+
 def views():
     state = ipc('scottland/layout-state')['views']
     geometries = {v['id']: v['geometry'] for v in ipc('window-rules/list-views')}
