@@ -76,6 +76,8 @@ extern "C" {
 #include "inertia.hpp"
 #include <chrono>
 #include "hint-overlay.hpp"
+#include "note-overlay.hpp"
+#include "window-notes.hpp"
 #include <wayfire/scene-operations.hpp>
 #include "key-layers.hpp"
 #include "session.hpp"
@@ -88,10 +90,13 @@ extern "C" {
 #include <cmath>
 #include <ctime>
 #include <map>
+#include <limits>
 #include <set>
 #include <regex>
 #include <optional>
 #include <tuple>
+#include <limits>
+#include <climits>
 #include <signal.h>
 extern "C" {
 #include <sys/pidfd.h>  // glibc declares it without C linkage for C++
@@ -143,6 +148,19 @@ uint32_t now_msec()
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+uint64_t monotonic_msec64()
+{
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return uint64_t(ts.tv_sec) * 1000 + uint64_t(ts.tv_nsec / 1000000);
+}
+
+int64_t unix_msec()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
 std::string upper(std::string text)
@@ -968,6 +986,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> goo_dye_density{"scottland/goo_dye_density"};
     // Keep parsing the historical key so existing user config still opts in.
     wf::option_wrapper_t<bool> hint_avoidance_always{"scottland/hint_avoidance_always"};
+    wf::option_wrapper_t<std::string> agentd_hub_url{"scottland/agentd_hub_url"};
     wf::option_wrapper_t<std::string> color_scheme{"scottland/color_scheme"};
     wf::option_wrapper_t<wf::color_t> accent_color{"scottland/accent_color"};
     wf::option_wrapper_t<wf::color_t> attention_color{"scottland/attention_color"};
@@ -1680,6 +1699,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             stop_widget_transition(toplevel);
             set_fullscreen_filter_hidden(toplevel, false);
             model.windows.erase(toplevel->get_id());
+            model.notes.erase(toplevel->get_id());
+            clear_note_dot(toplevel->get_id());
             render_hidden(toplevel, false);  // return our lease even if Wayfire already unmapped it
             if (auto frame = frame_of(toplevel, false))
             {
@@ -1726,6 +1747,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         publish_model();
+        update_note_visuals();
         refresh_layout_avoidance();
     };
     wf::wl_idle_call idle_focus;
@@ -1800,6 +1822,46 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::optional<double> pin;
     };
 
+    struct provenance_record_t
+    {
+        std::optional<std::string> name, sender, launcher, knock;
+        int64_t launched_at = 0;
+
+        wf::json_t snapshot() const
+        {
+            wf::json_t result = wf::json_t::object();
+            if (name) result["name"] = *name;
+            if (sender) result["sender"] = *sender;
+            if (launcher) result["launcher"] = *launcher;
+            result["launched_at"] = launched_at;
+            if (knock) result["knock"] = *knock;
+            return result;
+        }
+    };
+
+    struct provenance_pending_t
+    {
+        provenance_record_t record;
+        pid_t pid = 0;
+        uint64_t start_ticks = 0;
+        uint64_t accepted_monotonic_ms = 0;
+        uint64_t sequence = 0;
+        std::vector<scottland::window_notes::note_t> staged_notes;
+    };
+
+    struct process_identity_t
+    {
+        pid_t parent = 0;
+        uint64_t start_ticks = 0;
+        char state = 'X';
+    };
+
+    struct pending_activation_surface_t
+    {
+        std::vector<std::string> tokens;
+        wf::wl_listener_wrapper destroyed;
+    };
+
     struct window_state_t
     {
         std::weak_ptr<wf::view_interface_t> view;
@@ -1814,6 +1876,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::optional<double> pinned_scale;          // kept by Shift during drag or arrow motion (L31)
         std::optional<scottland::windowing::window_memory> placement;
         std::optional<paired_placement_t> paired_placement;
+        std::optional<provenance_record_t> provenance;
+        std::optional<std::string> provenance_token;
         std::optional<scottland::windowing::point> pending_rail; // refine on widget adoption
         std::set<std::string> attention;
     };
@@ -1903,6 +1967,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint64_t version = 0;
         std::string session;
         std::map<uint64_t, window_state_t> windows;
+        std::map<uint64_t, std::vector<scottland::window_notes::note_t>> notes;
+        int64_t next_note_id = 1;
         std::map<uint64_t, widget_link_t> widgets;    // keyed by the app window
         widget_mode_t widget_mode = widget_mode_t::expanded;  // the mode taps choose; survives a reload
         std::optional<widget_mode_t> widget_mode_held;        // Super+M held: momentary until released
@@ -1912,6 +1978,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::set<uint64_t> selected;                 // reserved for future multi-select
         std::set<wf::output_t*> focused_outputs;     // a fullscreen window in front: focus (FS1)
     } model;
+    #include "window-notes-bridge.hpp"
+    // Provenance declarations live only in the plugin. Bound records are part of window_state_t;
+    // pending declarations and their xdg tokens expire together and are never written to disk.
+    std::map<std::string, provenance_pending_t> pending_provenance;
+    std::map<std::string, uint64_t> provenance_tokens_expire_at;
+    std::map<wlr_surface*, std::shared_ptr<pending_activation_surface_t>> pending_activation_surfaces;
+    uint64_t provenance_sequence = 0;
+    wf::wl_timer<false> provenance_expiration;
     struct rail_layout_motion_t
     {
         std::weak_ptr<wf::view_interface_t> view;
@@ -2467,6 +2541,363 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // global for apps to bind.
     wlr_xdg_activation_v1 *activation = nullptr;
     wf::wl_listener_wrapper on_activate;
+    static constexpr uint64_t PROVENANCE_TTL_MS = 60000;
+
+    static std::optional<process_identity_t> read_process_identity(pid_t pid)
+    {
+        if (pid <= 1) return std::nullopt;
+        std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+        std::string line;
+        if (!std::getline(stat, line)) return std::nullopt;
+        auto close = line.rfind(')');
+        if (close == std::string::npos) return std::nullopt;
+
+        std::istringstream fields(line.substr(close + 1));
+        char state = 'X';
+        long long parent = 0;
+        if (!(fields >> state >> parent) || parent < 0 || parent > std::numeric_limits<pid_t>::max())
+            return std::nullopt;
+        std::string ignored;
+        for (int field = 5; field <= 21; ++field)
+            if (!(fields >> ignored)) return std::nullopt;
+        uint64_t start_ticks = 0;
+        if (!(fields >> start_ticks) || state == 'Z' || state == 'X') return std::nullopt;
+        return process_identity_t{static_cast<pid_t>(parent), start_ticks, state};
+    }
+
+    static bool sender_rest_has_space_or_control(const std::string& value)
+    {
+        auto unicode_space = [] (uint32_t cp)
+        {
+            return cp == 0x0085 || cp == 0x00a0 || cp == 0x1680 ||
+                (cp >= 0x2000 && cp <= 0x200a) || cp == 0x2028 || cp == 0x2029 ||
+                cp == 0x202f || cp == 0x205f || cp == 0x3000;
+        };
+        for (size_t i = 0; i < value.size(); )
+        {
+            auto first = static_cast<unsigned char>(value[i]);
+            uint32_t cp = 0;
+            size_t width = 0;
+            if (first < 0x80)
+            {
+                cp = first;
+                width = 1;
+            } else if ((first & 0xe0) == 0xc0)
+            {
+                cp = first & 0x1f;
+                width = 2;
+            } else if ((first & 0xf0) == 0xe0)
+            {
+                cp = first & 0x0f;
+                width = 3;
+            } else if ((first & 0xf8) == 0xf0)
+            {
+                cp = first & 0x07;
+                width = 4;
+            } else
+            {
+                return true;  // invalid UTF-8 is not a sender id
+            }
+            if (i + width > value.size()) return true;
+            for (size_t j = 1; j < width; ++j)
+            {
+                auto next = static_cast<unsigned char>(value[i + j]);
+                if ((next & 0xc0) != 0x80) return true;
+                cp = (cp << 6) | (next & 0x3f);
+            }
+            if ((width == 2 && cp < 0x80) || (width == 3 && cp < 0x800) ||
+                (width == 4 && cp < 0x10000) || cp > 0x10ffff ||
+                (cp >= 0xd800 && cp <= 0xdfff)) return true;
+            if (cp <= 0x20 || (cp >= 0x7f && cp <= 0x9f) || unicode_space(cp)) return true;
+            i += width;
+        }
+        return false;
+    }
+
+    static bool valid_sender_id(const std::string& value)
+    {
+        auto colon = value.find(':');
+        if (colon == std::string::npos || colon == 0 || colon + 1 == value.size()) return false;
+        auto first = static_cast<unsigned char>(value[0]);
+        if (first < 'a' || first > 'z') return false;
+        for (size_t i = 0; i < colon; ++i)
+        {
+            auto c = static_cast<unsigned char>(value[i]);
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                c == '+' || c == '.' || c == '-')) return false;
+        }
+        return !sender_rest_has_space_or_control(value);
+    }
+
+    void clear_pending_surface_token(const std::string& token)
+    {
+        for (auto it = pending_activation_surfaces.begin(); it != pending_activation_surfaces.end(); )
+        {
+            auto& tokens = it->second->tokens;
+            tokens.erase(std::remove(tokens.begin(), tokens.end(), token), tokens.end());
+            if (tokens.empty()) it = pending_activation_surfaces.erase(it);
+            else ++it;
+        }
+    }
+
+    void destroy_activation_token(const std::string& token)
+    {
+        if (!activation) return;
+        auto existing = wlr_xdg_activation_v1_find_token(activation, token.c_str());
+        if (existing) wlr_xdg_activation_token_v1_destroy(existing);
+    }
+
+    void arm_provenance_expiration()
+    {
+        if (provenance_tokens_expire_at.empty())
+        {
+            provenance_expiration.disconnect();
+            return;
+        }
+        auto earliest = std::min_element(provenance_tokens_expire_at.begin(), provenance_tokens_expire_at.end(),
+            [] (const auto& a, const auto& b) { return a.second < b.second; })->second;
+        auto now = monotonic_msec64();
+        auto delay = std::max<uint64_t>(1, earliest > now ? earliest - now : 1);
+        provenance_expiration.set_timeout(static_cast<int>(std::min<uint64_t>(delay, INT_MAX)), [=] ()
+        {
+            expire_provenance_tokens();
+        });
+    }
+
+    void expire_provenance_tokens()
+    {
+        auto now = monotonic_msec64();
+        for (auto it = provenance_tokens_expire_at.begin(); it != provenance_tokens_expire_at.end(); )
+        {
+            if (it->second > now) { ++it; continue; }
+            const auto token = it->first;
+            pending_provenance.erase(token);
+            clear_pending_surface_token(token);
+            it = provenance_tokens_expire_at.erase(it);
+            destroy_activation_token(token);
+        }
+        arm_provenance_expiration();
+    }
+
+    wf::json_t declare_provenance(wf::json_t data)
+    {
+        if (!data.is_object() || !data.has_member("pid") || !data["pid"].is_int64())
+            return wf::ipc::json_error("provenance declaration needs integer \"pid\"");
+        if (data.has_member("launched_at"))
+            return wf::ipc::json_error("launched_at is set by Scottland and cannot be declared");
+
+        size_t expected_fields = 1;
+        for (auto key : {"name", "sender", "launcher", "knock"})
+        {
+            if (!data.has_member(key)) continue;
+            ++expected_fields;
+            if (!data[key].is_string() || data[key].as_string().empty())
+                return wf::ipc::json_error(std::string("provenance field \"") + key + "\" must be a non-empty string");
+            if (std::string(key) == "sender" && !valid_sender_id(data[key].as_string()))
+                return wf::ipc::json_error("sender must be a sender id with a namespace and non-empty rest");
+        }
+        if (data.size() != expected_fields)
+            return wf::ipc::json_error("provenance declaration has an unknown field");
+
+        auto raw_pid = data["pid"].as_int64();
+        if (raw_pid <= 1 || raw_pid > std::numeric_limits<pid_t>::max())
+            return wf::ipc::json_error("pid must name a live process");
+        auto pid = static_cast<pid_t>(raw_pid);
+        auto identity = read_process_identity(pid);
+        if (!identity) return wf::ipc::json_error("pid must name a live process");
+        if (!activation)
+            return wf::ipc::json_error("xdg-activation is unavailable for provenance tokens");
+
+        provenance_record_t record;
+        if (data.has_member("name")) record.name = data["name"].as_string();
+        if (data.has_member("sender")) record.sender = data["sender"].as_string();
+        if (data.has_member("launcher")) record.launcher = data["launcher"].as_string();
+        if (data.has_member("knock")) record.knock = data["knock"].as_string();
+
+        wlr_xdg_activation_token_v1 *created = nullptr;
+        const auto prior_timeout = activation->token_timeout_msec;
+        activation->token_timeout_msec = PROVENANCE_TTL_MS;
+        created = wlr_xdg_activation_token_v1_create(activation);
+        activation->token_timeout_msec = prior_timeout;
+        if (!created)
+            return wf::ipc::json_error("could not create a provenance activation token");
+        const char *token_name = wlr_xdg_activation_token_v1_get_name(created);
+        if (!token_name || !*token_name)
+        {
+            wlr_xdg_activation_token_v1_destroy(created);
+            return wf::ipc::json_error("could not name a provenance activation token");
+        }
+        std::string token(token_name);
+        if (provenance_tokens_expire_at.count(token))
+        {
+            wlr_xdg_activation_token_v1_destroy(created);
+            return wf::ipc::json_error("wlroots returned a duplicate provenance activation token");
+        }
+
+        auto accepted = monotonic_msec64();
+        record.launched_at = unix_msec();
+        pending_provenance.emplace(token, provenance_pending_t{
+            record, pid, identity->start_ticks, accepted, ++provenance_sequence});
+        provenance_tokens_expire_at.emplace(token, accepted + PROVENANCE_TTL_MS);
+        arm_provenance_expiration();
+        auto reply = wf::ipc::json_ok();
+        reply["token"] = token;
+        reply["launched_at"] = record.launched_at;
+        return reply;
+    }
+
+    void forget_pending_activation_surface(wlr_surface *surface)
+    {
+        auto found = pending_activation_surfaces.find(surface);
+        if (found != pending_activation_surfaces.end()) pending_activation_surfaces.erase(found);
+    }
+
+    void remember_pending_activation_surface(wlr_surface *surface, const std::string& token)
+    {
+        if (!surface) return;
+        auto found = pending_activation_surfaces.find(surface);
+        if (found == pending_activation_surfaces.end())
+        {
+            auto pending_surface = std::make_shared<pending_activation_surface_t>();
+            pending_surface->destroyed.set_callback([=] (void*)
+            {
+                pending_activation_surfaces.erase(surface);
+            });
+            pending_surface->destroyed.connect(&surface->events.destroy);
+            found = pending_activation_surfaces.emplace(surface, std::move(pending_surface)).first;
+        }
+        found->second->tokens.push_back(token);
+    }
+
+    void discard_pending_provenance(const std::string& token)
+    {
+        pending_provenance.erase(token);
+        clear_pending_surface_token(token);
+        // Keep the token in the suppression set through its original expiry. It must never
+        // fall back to ordinary activation after its one provenance binding was consumed.
+        arm_provenance_expiration();
+    }
+
+    bool bind_provenance(const std::string& token, wayfire_toplevel_view view)
+    {
+        auto pending = pending_provenance.find(token);
+        if (pending == pending_provenance.end() || !view || !view->is_mapped()) return false;
+        observe_view(view);
+        auto& state = model.windows[view->get_id()];
+        if (!state.provenance)
+        {
+            state.provenance = pending->second.record;
+            state.provenance_token = token;
+            auto staged_notes = std::move(pending->second.staged_notes);
+            if (!staged_notes.empty())
+            {
+                auto& notes = model.notes[view->get_id()];
+                for (auto& note : staged_notes) notes.push_back(std::move(note));
+            }
+            discard_pending_provenance(token);
+            publish_model();
+            if (!staged_notes.empty()) update_note_visuals();
+            return true;
+        }
+        discard_pending_provenance(token);
+        return true;
+    }
+
+    bool bind_pending_activation_on_map(wayfire_toplevel_view view)
+    {
+        auto surface = view ? view->get_wlr_surface() : nullptr;
+        auto found = surface ? pending_activation_surfaces.find(surface) : pending_activation_surfaces.end();
+        if (found == pending_activation_surfaces.end()) return false;
+        auto tokens = found->second->tokens;
+        forget_pending_activation_surface(surface);
+        expire_provenance_tokens();
+        bool handled = false;
+        for (const auto& token : tokens)
+        {
+            auto known = provenance_tokens_expire_at.find(token);
+            if (known == provenance_tokens_expire_at.end()) continue;
+            if (pending_provenance.count(token))
+                bind_provenance(token, view);
+            handled = true;
+        }
+        arm_provenance_expiration();
+        return handled;
+    }
+
+    bool bind_pending_by_process(wayfire_toplevel_view view)
+    {
+        if (!view || !view->is_mapped() || view->parent) return false;
+        auto state = model.windows.find(view->get_id());
+        if (state == model.windows.end() || state->second.provenance) return false;
+        expire_provenance_tokens();
+
+        std::set<pid_t> visited;
+        std::vector<std::pair<pid_t, process_identity_t>> path;
+        pid_t pid = state->second.pid;
+        std::string selected;
+        while (pid > 1 && visited.insert(pid).second)
+        {
+            auto identity = read_process_identity(pid);
+            if (!identity) return false;
+            path.emplace_back(pid, *identity);
+            const provenance_pending_t *newest = nullptr;
+            for (const auto& [token, pending] : pending_provenance)
+            {
+                if (pending.pid == pid && pending.start_ticks == identity->start_ticks &&
+                    (!newest || pending.sequence > newest->sequence))
+                {
+                    newest = &pending;
+                    selected = token;
+                }
+            }
+            if (newest) break;  // the first match is the nearest declared ancestor
+            pid = identity->parent;
+        }
+        if (selected.empty()) return false;
+
+        // Confirm that the ancestry used above still names the same live processes before binding.
+        // A child can be reparented while it maps, and a recycled PID must not inherit a record.
+        for (const auto& [path_pid, before] : path)
+        {
+            auto after = read_process_identity(path_pid);
+            if (!after || after->parent != before.parent || after->start_ticks != before.start_ticks ||
+                after->state != before.state) return false;
+        }
+        return bind_provenance(selected, view);
+    }
+
+    bool handle_provenance_activation(wlr_surface *surface, wlr_xdg_activation_token_v1 *token,
+        wayfire_toplevel_view view)
+    {
+        if (!token) return false;
+        const char *name = wlr_xdg_activation_token_v1_get_name(token);
+        if (!name || !*name) return false;
+        const std::string token_name(name);
+        auto known = provenance_tokens_expire_at.find(token_name);
+        if (known == provenance_tokens_expire_at.end())
+        {
+            expire_provenance_tokens();
+            return false;
+        }
+        if (known->second <= monotonic_msec64())
+        {
+            expire_provenance_tokens();
+            return true;  // stale provenance tokens never regain ordinary activation effects
+        }
+        expire_provenance_tokens();
+        auto pending = pending_provenance.find(token_name);
+        if (pending == pending_provenance.end())
+        {
+            return true;  // a PV-5-bound token still has no activation side effects
+        }
+        if (view && view->is_mapped())
+        {
+            bind_provenance(token_name, view);
+            return true;
+        }
+        remember_pending_activation_surface(surface, token_name);
+        return true;
+    }
 
     void start_activation()
     {
@@ -2494,6 +2925,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             auto ev = static_cast<wlr_xdg_activation_v1_request_activate_event*>(data);
             auto view = wf::toplevel_cast(ev->surface ? wf::wl_surface_to_wayfire_view(ev->surface->resource) : nullptr);
+            if (handle_provenance_activation(ev->surface, ev->token, view)) return;
             if (view && view->is_mapped())
             {
                 handle_activation(view, ev->token);
@@ -3257,6 +3689,38 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!entries.is_array())
         {
             model.version = std::max(model.version, (uint64_t)entries["version"].as_int64());
+            if (entries.has_member("next_note_id") && entries["next_note_id"].is_int())
+                model.next_note_id = std::max<int64_t>(1, entries["next_note_id"].as_int64());
+            if (entries.has_member("notes") && entries["notes"].is_array())
+            {
+                auto saved_notes = entries["notes"];
+                for (size_t i = 0; i < saved_notes.size(); ++i)
+                {
+                    auto saved_window = saved_notes[i];
+                    if (!saved_window.has_member("id") || !saved_window["id"].is_int()) continue;
+                    const auto window_id = saved_window["id"].as_int64();
+                    if (window_id <= 0 || !model.windows.count(uint64_t(window_id)) ||
+                        !saved_window.has_member("notes") || !saved_window["notes"].is_array()) continue;
+                    auto saved_list = saved_window["notes"];
+                    auto& notes = model.notes[uint64_t(window_id)];
+                    for (size_t j = 0; j < saved_list.size(); ++j)
+                    {
+                        auto saved = saved_list[j];
+                        if (!saved.has_member("id") || !saved["id"].is_int() ||
+                            !saved.has_member("writer") || !saved["writer"].is_string() ||
+                            !saved.has_member("text") || !saved["text"].is_string()) continue;
+                        scottland::window_notes::note_t note{saved["id"].as_int64(),
+                            saved["writer"].as_string(), saved["text"].as_string()};
+                        if (note.id <= 0 || !scottland::window_notes::valid_writer(note.writer) ||
+                            !scottland::window_notes::valid_text(note.text)) continue;
+                        notes.push_back(note);
+                        if (note.id < std::numeric_limits<int64_t>::max())
+                            model.next_note_id = std::max(model.next_note_id, note.id + 1);
+                    }
+
+                    if (notes.empty()) model.notes.erase(uint64_t(window_id));
+                }
+            }
             auto mode = entries.has_member("widget_mode") ?
                 parse_widget_mode(entries["widget_mode"].as_string()) : std::nullopt;
             model.widget_mode = mode ? *mode :
@@ -3273,6 +3737,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 }
                 found->second.scale = entry["scale"].as_double();
                 if (entry.has_member("placement")) found->second.placement = read_memory(entry["placement"]);
+                if (entry.has_member("provenance") && entry["provenance"].is_object() &&
+                    entry["provenance"].has_member("launched_at") && entry["provenance"]["launched_at"].is_int64())
+                {
+                    auto value = entry["provenance"];
+                    provenance_record_t record;
+                    if (value.has_member("name") && value["name"].is_string()) record.name = value["name"].as_string();
+                    if (value.has_member("sender") && value["sender"].is_string()) record.sender = value["sender"].as_string();
+                    if (value.has_member("launcher") && value["launcher"].is_string()) record.launcher = value["launcher"].as_string();
+                    if (value.has_member("knock") && value["knock"].is_string()) record.knock = value["knock"].as_string();
+                    record.launched_at = value["launched_at"].as_int64();
+                    found->second.provenance = std::move(record);
+                }
                 if (entry.has_member("pending_rail")) found->second.pending_rail = scottland::windowing::point{
                     entry["pending_rail"]["x"].as_double(), entry["pending_rail"]["y"].as_double()};
                 if (entry.has_member("pinned_scale") && entry["pinned_scale"].is_double())
@@ -3291,6 +3767,27 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 {
                     found->second.attention.insert(sources[j].as_string());
                 }
+            }
+            if (entries.has_member("provenance_tokens") && entries["provenance_tokens"].is_array())
+            {
+                auto tokens = entries["provenance_tokens"];
+                auto now = monotonic_msec64();
+                for (size_t i = 0; i < tokens.size(); i++)
+                {
+                    auto token = tokens[i];
+                    if (!token.has_member("window") || !token["window"].is_int64() ||
+                        !token.has_member("token") || !token["token"].is_string() ||
+                        !token.has_member("expires_at") || !token["expires_at"].is_int64()) continue;
+                    auto id = (uint64_t)token["window"].as_int64();
+                    auto value = token["token"].as_string();
+                    auto expires_at = (uint64_t)token["expires_at"].as_int64();
+                    auto state = model.windows.find(id);
+                    if (value.empty() || expires_at <= now || state == model.windows.end() ||
+                        !state->second.provenance) continue;
+                    state->second.provenance_token = value;
+                    provenance_tokens_expire_at[value] = expires_at;
+                }
+                arm_provenance_expiration();
             }
             entries = entries["links"];
         }
@@ -4274,6 +4771,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::json_t model_snapshot(const std::string& slice)
     {
+        if (slice == "notes") return notes_slice_snapshot();
         auto reply = wf::ipc::json_ok();
         reply["collapsed"] = model.widget_mode == widget_mode_t::collapsed;
         reply["widget_mode"] = widget_mode_name(model.widget_mode);
@@ -4319,6 +4817,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["collapsed"] = represented && represented->collapsed;
                 if (slice == "desktop")
                 {
+                    if (state.provenance) entry["provenance"] = state.provenance->snapshot();
                     if (model.drag.morph && model.drag.morph->dragged.lock().get() == state.view.lock().get())
                     {
                         entry["form"] = "morphing";
@@ -4402,10 +4901,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     bool installing_model = true;  // no partial init/handover snapshots escape
     std::map<std::string, std::string> published_slices;
     std::map<std::string, uint64_t> published_versions;
+    uint64_t published_version(const std::string& slice) const
+    {
+        auto found = published_versions.find(slice);
+        return found == published_versions.end() ? model.version : found->second;
+    }
     // A transaction that changes many windows at once (a spread commit) publishes the model once
     // at its end instead of once per change: each publish serializes the whole desktop.
     int publish_batch = 0;
     bool publish_pending = false;
+    bool publish_force_notes_pending = false;
     struct publish_batch_t
     {
         scottland_plugin_t *self;
@@ -4415,12 +4920,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (--self->publish_batch == 0 && self->publish_pending)
             {
                 self->publish_pending = false;
-                self->publish_model();
+                const bool force_notes = self->publish_force_notes_pending;
+                self->publish_force_notes_pending = false;
+                self->publish_model(force_notes);
             }
         }
     };
 
-    void publish_model()
+    void publish_model(bool force_notes = false)
     {
         if (installing_model)
         {
@@ -4430,44 +4937,41 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (publish_batch)
         {
             publish_pending = true;
+            publish_force_notes_pending = publish_force_notes_pending || force_notes;
             return;
         }
 
-        auto full = model_snapshot("desktop");
-        auto text = full.serialize();
-        if (published_slices["desktop"] == text)
-        {
-            return;
-        }
-
-        model.version++;
-        published_slices["desktop"] = text;
-        full["version"] = (int64_t)model.version;
-        send_ipc_event(full, "scottland-model#");
-        for (auto slice : {"widgets", "attention"})
+        std::map<std::string, wf::json_t> changed;
+        for (auto slice : {"desktop", "widgets", "attention", "notes"})
         {
             auto snapshot = model_snapshot(slice);
             auto value = snapshot.serialize();
-            if (published_slices[slice] != value)
-            {
-                published_slices[slice] = value;
-                published_versions[slice] = model.version;
-                snapshot["version"] = (int64_t)model.version;
-                send_ipc_event(snapshot, std::string("scottland-") + slice + "#");
-            }
+            if ((std::string(slice) == "notes" && force_notes) || published_slices[slice] != value)
+                changed.emplace(slice, std::move(snapshot));
+        }
+
+        if (changed.empty()) return;
+        model.version++;
+        for (auto& [slice, snapshot] : changed)
+        {
+            published_slices[slice] = model_snapshot(slice).serialize();
+            published_versions[slice] = model.version;
+            snapshot["version"] = (int64_t)model.version;
+            const std::string event = slice == "desktop" ? "scottland-model#" : "scottland-" + slice + "#";
+            send_ipc_event(snapshot, event);
         }
     }
 
     wf::ipc::method_callback desktop_state = [=] (wf::json_t data) -> wf::json_t
     {
         std::string slice = data.has_member("slice") && data["slice"].is_string() ? data["slice"].as_string() : "desktop";
-        if ((slice != "desktop") && (slice != "widgets") && (slice != "attention"))
+        if ((slice != "desktop") && (slice != "widgets") && (slice != "attention") && (slice != "notes"))
         {
             return wf::ipc::json_error("unknown desktop-model slice");
         }
 
         auto reply = model_snapshot(slice);
-        reply["version"] = (int64_t)model.version;
+        reply["version"] = (int64_t)published_version(slice);
         return reply;
     };
     wf::ipc::method_callback_full subscribe_model = [=] (wf::json_t data, wf::ipc::client_interface_t *client) -> wf::json_t
@@ -4497,7 +5001,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         auto reply = wf::ipc::json_ok();
         reply["widgets"] = widget_snapshot();
-        reply["version"] = (int64_t)model.version;
+        reply["version"] = (int64_t)published_version("widgets");
         return reply;
     };
 
@@ -7400,6 +7904,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
             observe_view(toplevel);
+            if (!bind_pending_activation_on_map(toplevel))
+                bind_pending_by_process(toplevel);
             if (!model.widgets.empty())
             {
                 adopt_widget(toplevel);
@@ -8052,6 +8558,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/widgets", widgets_state);
         ipc_repo->register_method("scottland/desktop-model", desktop_state);
         ipc_repo->register_method("scottland/subscribe", subscribe_model);
+        ipc_repo->register_method("scottland/notes", notes_method);
+        ipc_repo->register_method("scottland/provenance-declare", [=] (wf::json_t data)
+        {
+            return declare_provenance(std::move(data));
+        });
         if (getenv("SCOTTLAND_TEST_MODEL") && std::string(getenv("SCOTTLAND_TEST_MODEL")) == "1")
         {
             ipc_repo->register_method("scottland/audit-model", audit_model);
@@ -8153,6 +8664,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             },
             [this](wf::output_t *) { apply_all(); });
         refresh_layout_avoidance();
+        update_note_visuals();
+        LOGI("scottland: plugin loaded");
     }
 
     void fini() override
@@ -8162,7 +8675,26 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().bindings->rem_binding(&on_move);
         wf::get_core().bindings->rem_binding(&on_move_shift);
         bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
+        wf::json_t provenance_token_handover = wf::json_t::array();
+        std::set<std::string> preserved_provenance_tokens;
+        if (reloading)
+        {
+            auto now = monotonic_msec64();
+            for (const auto& [id, state] : model.windows)
+            {
+                if (!state.provenance || !state.provenance_token) continue;
+                auto expires = provenance_tokens_expire_at.find(*state.provenance_token);
+                if (expires == provenance_tokens_expire_at.end() || expires->second <= now) continue;
+                wf::json_t entry;
+                entry["window"] = (int64_t)id;
+                entry["token"] = *state.provenance_token;
+                entry["expires_at"] = (int64_t)expires->second;
+                provenance_token_handover.append(entry);
+                preserved_provenance_tokens.insert(*state.provenance_token);
+            }
+        }
         installing_model = reloading;  // teardown is also part of the atomic handover
+        clear_note_overlays();
         widget_peek_tick.disconnect();
         goo.stop();
         fini_window_keys();
@@ -8228,6 +8760,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/widgets");
         ipc_repo->unregister_method("scottland/desktop-model");
         ipc_repo->unregister_method("scottland/subscribe");
+        ipc_repo->unregister_method("scottland/notes");
+        ipc_repo->unregister_method("scottland/provenance-declare");
         ipc_repo->unregister_method("scottland/audit-model");
         on_title.disconnect();
         on_app_id.disconnect();
@@ -8246,6 +8780,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_focus_request.disconnect();
         on_new_transaction.disconnect();
         on_activate.disconnect();
+        provenance_expiration.disconnect();
+        for (const auto& [token, expiry] : provenance_tokens_expire_at)
+        {
+            if (!preserved_provenance_tokens.count(token)) destroy_activation_token(token);
+        }
+        pending_provenance.clear();
+        provenance_tokens_expire_at.clear();
+        pending_activation_surfaces.clear();
         // Unloading gives every app its window back. A reload (scottland-reload marks it) hands the
         // widgets over instead: they stay, their windows stay hidden, and the new plugin takes
         // the links from a file (WG5).
@@ -8287,6 +8829,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto snapshot = model_snapshot("desktop");
             snapshot["version"] = (int64_t)model.version;
             snapshot["links"] = handover;
+            snapshot["notes"] = notes_windows_snapshot();
+            snapshot["next_note_id"] = model.next_note_id;
+            snapshot["provenance_tokens"] = provenance_token_handover;
             auto path = runtime_file(".widget-handover.json");
             std::ofstream out(path + ".tmp");
             out << snapshot.serialize();
