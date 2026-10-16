@@ -487,7 +487,7 @@ static void release_stale_pointer_focus()
     auto active_view = core.seat->get_active_view();
     auto active_node = core.seat->get_active_node();
     bool restore_active_view = active_view && active_view->is_mapped() && active_node &&
-        (wf::node_to_view(active_node) == active_view);
+        ((wf::node_to_view(active_node) == active_view) || (active_node == focus));
 
     auto top = focus.get();
     while (top->parent()) top = top->parent();

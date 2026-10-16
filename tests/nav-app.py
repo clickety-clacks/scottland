@@ -17,7 +17,7 @@ def activate(application):
     window.set_default_size(width, height)
     window.set_decorated(False)
     area = Gtk.DrawingArea()
-    def draw(_widget, context, _width, _height, _user_data):
+    def draw(_widget, context, _width, _height):
         context.set_source_rgb(*rgb)
         context.paint()
     area.set_draw_func(draw)

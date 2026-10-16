@@ -200,6 +200,12 @@ def setup(a_x=280, b_x=680):
                  what="show Middle-" + title)
     place("A", a_x, 240, 360, 260)
     place("B", b_x, 240, 360, 260)
+    for title in ("A", "B"):
+        g = geometry(title)
+        if not wait_fixture_pixel(f"ready-{title}",
+                                  g["x"] + g["width"] / 2,
+                                  g["y"] + g["height"] / 2):
+            raise RuntimeError(f"Middle-{title} fixture surface did not draw before focus")
     focus("A")
     settle("A", "B")
 
