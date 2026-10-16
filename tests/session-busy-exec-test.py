@@ -11,7 +11,8 @@ as "no running Scottland session", so clients launched back to back failed to st
    loop; no input layer is bypassed, the launches take the normal scottland-exec path), launch
    eight clients, wait until each launch has either started its client or exited, then SIGCONT.
    Oracle for both: every client maps in the compositor (window-rules/list-views), not anything
-   scottland-exec says about itself.
+   scottland-exec says about itself. Route IPC through headless.sh so it reaches this test's private
+   session runtime, and look below the headless wrapper for the launched client.
 3. Gone sessions, in a scratch runtime directory: one whose socket file has no listener (what a
    dead compositor leaves) and one whose socket file is missing. scottland-exec --display exits
    with "no running Scottland session" and --list lists neither. The timeout is a hang deadline.
@@ -23,7 +24,6 @@ import os
 import shutil
 import signal
 import socket
-import struct
 import subprocess
 import sys
 import time
@@ -34,7 +34,6 @@ headless = str(repo / "tests/headless.sh")
 exec_tool = str(repo / "build/hooks/libexec/scottland-exec")
 session_dir = Path(os.environ["SCOTTLAND_HEADLESS_DIR"])
 artifacts = Path(sys.argv[1])
-runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
 display = (session_dir / "display").read_text().strip()
 passed = failed = 0
 launched = {}  # app-id -> (launcher process, its log file)
@@ -48,36 +47,14 @@ def check(ok, name, detail=None):
     return ok
 
 
-def recorded_socket():
-    for entry in (runtime / "scottland" / f"{display}.env").read_bytes().split(b"\0"):
-        if entry.startswith(b"WAYFIRE_SOCKET="):
-            return entry.split(b"=", 1)[1].decode()
-    raise RuntimeError(f"{display}.env records no WAYFIRE_SOCKET")
-
-
-wayfire_socket = recorded_socket()
-
-
 def ipc(method, data=None):
-    with socket.socket(socket.AF_UNIX) as sock:
-        # A blocking connect waits while the accept queue is full instead of failing; the socket
-        # timeouts are a hang deadline only.
-        deadline = struct.pack("ll", 10, 0)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, deadline)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, deadline)
-        sock.connect(wayfire_socket)
-
-        def receive(n):
-            data = b""
-            while len(data) < n:
-                chunk = sock.recv(n - len(data))
-                if not chunk:
-                    raise ConnectionError("compositor disconnected")
-                data += chunk
-            return data
-        body = json.dumps({"method": method, "data": data or {}}).encode()
-        sock.sendall(struct.pack("<I", len(body)) + body)
-        return json.loads(receive(struct.unpack("<I", receive(4))[0]))
+    command = [headless, "ipc", method]
+    if data:
+        command.append(json.dumps(data))
+    result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+    if result.returncode:
+        raise RuntimeError(f"headless IPC {method} failed: {result.stderr.strip()}")
+    return json.loads(result.stdout)
 
 
 def mapped():
@@ -127,10 +104,18 @@ def started_client(app_id):
     process, _ = launched[app_id]
     if process.poll() is not None:
         return True
-    try:
-        return os.path.basename(os.readlink(f"/proc/{process.pid}/exe")) == "foot"
-    except OSError:
-        return process.poll() is not None
+    # Popen owns the outer headless.sh shell, which waits on bwrap. The client is a
+    # descendant in this launch's private process group, not the wrapper's PID.
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        pid = int(entry.name)
+        try:
+            if os.getpgid(pid) == process.pid and os.path.basename(os.readlink(entry / "exe")) == "foot":
+                return True
+        except OSError:
+            continue
+    return process.poll() is not None
 
 
 def compositor_pid():
