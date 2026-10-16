@@ -80,9 +80,11 @@ class ModelWatch:
         self.reader.join(timeout=1)
         self.sock.close()
 
-def check(ok, name):
+def check(ok, name, observed=None):
     global passed, failed
     print(('PASS  ' if ok else 'FAIL  ') + name, flush=True)
+    if not ok and observed is not None:
+        print('      observed: ' + json.dumps(observed, sort_keys=True), flush=True)
     passed += bool(ok)
     failed += not ok
 
@@ -330,10 +332,11 @@ try:
     check(near(center(view('Alpha')), saved[0]) and near(center(view('Beta')), saved[1]),
           'temporary window avoidance leaves true window geometry unchanged')
     wait_for(lambda: all(not h['visible'] for h in hints()['hints']))
+    wait_for(lambda: all(not h['visible'] and abs(h['dx'])+abs(h['dy']) < .1 for h in hints()['hints']))
     after_release = {h['window']: h for h in hints()['hints']}
     check(all(abs(h['dx'])+abs(h['dy']) < .1 for h in after_release.values()) and
           all(not h['visible'] for h in after_release.values()),
-          'Alt release removes hints and eases every visual offset to zero')
+          'Alt release removes hints and eases every visual offset to zero', after_release)
     focus(a); tap('X'); time.sleep(.1)
     check(any(e['key']=='x' and e['modifiers']==0 for e in map(json.loads,(artifacts/'Alpha.keys').read_text().splitlines())), 'mode release leaves no stuck modifiers in the app')
     for modifier in ('LEFTMETA','LEFTCTRL','LEFTSHIFT'):
@@ -354,13 +357,14 @@ try:
     key('LEFTMETA', False)
     key('LEFTALT', True)
     time.sleep(.45)
-    check(not hints()['active'], 'Alt alone during an ongoing drag never opens hints')
+    check(not hints()['active'], 'Alt alone during an ongoing drag never opens hints',
+          {'hints': hints(), 'window': view('Alpha')})
     ipc('stipc/move_cursor', {'x': round(width*.2), 'y': round(height*.4)})
     ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
     time.sleep(.45)
     check(view('Alpha')['zone'] == 'continuous' and view('Alpha')['applied_scale'] < .95,
-          'Alt drag follows periphery scale and no longer pins')
-    check(not hints()['active'], 'Alt drag chord cannot enter hints after drop')
+          'Alt drag follows periphery scale and no longer pins', view('Alpha'))
+    check(not hints()['active'], 'Alt drag chord cannot enter hints after drop', hints())
     release()
     check(not next(w for w in ipc('scottland/desktop-model')['windows'] if w['id'] == a).get('pinned_scale'),
           'Alt drop leaves no scale pin')
@@ -374,7 +378,8 @@ try:
     ipc('stipc/feed_button',{'combo':'BTN_LEFT','mode':'release'})
     time.sleep(.4)
     pinned = view('Alpha')['applied_scale']
-    check(pinned > .999 and view('Alpha')['zone'] == 'continuous', 'Shift drag pins full scale in periphery')
+    check(pinned > .999 and view('Alpha')['zone'] == 'continuous', 'Shift drag pins full scale in periphery',
+          {'window': view('Alpha'), 'desktop': ipc('scottland/desktop-model')})
     key('LEFTSHIFT',False)
     check(abs(view('Alpha')['applied_scale'] - pinned) < .003, 'Shift drop pin persists after Shift release')
     f=view('Alpha')['frame']; cx,cy=f['x']+f['width']/2,f['y']+f['height']/2
@@ -385,9 +390,10 @@ try:
     ipc('stipc/feed_button',{'combo':'BTN_LEFT','mode':'release'})
     key('LEFTMETA',False);key('LEFTSHIFT',False);time.sleep(.4)
     check(center(view('Alpha'))[0]>width*.7 and view('Alpha')['applied_scale']>.99,
-          'Super+Shift drag starts a move and keeps scale pinned')
+          'Super+Shift drag starts a move and keeps scale pinned', view('Alpha'))
     state = ipc('scottland/desktop-model')['windows']
-    check(next(w for w in state if w['id'] == a).get('pinned_scale') == pinned, 'desktop model publishes the drag scale pin')
+    check(next(w for w in state if w['id'] == a).get('pinned_scale') == pinned,
+          'desktop model publishes the drag scale pin', next(w for w in state if w['id'] == a))
     hold(); choose(a); release()
     check(view('Alpha')['zone'] == 'center' and view('Alpha')['applied_scale'] > .999 and
           'pinned_scale' not in next(w for w in ipc('scottland/desktop-model')['windows'] if w['id'] == a),
@@ -405,7 +411,8 @@ try:
     key('LEFTALT', False); key('LEFTMETA', False)
     time.sleep(.4)
     check(view('Alpha')['geometry']['width'] > old['width'] and not hints()['active'] and
-          near(center(view('Alpha')), (cx, cy)), 'Super+Alt real drag resizes around center without hints')
+          near(center(view('Alpha')), (cx, cy)), 'Super+Alt real drag resizes around center without hints',
+          {'old': old, 'window': view('Alpha'), 'hints': hints(), 'expected_center': (cx, cy)})
     # Stable assignment after an earlier window closes; Tab/F4 use real input.
     hold(); choose(b); tap('F4')
     wait_for(lambda: view('Beta') is None)
@@ -419,7 +426,8 @@ try:
     drag('Alpha',width*.2,height*.5)
     key('LEFTALT',True);tap('TAB')
     check(ipc('scottland/center-switcher')['count']==0 and ipc('scottland/center-switcher')['selected']==0,
-          'zero center windows previews an empty set')
+          'zero center windows previews an empty set',
+          {'switcher': ipc('scottland/center-switcher'), 'window': view('Alpha')})
     release()
     drag('Alpha',width*.5,height*.5)
     c = launch('Gamma')
@@ -662,9 +670,9 @@ try:
     wait_for(lambda: any(v['widget'] for v in views()))
     time.sleep(.5)
     before = hints()['hints']
-    runtime = Path(os.environ['XDG_RUNTIME_DIR'])
+    runtime = Path(os.environ['SCOTTLAND_SESSION_DIR'])
     display = (Path(os.environ['SCOTTLAND_HEADLESS_DIR'])/'display').read_text().strip()
-    mark = runtime/'scottland'/(display+'.reloading')
+    mark = runtime/(display+'.reloading')
     mark.touch()
     fresh = Path(os.environ['SCOTTLAND_HEADLESS_DIR'])/'libscottland-windowing-reload.so'
     subprocess.run(['cp','build/libscottland.so',str(fresh)],check=True)
