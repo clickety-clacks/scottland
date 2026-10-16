@@ -155,6 +155,22 @@ int main()
             check(ok, "2 a 60 px wide window peeks with its whole width, depth 24 x text scale " + std::to_string(s));
         }
     }
+    // Foreground halo pixels count as cover too: the proof strip must clear the drawn frame,
+    // not merely the app body's geometry.
+    {
+        peek_request r; r.screen = screen;
+        r.windows = {window({200, 200, 500, 400}), window({300, 300, 300, 200})};
+        r.windows[0].occlusion_margin = 18;
+        auto res = solve(r);
+        rectangle halo{182, 182, 536, 436};
+        const auto& room = res[1].room;
+        bool room_clear = room.width > 0 && room.height > 0 &&
+            !(room.x < halo.x + halo.width - 1e-9 && halo.x < room.x + room.width - 1e-9 &&
+              room.y < halo.y + halo.height - 1e-9 && halo.y < room.y + room.height - 1e-9);
+        check(res[1].outcome == peek_outcome::moved && room_clear &&
+            shows(r.windows[1].frame, res[1].target, 100, 24, screen, {halo}),
+            "2 the returned strip clears the foreground frame's rendered halo margin");
+    }
     // 3. Exactness against a brute force over integer offsets.
     {
         std::mt19937 rng(7);

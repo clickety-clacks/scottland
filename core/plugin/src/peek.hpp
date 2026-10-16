@@ -50,6 +50,7 @@ struct offset_box { double x1, x2, y1, y2; }; // closed box of allowed offsets
 struct peek_window                     // one per ordinary window, front to back
 {
     rectangle frame{0, 0, 0, 0};       // true drawn rectangle (zone scale, no avoidance offset)
+    double occlusion_margin = 0;       // visible frame pixels beyond `frame`, in logical units
     double zone_x1 = 0, zone_x2 = 0;   // P13: the displayed center x stays inside
     double center_y1 = 0, center_y2 = 0; // the displayed center y stays on screen
     bool anchored = false;             // focused (during a drag: the dragged window): never moves

@@ -33,6 +33,7 @@ exec(src[:src.index('\ntry:\n')])  # its helpers: ipc, wait, check, setup, press
 results = []
 FOCUSED_PEEKS = False  # WK13: the focused window never moves for avoidance (not yet decided otherwise)
 STRIP_D, STRIP_L, EDGE = 24, 100, 2   # EDGE: the frame's own antialiased outline
+STRIP_SCALE = 1.0  # WK13 scales the required strip by the active desktop text scale.
 COLORS = {'Small': '#e02828', 'Big': '#2850c8', 'Other': '#28b450', 'Cover': '#c8a028', 'Probe': '#c828b4'}
 NEUTRALS = ['#181818', '#2a2a2a', '#505058', '#6e6e78', '#8c8c96', '#b4b4be', '#e6e6ee']
 CENTER_PCT = 33.333
@@ -69,10 +70,12 @@ def scene(id):
     return (f['x'], f['y'], f['x'] + f['width'], f['y'] + f['height'])
 
 
-def capture(name):
+def capture(name, keep_ppm=False):
     png = art / (name + '.png')
     subprocess.run(['grim', str(png)], check=True)
     data = subprocess.check_output(['grim', '-t', 'ppm', '-'])
+    if keep_ppm:
+        (art / (name + '.ppm')).write_bytes(data)
     parts, pos = [], 0
     while len(parts) < 4:
         while data[pos:pos + 1].isspace(): pos += 1
@@ -124,7 +127,7 @@ def strip_of(rows, color, size):
             if current: return True
         return False
     fw, fh = size
-    d, l = STRIP_D - EDGE, STRIP_L - EDGE
+    d, l = STRIP_D * STRIP_SCALE - EDGE, STRIP_L * STRIP_SCALE - EDGE
     return (fits(min(l, fw - EDGE), min(d, fh - EDGE)) or fits(min(d, fw - EDGE), min(l, fh - EDGE))), count
 
 
@@ -139,8 +142,10 @@ def observe(name, phase, covered, title, quiet=False):
     found, count = strip_of(labels_of(image), COLORS[title], (x2 - x1, y2 - y1))
     h = hint(covered)
     row = {'case': name, 'phase': phase, 'strip_in_pixels': found, 'pixels': count,
+           'text_scale': STRIP_SCALE,
            'scene_frame': [round(v, 1) for v in (x1, y1, x2, y2)],
-           'diagnostic': {k: h.get(k) for k in ('outcome', 'rung', 'rule')}}
+           'diagnostic': {k: h.get(k) for k in ('outcome', 'rung', 'rule', 'solve_frame', 'drawn',
+               'dx', 'dy', 'target_dx', 'target_dy', 'room', 'hint_size', 'clearance', 'visible_fraction')}}
     if not quiet:
         results.append(row)
         print(f'      {name} [{phase}]: {json.dumps(row)}', flush=True)
@@ -156,14 +161,82 @@ def settled():
     until(ready, 8, 'avoidance settled')
 
 
-def pointer_drag(id, to, coast=False):
+def drag_snapshot():
+    return ipc('scottland/desktop-model').get('drag', {})
+
+
+def drag_is_active_for(drag, window):
+    return drag.get('started') is True and drag.get('window') == window
+
+
+def drag_is_idle(drag):
+    return not drag.get('started', False) and drag.get('window', 0) in (0, None)
+
+
+def pointer_drag(id, to, coast=False, require_drag=False, diagnostic=None):
     """Super+press on the window's drawn center and move to `to`; the button stays down."""
     x1, y1, x2, y2 = scene(id); x, y = (x1 + x2) / 2, (y1 + y2) / 2
-    pointer(x, y); time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.1)
+    start = (x, y)
+    if diagnostic is not None:
+        diagnostic.update({'window': id, 'drawn_frame_at_start': [round(v, 1) for v in (x1, y1, x2, y2)],
+                           'pointer_start_commanded': [round(x, 1), round(y, 1)],
+                           'pointer_target_commanded': [round(v, 1) for v in to],
+                           'focused_before_pointer': focused_id()})
+    pointer(x, y)
+    if require_drag:
+        until(lambda: (focused_id() == id, {'expected': id, 'focused': focused_id()}),
+              3, f'{id} focused under the drag pointer')
+    time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.1)
+    if require_drag:
+        # Move beyond the 6 px click slop while the button is still held before asserting drag
+        # ownership; checking immediately after press observes focus before move activation.
+        dx, dy = to[0] - x, to[1] - y
+        distance = math.hypot(dx, dy)
+        if distance <= 0:
+            raise Unready(f'{id} drag target has no movement from its drawn center')
+        nudge = min(12.0, distance)
+        # Pace the threshold-crossing movement over several actual input events. A single
+        # absolute jump can leave the headless compositor with focus but no owned move grab.
+        nudge_steps = max(1, math.ceil(nudge / 3.0))
+        for step in range(1, nudge_steps + 1):
+            amount = nudge * step / nudge_steps
+            x = start[0] + dx * amount / distance
+            y = start[1] + dy * amount / distance
+            pointer(x, y)
+            time.sleep(.02)
+        def actual_drag():
+            drag = drag_snapshot()
+            focused = focused_id()
+            state = {'expected': id, 'focused': focused, 'started': drag.get('started'),
+                     'window': drag.get('window')}
+            return (focused == id and drag_is_active_for(drag, id), state)
+        try:
+            until(actual_drag, 3, f'{id} is the focused window actually being dragged')
+        except Unready as error:
+            frame_name = f'drag-unready-{id}'
+            capture_status = 'saved'
+            try:
+                capture(frame_name, keep_ppm=True)
+            except Exception as capture_error:
+                capture_status = f'unavailable: {type(capture_error).__name__}: {capture_error}'
+            drag = drag_snapshot()
+            diagnostic = {'expected': id, 'focused': focused_id(), 'started': drag.get('started'),
+                          'window': drag.get('window'),
+                          'start': [round(v, 1) for v in start],
+                          'target': [round(v, 1) for v in to],
+                          'nudge_px': round(nudge, 1), 'nudge_events': nudge_steps,
+                          'scene_frame': [round(v, 1) for v in scene(id)],
+                          'capture': capture_status}
+            raise Unready(f'{error}; gesture={json.dumps(diagnostic)}') from error
+        if diagnostic is not None:
+            diagnostic['drag_after_slop'] = drag_snapshot()
     steps = 6 if coast else 24
     for i in range(1, steps + 1):  # pacing a gesture
         pointer(x + (to[0] - x) * i / steps, y + (to[1] - y) * i / steps); time.sleep(.008 if coast else .02)
-    return (to[0] - x, to[1] - y)
+    if diagnostic is not None:
+        diagnostic['drag_before_release'] = drag_snapshot()
+        diagnostic['pointer_target_commanded'] = [round(v, 1) for v in to]
+    return (to[0] - start[0], to[1] - start[1])
 
 
 def release():
@@ -191,6 +264,9 @@ try:
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/window_avoidance_always': True,
         'place/mode': 'pointer', 'scottland/goo_shine': 0.0, 'scottland/goo_relief': 0.5,
         'scottland/goo_overlap_film': 0.0})
+    STRIP_SCALE = float(hints()['hint_text_scale'])
+    if not math.isfinite(STRIP_SCALE) or STRIP_SCALE <= 0:
+        raise RuntimeError(f'invalid hint text scale: {STRIP_SCALE}')
     out = ipc('window-rules/list-outputs')[0]['geometry']
     W, H = out['width'], out['height']
     S = launch_colored('Small', 400, 300); B = launch_colored('Big', 760, 560); C = launch_colored('Other', 460, 360)
@@ -259,18 +335,125 @@ try:
 
     def grab_small_while_peeking():
         # Cover it first, so it peeks; then grab its strip where it is drawn and drop it (WK27 commit).
+        # The preceding soloed-cover case can leave Big represented by a widget. Present it
+        # explicitly and restore the fixture geometry so this path starts with a real cover view.
+        ipc('scottland/present', {'window': B})
+        until(lambda: (not layout(B).get('widgetized', False) and layout(B).get('applied_scale', 0) >= .99,
+                       layout(B)), 6, 'Big presented as a full window before the grabbed fixture')
+        place(B, 40, 60, 760, 560)
+        ipc('window-rules/focus-view', {'id': B})
+        until(lambda: (focused_id() == B, focused_id()), 3, 'Big focused before the grabbed fixture')
+        settle([B, S, C])
+
+        def full_cover_window_ready():
+            state = layout(B); frame = scene(B); g = geometry(B)
+            return (not state.get('widgetized', False) and abs(state.get('applied_scale', 0) - 1.0) < .02 and
+                    focused_id() == B and
+                    abs((frame[2] - frame[0]) - g['width']) <= 24 and
+                    abs((frame[3] - frame[1]) - g['height']) <= 24,
+                    {'widgetized': state.get('widgetized'), 'applied_scale': state.get('applied_scale'),
+                     'scene_size': [frame[2] - frame[0], frame[3] - frame[1]],
+                     'geometry_size': [g['width'], g['height']]})
+        until(full_cover_window_ready, 3, 'Big is drawn at full window size before covering Small')
+
+        cover_before_frame = scene(B)
+        small_before_frame = scene(S)
+        cover_before_layout = layout(B)
+        cover_before_geometry = geometry(B)
+        cover_before_image = capture('grabbed-while-peeking-cover-before-drag', keep_ppm=True)
+        cover_before_found, cover_before_pixels = strip_of(
+            labels_of(cover_before_image), COLORS['Small'],
+            (small_before_frame[2] - small_before_frame[0], small_before_frame[3] - small_before_frame[1]))
+        before_drag = {'cover_scene_frame': [round(v, 1) for v in cover_before_frame],
+                       'cover_geometry': cover_before_geometry, 'cover_layout': cover_before_layout,
+                       'small_scene_frame': [round(v, 1) for v in small_before_frame],
+                       'small_red_pixels': cover_before_pixels,
+                       'small_strip_in_pixels': cover_before_found,
+                       'focused': focused_id(), 'drag': drag_snapshot()}
+        print(f'      grabbed-while-peeking before-cover-drag: {json.dumps(before_drag)}', flush=True)
+
         x1, y1, x2, y2 = scene(S)
-        pointer_drag(B, ((x1 + x2) / 2, (y1 + y2) / 2)); release(); settled()
-        found, row = observe('grabbed-while-peeking', 'peeking-before-grab', S, 'Small')
-        if not found: raise Unready(f'Small does not peek before the grab: {row}')
+        gesture = {}
+        pointer_drag(B, ((x1 + x2) / 2, (y1 + y2) / 2), require_drag=True, diagnostic=gesture)
+        print(f'      grabbed-while-peeking cover-drag-before-release: {json.dumps(gesture)}', flush=True)
+        release()
+        def cover_drag_ended():
+            drag = drag_snapshot()
+            return drag_is_idle(drag), {'started': drag.get('started'), 'window': drag.get('window')}
+        until(cover_drag_ended, 3, 'cover drag ended before checking the peek fixture')
+        settled()
+        def cover_ready():
+            found, row = observe('grabbed-while-peeking', 'peeking-before-grab', S, 'Small', quiet=True)
+            drawn_area = (row['scene_frame'][2] - row['scene_frame'][0]) * (row['scene_frame'][3] - row['scene_frame'][1])
+            return (found and row['pixels'] <= drawn_area * .5, row)
+        try:
+            row = until(cover_ready, 4, 'Small is mostly covered while its peek strip is visible')
+        except Unready as error:
+            capture_status = 'saved'
+            try:
+                capture('grabbed-while-peeking-cover-unready', keep_ppm=True)
+            except Exception as capture_error:
+                capture_status = f'unavailable: {type(capture_error).__name__}: {capture_error}'
+            state = {'cover_layout': layout(B), 'cover_scene_frame': [round(v, 1) for v in scene(B)],
+                     'cover_geometry': geometry(B), 'drag': drag_snapshot(), 'focused': focused_id(),
+                     'before_drag': before_drag, 'gesture': gesture,
+                     'capture': capture_status}
+            raise Unready(f'{error}; post_drop={json.dumps(state)}') from error
+        results.append(row)
+        print(f"      grabbed-while-peeking [peeking-before-grab]: {json.dumps(row)}", flush=True)
+        if not row['strip_in_pixels']: raise Unready(f'Small does not peek before the grab: {row}')
+        drawn_area = (row['scene_frame'][2] - row['scene_frame'][0]) * (row['scene_frame'][3] - row['scene_frame'][1])
+        if row['pixels'] > drawn_area * .5:
+            capture_status = 'saved'
+            try:
+                capture('grabbed-while-peeking-cover-unready', keep_ppm=True)
+            except Exception as capture_error:
+                capture_status = f'unavailable: {type(capture_error).__name__}: {capture_error}'
+            state = {'cover_layout': layout(B), 'cover_scene_frame': [round(v, 1) for v in scene(B)],
+                     'cover_geometry': geometry(B), 'drag': drag_snapshot(), 'focused': focused_id(),
+                     'capture': capture_status}
+            raise Unready(f'Small is mostly exposed, so the cover fixture was not established: {row}; '
+                          f'post_drop={json.dumps(state)}')
         sx1, sy1, sx2, sy2 = scene(S); fx = scene(B)
         gx, gy = (sx1 + 8, (sy1 + sy2) / 2) if sx1 < fx[0] - 10 else (sx2 - 8, (sy1 + sy2) / 2) if sx2 > fx[2] + 10 else \
             ((sx1 + sx2) / 2, sy1 + 8) if sy1 < fx[1] - 10 else ((sx1 + sx2) / 2, sy2 - 8)
         pointer(gx, gy); time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.2)
         pointer(gx + 3, gy + 3); time.sleep(.3); release()
-        until(lambda: (ipc('scottland/desktop-model').get('drag', {}).get('dragged', 0) in (0, None), 'dragging'), 3, 'grab ended')
-        # Clear the cover off it again, back where it started, so the case's own cover starts clear.
-        pointer_drag(B, (40 + 760 / 2, 60 + 560 / 2)); release(); settled()
+        def grab_ended():
+            drag = drag_snapshot()
+            return drag_is_idle(drag), drag
+        until(grab_ended, 3, 'grab ended')
+        # Clear the cover off it again so the case's own cover starts clear. Pointer focus is active
+        # for this fixture; move off Small before asking to focus B.
+        bx1, by1, bx2, by2 = scene(B)
+        pointer((bx1 + bx2) / 2, (by1 + by2) / 2)
+        ipc('window-rules/focus-view', {'id': B})
+        def reset_drag_ready():
+            drag = drag_snapshot()
+            focused = focused_id()
+            idle = drag_is_idle(drag)
+            return (focused == B and idle,
+                    {'expected_cover': B, 'focused': focused, 'started': drag.get('started'),
+                     'window': drag.get('window')})
+        until(reset_drag_ready, 3, 'cover focused and prior grab cleared for reset drag')
+        # Confirm the reset gesture really starts on B, but end at the output center. The nominal
+        # base center (420,340) is outside the 1280px output's center zone and docks B to the rail.
+        pointer_drag(B, (W / 2, H / 2), require_drag=True)
+        def reset_drag_is_b():
+            drag = drag_snapshot()
+            focused = focused_id()
+            state = {'focused': focused, 'started': drag.get('started'), 'window': drag.get('window')}
+            return (focused == B and drag_is_active_for(drag, B), state)
+        reset_drag = until(reset_drag_is_b, 3, 'reset pointer drag belongs to focused cover B')
+        check(reset_drag['focused'] == B and drag_is_active_for(reset_drag, B),
+              'cover B is the actual focused and dragged window during the reset')
+        release(); settled()
+        def reset_drag_ended():
+            drag = drag_snapshot()
+            return drag_is_idle(drag), drag
+        until(reset_drag_ended, 3, 'reset cover drag ended')
+        # Fixture geometry and focus are IPC setup, not another product gesture.
+        setup(base, C)
 
     def solo_big():
         ipc('window-rules/focus-view', {'id': B})
