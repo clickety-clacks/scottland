@@ -54,6 +54,8 @@ def state(name):
 
 def center(v):
     g=v['geometry']; return (g['x']+g['width']/2,g['y']+g['height']/2)
+def shown_center(v):
+    f=v.get('scene_frame',v['frame']); return (f['x']+f['width']/2,f['y']+f['height']/2)
 def near(a,b,eps=1): return math.dist(a,b)<=eps
 def launch(name):
     (out/(name+'.keys')).write_text('')
@@ -215,11 +217,14 @@ try:
             check(all(any(not v['hidden'] and (v['id']==a or v['widget']) for v in sample['views']) for sample in samples),code+' retains a visible representation throughout handoff')
             (out/(code.lower()+'-morph.json')).write_text(json.dumps(samples))
             screenshot(code.lower()+'-rail')
-        drag('InertiaA',w*.05,h/2); origin=center(state('InertiaA'))
+        drag('InertiaA',w*.05,h/2); before=state('InertiaA'); origin=center(before)
+        shown_origin=shown_center(before)
         check(not state('InertiaA')['widgetized'],'precise pointer drop may already overlap the rail')
         hold(); tap('LEFT'); wait_for(lambda:state('InertiaA')['widgetized'])
-        contact=state('InertiaA'); f=contact.get('scene_frame',contact['frame'])
-        check(abs(f['x']+f['width']/2-origin[0])<2,'outward push from an overlapping drop morphs without snapping inward')
+        contact=state('InertiaA')
+        (out/'overlapping-drop-morph.json').write_text(json.dumps({'before':before,'after':contact},indent=2))
+        check(abs(shown_center(contact)[0]-shown_origin[0])<2,
+              'outward push from an overlapping drop starts at its previously drawn position')
         tap('ESC'); coast(.8); release()
         # Esc stops the coast, while the explicit push's widget landing remains.
         drag('InertiaA',w/2,h/2); origin=center(state('InertiaA')); hold(); tap('LEFT'); coast(1.5); tap('ESC'); coast(.8); release()
