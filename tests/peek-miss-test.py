@@ -320,6 +320,15 @@ try:
         until(drag_started_for_big, 3, 'Big is the actual reset drag target')
         release()
         until(drag_ended, 3, 'reset drag ended')
+        # The reset gesture can touch a rail and leave Big widgetized; restore the
+        # same ordinary-window fixture before the enclosing case's real cover drag.
+        if layout(B)['widgetized']:
+            ipc('scottland/present', {'window': B})
+            until(lambda: (not layout(B)['widgetized'], layout(B)), 3,
+                  'Big restored from widget after reset drag')
+            settle([B])
+        place(B, 40, 60, 760, 560)
+        settle([B])
         settled()
 
     def solo_big():
