@@ -232,8 +232,9 @@ def close_all():
 
 try:
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/alt_hold_delay': 300,
-        'output:HEADLESS-1/mode': '1280x720@60000', 'output:HEADLESS-1/position': '0, 0',
-        'output:HEADLESS-2/mode': '1280x720@60000', 'output:HEADLESS-2/position': '1280, 0'})
+        'output:HEADLESS-1/mode': '1280x720@60000', 'output:HEADLESS-1/position': '0, 0'})
+    ipc('wayfire/set-config-options', {'output:HEADLESS-2/mode': '1280x720@60000',
+        'output:HEADLESS-2/position': '1280, 0'})
     outputs = wait_for(lambda: (lambda current: current if len(current) == 2 else None)(
         sorted(ipc('window-rules/list-outputs'), key=lambda o: o['geometry']['x'])))
     check(len(outputs) == 2 and outputs[0]['id'] != outputs[1]['id'],
