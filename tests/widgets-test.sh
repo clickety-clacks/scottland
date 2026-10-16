@@ -12,6 +12,14 @@ check() { local name=$1; shift; if "$@"; then pass "$name"; else fail "$name"; f
 
 h()    { tests/headless.sh ipc "$@" >/dev/null; }
 ipc()  { tests/headless.sh ipc "$@"; }
+# The canonical runner binds its private runtime inside each `run` invocation.
+# Access runtime records through that namespace, not from this outer shell.
+hrun() { tests/headless.sh run "$@"; }
+headless_json_field() {
+  hrun python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' "$1" "$2"
+}
+headless_first_line() { hrun sed -n '1p' "$1"; }
+headless_path_absent() { hrun sh -c 'test ! -e "$1"' sh "$1"; }
 views() { ipc scottland/layout-state; }
 view_field() {  # view_field <title-substring> <python expr over v (view) and f (frame)>
   views | python3 -c "
@@ -151,14 +159,14 @@ check "WG9 its Title property is the window title" \
 
 # WG10: a badge announced the standard way (Unity launcher API, per .desktop id).
 unit=$(ipc scottland/widgets | python3 -c "import json,sys; print(json.load(sys.stdin)['widgets'][0]['widget_unit'])")
-desktop=$(python3 -c "import json; print(json.load(open('$state_dir/$unit.json')).get('desktop',''))")
+desktop=$(headless_json_field "$state_dir/$unit.json" desktop)
 bus emit /com/canonical/unity/launcherentry/1 com.canonical.Unity.LauncherEntry Update "sa{sv}" \
   "application://${desktop:-foot}.desktop" 2 count x 7 count-visible b true
 sleep 0.8
 check "WG10 a launcher badge reaches the widget (Badge property)" \
   [ "$(bus get-property org.scottland.Widgets "/org/scottland/widget/$id" org.scottland.Widget Badge)" = "x 7" ]
 check "WG10 ...and its state file (what the card shows)" \
-  [ "$(python3 -c "import json; print(json.load(open('$state_dir/$unit.json'))['badge'])")" = 7 ]
+  [ "$(headless_json_field "$state_dir/$unit.json" badge)" = 7 ]
 bus emit /com/canonical/unity/launcherentry/1 com.canonical.Unity.LauncherEntry Update "sa{sv}" \
   "application://${desktop:-foot}.desktop" 1 progress d 0.5
 sleep 0.5
@@ -215,7 +223,7 @@ f=v['frame']; sys.exit(0 if abs(f['x']+f['width']/2 - $restore_x) < 30 and abs(f
 check "WG5 ...and the widget is gone (dismissed, not closed)" \
   [ "$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = 0 ]
 check "WG12 StateChanged told the app it's back (not widgetized)" grep -q "StateChanged (uint32 $app_pid, false" "$signals"
-check "WG9 the widget's state files are gone" bash -c "! ls '$state_dir'/$unit.json 2>/dev/null | grep -q ."
+check "WG9 the widget's state files are gone" headless_path_absent "$state_dir/$unit.json"
 
 # WG5: closing the widget closes the app's window.
 read -r ax ay aw ah <<<"$(view_field widget-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
@@ -344,22 +352,22 @@ sleep 1
 # A reload after an update replaces a widget service running older code (and keeps a current one).
 hooks_dir=$(tests/headless.sh run sh -c 'echo $SCOTTLAND_HOOKS')
 bus_pid_file=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.widget-bus.pid
-old_bus=$(sed -n 1p "$bus_pid_file")
+old_bus=$(headless_first_line "$bus_pid_file")
 tests/headless.sh run "$hooks_dir/reload.d/08-widget-bus"; sleep 1
-check "reload keeps a widget service that runs the installed code" [ "$(sed -n 1p "$bus_pid_file")" = "$old_bus" ]
-printf '%s\n%s\n' "$old_bus" "fingerprint-of-older-code" >"$bus_pid_file"  # as if it predated an update
+check "reload keeps a widget service that runs the installed code" [ "$(headless_first_line "$bus_pid_file")" = "$old_bus" ]
+hrun sh -c 'printf "%s\n%s\n" "$1" "fingerprint-of-older-code" >"$2"' sh "$old_bus" "$bus_pid_file"  # as if it predated an update
 tests/headless.sh run "$hooks_dir/reload.d/08-widget-bus"; sleep 2
-new_bus=$(sed -n 1p "$bus_pid_file")
+new_bus=$(headless_first_line "$bus_pid_file")
 check "reload replaces a widget service older than the installed code" \
   bash -c "[ '$new_bus' != '$old_bus' ] && ! kill -0 '$old_bus' 2>/dev/null && kill -0 '$new_bus' && tests/headless.sh run busctl --user status org.scottland.Widgets >/dev/null"
 
 # WG10: the session's palette file (what the card's colors follow).
 palette=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.palette.json
 tests/headless.sh run "$hooks_dir/libexec/scottland-color-scheme" ensure; sleep 2
-watcher=$(sed -n 1p "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.color-scheme.pid")
+watcher=$(headless_first_line "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.color-scheme.pid")
 check "WG10 the session's palette file has every color" \
-  python3 -c "import json,re,sys; p=json.load(open('$palette')); sys.exit(0 if p['scheme'] in ('light','dark') and all(re.fullmatch('#[0-9a-fA-F]{6}', p[k]) for k in ('background','foreground','muted','accent','alert')) else 1)"
-rm -f "$palette"
+  hrun python3 -c 'import json,re,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["scheme"] in ("light","dark") and all(re.fullmatch("#[0-9a-fA-F]{6}", p[k]) for k in ("background","foreground","muted","accent","alert")) else 1)' "$palette"
+hrun rm -f -- "$palette"
 
 # WG5: an app that hides its window while widgetized takes its widget away; shown again, the
 # window is an ordinary, visible window.
@@ -914,13 +922,13 @@ super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 sleep 2.5
 carry_before=$(ipc scottland/widgets | python3 -c "import json,sys; print([w['widget_view'] for w in json.load(sys.stdin)['widgets'] if w['title']=='carry-app'])")
 mark=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.reloading
-touch "$mark"
+hrun touch -- "$mark"
 fresh=$headless_dir/libscottland-test-$(date +%s%N).so
 cp build/libscottland.so "$fresh"
 plugins=$(ipc wayfire/get-config-option '{"option":"core/plugins"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['value'])")
 h wayfire/set-config-options "$(python3 -c "import json,sys; print(json.dumps({'core/plugins': ' '.join(sys.argv[2] if p == 'scottland' or '/libscottland-' in p else p for p in sys.argv[1].split())}))" "$plugins" "$fresh")"
 sleep 2
-rm -f "$mark"
+hrun rm -f -- "$mark"
 check "WG5 (marked reload) the widget stays, linked, its window still hidden" \
   [ "$(ipc scottland/widgets | python3 -c "import json,sys; print([w['widget_view'] for w in json.load(sys.stdin)['widgets'] if w['title']=='carry-app'])")/$(view_field carry-app "v['hidden'] and v['widgetized']")" = "$carry_before/True" ]
 h window-rules/close-view "{\"id\": $(view_field carry-app "v['id']")}"
