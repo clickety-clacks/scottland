@@ -80,9 +80,11 @@ class ModelWatch:
         self.reader.join(timeout=1)
         self.sock.close()
 
-def check(ok, name):
+def check(ok, name, observed=None):
     global passed, failed
     print(('PASS  ' if ok else 'FAIL  ') + name, flush=True)
+    if not ok and observed is not None:
+        print('      observed: ' + json.dumps(observed, sort_keys=True), flush=True)
     passed += bool(ok)
     failed += not ok
 
