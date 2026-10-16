@@ -12,19 +12,16 @@ import sys
 import time
 import threading
 
+assert os.environ.get('SCOTTLAND_TEST_MODEL') == '1'
 artifacts = Path(sys.argv[1])
 passed = failed = 0
 clients = []
 
-# Keep real-input timing independent of shell/Python startup under concurrent test load.
-# Resolve the socket through the recorded headless environment, never the caller's desktop.
-request_path = None
+# Run inside the isolated compositor namespace; this keeps input timing independent of
+# shell/Python startup and prevents socket paths from resolving to another session.
+request_path = os.environ['WAYFIRE_SOCKET']
 
 def ipc(method, data=None):
-    global request_path
-    if request_path is None:
-        request_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-            "import os; print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
     with socket.socket(socket.AF_UNIX) as request:
         request.settimeout(10)
         request.connect(request_path)
@@ -41,12 +38,9 @@ def ipc(method, data=None):
 
 class ModelWatch:
     def __init__(self):
-        # Ask the checkout's session helper for its socket; never inherit another desktop's.
-        path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-                "import os;print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
         self.sock = socket.socket(socket.AF_UNIX)
         self.sock.settimeout(5)
-        self.sock.connect(path)
+        self.sock.connect(request_path)
         body = json.dumps({'method': 'scottland/subscribe', 'data': {'slice': 'desktop'}}).encode()
         self.sock.sendall(struct.pack('<I', len(body)) + body)
         self.initial = self.receive()
@@ -91,6 +85,9 @@ def check(ok, name):
     print(('PASS  ' if ok else 'FAIL  ') + name, flush=True)
     passed += bool(ok)
     failed += not ok
+
+def shot(name):
+    subprocess.run(['grim', str(artifacts / name)], check=True)
 
 def wait_for(predicate, timeout=5):
     end = time.monotonic() + timeout
@@ -156,7 +153,7 @@ def choose(identifier):
 
 def rapid_hint(identifier, count, interval=0):
     # One persistent stipc connection avoids shell/Python startup between physical presses.
-    # The helper inherits the recorded session environment through headless.sh run.
+    # Reuse the private session's environment and socket directly.
     script = """
 import json, os, socket, struct, sys, time
 sock = socket.socket(socket.AF_UNIX); sock.connect(os.environ['WAYFIRE_SOCKET'])
@@ -174,8 +171,8 @@ for index in range(int(sys.argv[2])):
             reply = json.loads(receive(struct.unpack('<I',receive(4))[0]))
             if 'error' in reply: raise RuntimeError(reply)
 """
-    subprocess.run(['tests/headless.sh', 'run', 'python3', '-c', script,
-                    hint(identifier)['hint'], str(count), str(interval)], check=True)
+    subprocess.run([sys.executable, '-c', script, hint(identifier)['hint'], str(count), str(interval)],
+                   check=True)
 
 def launch(name, x=None, y=None):
     if x is not None:
@@ -185,8 +182,8 @@ def launch(name, x=None, y=None):
     log.write_text('')
     for attempt in range(100):
         try:
-            p = subprocess.Popen(['tests/headless.sh', 'run', 'python3',
-                                  str(Path('tests/windowing-key-recorder.py').resolve()), name, str(log)],
+            p = subprocess.Popen([sys.executable, str(Path('tests/windowing-key-recorder.py').resolve()),
+                                  name, str(log)],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             break
         except BlockingIOError as error:
@@ -266,7 +263,7 @@ try:
     switch=ipc('scottland/center-switcher')
     check(not hints()['active'] and switch['active'] and switch['selected']==b and switch['preview'] and focused()==a,
           'quick Alt+Tab previews next center window without entering hints or changing focus')
-    subprocess.run(['tests/headless.sh','run','grim',str(artifacts/'center-switcher.png')],check=True)
+    shot('center-switcher.png')
     tap('TAB')
     check(ipc('scottland/center-switcher')['selected']==a, 'held Alt and repeated Tab steps through MRU order')
     key('LEFTSHIFT',True);tap('TAB');key('LEFTSHIFT',False)
@@ -305,7 +302,7 @@ try:
     check(near(saved[0], saved[1]), 'declutter leaves real window geometry unchanged')
     check(all(w['placement']['positions'] == memories_before[w['id']] for w in ipc('scottland/desktop-model')['windows']
               if w['id'] in memories_before), 'visual declutter leaves published zone memories unchanged')
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'hints.png')], check=True)
+    shot('hints.png')
     before = sum(delivered(n).count('f') for n in ('Alpha','Beta'))
     tap('F')
     check(sum(delivered(n).count('f') for n in ('Alpha','Beta')) == before, 'letters in window mode never reach apps')
@@ -316,7 +313,7 @@ try:
     tap(hint(b)['hint'].upper())
     check(focused() == b and near(center(view('Beta')), saved[1]), 'unselected window first press selects without moving')
     check(hint(b)['flash']>0, 'acting window hint starts hint-color flash')
-    subprocess.run(['tests/headless.sh','run','grim',str(artifacts/'hint-flash.png')],check=True)
+    shot('hint-flash.png')
     time.sleep(.3)
     check(hint(b)['flash']==0, 'hint flash fades within 250 ms')
     choose(a)
@@ -517,7 +514,7 @@ try:
     widget = next(v for v in views() if v['widget'])
     check(widget['geometry']['width'] < 120, 'Alt release collapses it again')
     f = widget['frame']
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'remembered-card-before-click.png')], check=True)
+    shot('remembered-card-before-click.png')
     ipc('stipc/move_cursor', {'x': round(f['x']+f['width']/2), 'y': round(f['y']+f['height']/2)})
     time.sleep(.3)  # let the card finish expanding after hover before the real click
     ipc('stipc/feed_button', {'combo':'BTN_LEFT','mode':'full'})
@@ -644,7 +641,7 @@ try:
     check(not hint(a)['memories'][0]['set'], 'rail drag from periphery preserves absence of center memory')
     widget = next(v for v in views() if v['widget'])
     f = widget['frame']
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'fresh-card-before-click.png')], check=True)
+    shot('fresh-card-before-click.png')
     ipc('stipc/move_cursor', {'x': round(f['x']+f['width']/2), 'y': round(f['y']+f['height']/2)})
     time.sleep(.3)
     ipc('stipc/feed_button', {'combo':'BTN_LEFT','mode':'full'})
@@ -685,7 +682,7 @@ try:
     ids = [launch(f'Overflow{i:02}') for i in range(27)]
     check(hint(ids[0])['hint'] == 'aa' and hint(ids[-1])['hint'] == 'sa', '27 open windows use prefix-free two-letter hints')
     focus(ids[0]); hold()
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'double-hints.png')], check=True)
+    shot('double-hints.png')
     choose(ids[-1])
     check(focused() == ids[-1], 'real two-letter hint selects the overflow window')
     rapid_hint(ids[-1], 2); time.sleep(.8)
@@ -710,7 +707,7 @@ try:
     check(placed['zone'] == 'continuous' and placed['scale'] <= .951 and
           abs(placed['applied_scale'] - placed['scale']) < .015,
           'unremembered hint cycle lands inside the scaled periphery at its zone scale')
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'new-periphery.png')], check=True)
+    shot('new-periphery.png')
     focus(p); hold()
     outward = 'LEFT' if center(view('PadMe'))[0] < width/2 else 'RIGHT'
     tap(outward); time.sleep(.7)
@@ -718,7 +715,7 @@ try:
     check(pushed['zone'] == 'continuous' and
           abs(pushed['applied_scale'] - pushed['scale']) < .015,
           'real arrow push keeps displayed scale in agreement with periphery center')
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'periphery-arrow.png')], check=True)
+    shot('periphery-arrow.png')
     release()
     close_all()
 
