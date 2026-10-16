@@ -1076,12 +1076,42 @@ static void gather_fixtures()
     }
 }
 
+static void mapped_view_index_fixtures()
+{
+    mapped_view_index_t<int> index;
+    index.insert(1, 10);
+    index.insert(1, 11);
+    index.insert(2, 20);
+    CHECK(index.size(1) == 2 && index.size(2) == 1,
+        "gather: mapped-view index mixed workspace sets");
+
+    index.insert(2, 11);
+    CHECK(index.size(1) == 1 && index.size(2) == 2 && index.members(1).count(11) == 0 &&
+        index.members(2).count(11) == 1,
+        "gather: a workspace-set move left stale membership");
+    index.erase(10);
+    CHECK(index.size(1) == 0 && index.members(1).empty(),
+        "gather: unmapping the last view retained an empty workspace set");
+
+    for (size_t i = 0; i < MAX_SNAPSHOT_VIEWS; ++i)
+        index.insert(3, 10000 + i);
+    CHECK(index.size(3) == MAX_SNAPSHOT_VIEWS && !index.exceeds(3, MAX_SNAPSHOT_VIEWS),
+        "gather: the raw-view cap rejected an exactly full snapshot");
+    index.insert(3, 10000 + MAX_SNAPSHOT_VIEWS);
+    CHECK(index.exceeds(3, MAX_SNAPSHOT_VIEWS),
+        "gather: the raw-view cap admitted an over-cap snapshot");
+    index.erase(10000 + MAX_SNAPSHOT_VIEWS);
+    CHECK(!index.exceeds(3, MAX_SNAPSHOT_VIEWS),
+        "gather: removing an over-cap view did not restore admission");
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 2 && !std::strcmp(argv[1], "--svg")) { examples(argv[2]); std::printf("%d failures\n", failures); return 0; }
     bool bench = argc > 1 && !std::strcmp(argv[1], "--bench");
     fixtures();
     gather_fixtures();
+    mapped_view_index_fixtures();
     fuzz(bench ? 200 : 600);
     starved();
     crowding(bench ? 500 : 4000);

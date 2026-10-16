@@ -1570,6 +1570,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
+            spread_mapped_views.erase(toplevel->get_id());
             auto disappearing_card = link_of_widget(toplevel);
             bool lost_entry = disappearing_card && entering_widget(disappearing_card->window_id);
             if (model.drag.rail.presentation.is_active() &&
@@ -2043,6 +2044,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         state.above = view->has_data("wm-actions-above");
         state.zone = placement_of(view).zone;
         state.focused = wf::get_core().seat->get_active_view() == view;
+        index_spread_view(view);
     }
 
     void move_window(wayfire_toplevel_view view, double x, double y)
@@ -7225,8 +7227,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::signal::connection_t<wf::view_set_output_signal> on_output = [=] (wf::view_set_output_signal *ev)
     {
+        index_spread_view(wf::toplevel_cast(ev->view));
         apply(ev->view);
         refresh_layout_avoidance();
+    };
+
+    wf::signal::connection_t<wf::view_moved_to_wset_signal> on_view_moved_to_wset =
+        [=] (wf::view_moved_to_wset_signal *ev)
+    {
+        index_spread_view(ev->view, ev->new_wset);
+        if (ev->view && ev->view->is_mapped()) observe_view(ev->view);
     };
 
     // Test sessions: write the next frame an output renders on its own to
@@ -7715,6 +7725,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().scene()->connect(&on_scene_structure);
         wf::get_core().connect(&on_geometry);
         wf::get_core().connect(&on_output);
+        wf::get_core().connect(&on_view_moved_to_wset);
         wf::get_core().connect(&on_focus);
         wf::get_core().connect(&on_unmapped);
         wf::get_core().connect(&on_motion);
@@ -7867,6 +7878,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_mapped.disconnect();
         on_geometry.disconnect();
         on_output.disconnect();
+        on_view_moved_to_wset.disconnect();
         on_focus.disconnect();
         on_unmapped.disconnect();
         idle_focus.disconnect();

@@ -50,9 +50,26 @@
     wf::json_t spread_gather_records = wf::json_t::array();
     size_t spread_gather_current_screen = 0;
     std::string spread_gather_current_output;
+    scottland::spread::mapped_view_index_t<wf::workspace_set_t*> spread_mapped_views;
     // Test sessions only (SCOTTLAND_TEST_MODEL): stretch a solve over many event-loop turns, so a
     // reload or an input can land while it is in flight.
     bool spread_test_slow = false;
+
+    void index_spread_view(wayfire_toplevel_view view, std::shared_ptr<wf::workspace_set_t> wset)
+    {
+        if (!view) return;
+        if (!view->is_mapped() || !wset)
+        {
+            spread_mapped_views.erase(view->get_id());
+            return;
+        }
+        spread_mapped_views.insert(wset.get(), view->get_id());
+    }
+
+    void index_spread_view(wayfire_toplevel_view view)
+    {
+        index_spread_view(view, view ? view->get_wset() : nullptr);
+    }
 
     // ------------------------------------------------------------------ snapshot
     // Everything a result depends on besides the solo window: zone settings, the output, and
@@ -67,19 +84,26 @@
             zone.maximum << ',' << zone.blend << ',' << *zone.curve_text << ';' <<
             screen.width << 'x' << screen.height << ';' << a.x << ',' << a.y << ',' << a.width << ',' << a.height << ';';
         out << "drag:" << (drag->view ? drag->view->get_id() : 0) << ';';
-        auto views = output->wset()->get_views(wf::WSET_MAPPED_ONLY);
-        // Gather admits a bounded per-output snapshot. Keep the validation signature on that
-        // same bound instead of rebuilding an unbounded compositor-side list after the solve.
-        if (bounded && views.size() > scottland::spread::MAX_SNAPSHOT_VIEWS) return "";
-        for (auto& view : views)
+        auto wset = output->wset();
+        if (!wset) return "";
+        const auto& view_ids = spread_mapped_views.members(wset.get());
+        // Gather checks the workspace-set index before it resolves even one view, both when
+        // taking its snapshot and when validating the result. Never ask Wayfire to copy its full
+        // view vector on Space.
+        if (bounded && spread_mapped_views.exceeds(wset.get(), scottland::spread::MAX_SNAPSHOT_VIEWS)) return "";
+        for (auto id : view_ids)
         {
+            if (id == excluded) continue;
+            auto found = model.windows.find(id);
+            if (found == model.windows.end()) return "";
+            auto view = wf::toplevel_cast(found->second.view.lock());
+            if (!view || !view->is_mapped() || view->get_wset().get() != wset.get()) return "";
             auto widget = link_of_widget(view);
-            if (view->get_id() == excluded || (widget && widget->window_id == excluded)) continue;
+            if (widget && widget->window_id == excluded) continue;
             auto g = view->get_geometry();
-            auto found = model.windows.find(view->get_id());
-            out << view->get_id() << ':' << g.x << ',' << g.y << ',' << g.width << ',' << g.height << ',' <<
+            out << id << ':' << g.x << ',' << g.y << ',' << g.width << ',' << g.height << ',' <<
                 view->pending_fullscreen() << ',' << bool(widget) << ',' <<
-                (found != model.windows.end() && found->second.pinned_scale ? *found->second.pinned_scale : 0.0) << ';';
+                (found->second.pinned_scale ? *found->second.pinned_scale : 0.0) << ';';
         }
         return out.str();
     }
@@ -178,23 +202,31 @@
         };
         if (mode == sp::mode_t::gather)
         {
-            // Do not refresh the whole desktop's hint entries here. Gather is per-output; walk
-            // only this output and stop as soon as its raw-view or solver admission bound is hit.
-            // get_views() materializes Wayfire's list, so reject above the explicit raw-view cap
-            // before any per-view model, widget, process or geometry work.
-            auto views = output->wset()->get_views(wf::WSET_MAPPED_ONLY);
-            if (views.size() > sp::MAX_SNAPSHOT_VIEWS)
+            // Do not refresh the whole desktop's hint entries here. The lifecycle-maintained
+            // index is per workspace set, and the count check precedes every per-view lookup.
+            auto wset = output->wset();
+            if (!wset)
+            {
+                s.unavailable_reason = "screen has no workspace set";
+                return s;
+            }
+            const auto& view_ids = spread_mapped_views.members(wset.get());
+            if (spread_mapped_views.exceeds(wset.get(), sp::MAX_SNAPSHOT_VIEWS))
             {
                 s.unavailable_reason = "more compositor views than the bounded snapshot admits";
                 return s;
             }
-            for (auto& view : views)
+            for (auto id : view_ids)
             {
-                auto window = wf::toplevel_cast(view);
-                if (!window) continue;
-                auto id = window->get_id();
                 auto found = model.windows.find(id);
-                if (found == model.windows.end() || window->role != wf::VIEW_ROLE_TOPLEVEL ||
+                auto window = found == model.windows.end() ? nullptr :
+                    wf::toplevel_cast(found->second.view.lock());
+                if (!window || !window->is_mapped() || window->get_wset().get() != wset.get())
+                {
+                    s.unavailable_reason = "workspace-set view index changed before snapshot";
+                    return s;
+                }
+                if (window->role != wf::VIEW_ROLE_TOPLEVEL ||
                     is_widget(window) ||
                     runs_as_widget(found->second.pid)) continue;
                 if (!collect_window(id, window))
@@ -441,7 +473,11 @@
         publish_batch_t batch(this);
         for (const auto& m : moves)
         {
-            auto view = wf::toplevel_cast(view_by_id(m.id));
+            // Solver move ids come from model-backed snapshots. Resolve them through that index
+            // instead of rescanning every compositor view once per move.
+            auto state = model.windows.find(m.id);
+            auto view = state == model.windows.end() ? nullptr :
+                wf::toplevel_cast(state->second.view.lock());
             if (!view || !view->is_mapped() || link_of_window(view) || is_widget(view)) continue;
             auto frame = frame_of(view, false);
             auto g = view->get_geometry();
