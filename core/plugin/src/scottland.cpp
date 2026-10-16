@@ -83,6 +83,7 @@ extern "C" {
 #include <cctype>
 #include <cmath>
 #include <ctime>
+#include <deque>
 #include <map>
 #include <set>
 #include <regex>

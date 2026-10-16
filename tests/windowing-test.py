@@ -241,6 +241,8 @@ try:
     release()
     check('b' in delivered('Alpha'), 'quick Alt+B reaches the application')
     check(any(e['key']=='b' and e['modifiers'] & 8 for e in map(json.loads,(artifacts/'Alpha.keys').read_text().splitlines())), 'quick Alt+B preserves the application Alt modifier')
+    key('LEFTALT', True); tap('SPACE'); release()
+    check('space' in delivered('Alpha'), 'quick Alt+Space remains the application chord')
     before = delivered('Alpha').count('f')
     key('LEFTALT', True)
     tap('F')
@@ -703,6 +705,32 @@ try:
           abs(pushed['applied_scale'] - pushed['scale']) < .015,
           'real arrow push keeps displayed scale in agreement with periphery center')
     subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'periphery-arrow.png')], check=True)
+    release()
+    close_all()
+
+    left = launch('GatherLeft', width * .14, height * .5)
+    right = launch('GatherRight', width * .86, height * .5)
+    before_left, before_right = view('GatherLeft'), view('GatherRight')
+    before_solves = ipc('scottland/spread-state')['solves']
+    focus(left); hold(); tap('SPACE')
+    wait_for(lambda: (lambda state: state['solves'] > before_solves and not state['running'] and
+                      state['last'].get('purpose') == 'gather')(ipc('scottland/spread-state')), 10)
+    gather_state = ipc('scottland/spread-state')
+    screen_results = gather_state['last'].get('screens', [])
+    check(len(screen_results) > 0 and all(result.get('purpose') == 'gather' and
+          'status' in result and 'work' in result and 'moves' in result for result in screen_results),
+          'Gather keeps a result record for every output')
+    after_left, after_right = view('GatherLeft'), view('GatherRight')
+    check(hints()['active'], 'Space gathers without leaving Window mode')
+    check(before_left['zone'] == 'continuous' and before_right['zone'] == 'continuous' and
+          after_left['applied_scale'] > before_left['applied_scale'] + .05 and
+          after_right['applied_scale'] > before_right['applied_scale'] + .05,
+          'Space gathers periphery windows on both sides toward their center borders')
+    gathered_solves = ipc('scottland/spread-state')['solves']
+    key('LEFTCTRL', True); tap('SPACE'); key('LEFTCTRL', False)
+    time.sleep(.1)
+    check(ipc('scottland/spread-state')['solves'] == gathered_solves,
+          'modified Space is consumed without gathering')
     release()
     close_all()
 except Exception as error:

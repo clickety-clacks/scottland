@@ -47,6 +47,11 @@ enum class role_t : uint8_t
     fixed,     // never moved by spread (a window on a rail, outside the request)
 };
 
+enum class mode_t : uint8_t
+{
+    solo, gather,
+};
+
 struct window_t
 {
     uint64_t id = 0;
@@ -61,6 +66,7 @@ struct window_t
 
 struct snapshot_t
 {
+    mode_t mode = mode_t::solo;
     double screen_width = 0, screen_height = 0;
     box workarea;                  // output-local; panels are outside it
     double padding = 0;            // WP7 screen-edge padding, kept whenever the window fits with it

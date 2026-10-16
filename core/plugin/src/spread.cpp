@@ -57,6 +57,13 @@ struct pos_t
     bool pin = false;  // keeps the snapshot's pinned scale (same x, or an exact restore)
 };
 
+struct gather_y_t
+{
+    bool within = false;
+    pos_t position;
+    double overlap = INF;
+};
+
 bool same_pos(const pos_t& a, const pos_t& b)
 {
     return std::abs(a.cx - b.cx) < 1e-6 && std::abs(a.cy - b.cy) < 1e-6 &&
@@ -184,6 +191,23 @@ class solver_t
     result_t run()
     {
         result_t result;
+        if (S.mode == mode_t::gather)
+        {
+            try
+            {
+                if (!prepare_gather(result)) { result.work = work.used; return result; }
+                layout_t gathered = original;
+                gather_schedule(gathered);
+                complete = true;
+                return finish_gather(gathered);
+            } catch (const stopped&)
+            {
+                result.status = status_t::unchanged_budget;
+                result.reason = "work cap";
+                result.work = work.used;
+                return result;
+            }
+        }
         try
         {
             if (!prepare(result)) return finish(result);
@@ -220,6 +244,8 @@ class solver_t
     std::vector<double> xs, starts, ends;
     std::vector<box> hard_scratch;
     std::vector<soft_t> soft_scratch;
+    std::array<std::vector<double>, 2> gather_levels;
+    std::vector<double> gather_ys;
 
     const window_t& win(size_t i) const { return S.windows[i]; }
     int side_of(double x) const { return x < mid ? 0 : 1; }
@@ -327,6 +353,435 @@ class solver_t
         if (!x_legal(w.width * p.s, p.cx)) return false;
         auto yd = y_domain(w.height * p.s);
         return yd && p.cy >= yd->first - EPS && p.cy <= yd->second + EPS;
+    }
+
+    // ------------------------------------------------------------------ gather schedule
+    bool prepare_gather(result_t& result)
+    {
+        W = S.screen_width; mid = W / 2;
+        auto fail = [&] (status_t status, const char *reason) {
+            result.status = status; result.reason = reason; return false;
+        };
+        if (!(W > 0) || !(S.screen_height > 0) || !S.scale)
+            return fail(status_t::unavailable, "no screen");
+        if (S.windows.size() + S.fixed.size() > MAX_OBSTACLES)
+            return fail(status_t::unavailable, "more windows than spread considers");
+        size_t movable = 0;
+        for (const auto& w : S.windows) movable += w.role == role_t::resident;
+        if (movable > MAX_MOVABLE) return fail(status_t::unavailable, "more windows than spread considers");
+
+        double inner = S.center_half + EDGE_MARGIN, outer = W / 2 - S.rail_width - EDGE_MARGIN;
+        if (outer <= inner) return fail(status_t::unavailable, "no periphery");
+        dom_lo[0] = mid - outer; dom_hi[0] = mid - inner;
+        dom_lo[1] = mid + inner; dom_hi[1] = mid + outer;
+
+        original.pos.resize(S.windows.size());
+        original.placed.assign(S.windows.size(), 0);
+        original.pushed.assign(S.windows.size(), 0);
+        original.forced.assign(S.windows.size(), 0);
+        work.charge(S.fixed.size());
+        base_hard = S.fixed;
+        for (size_t i = 0; i < S.windows.size(); ++i)
+        {
+            work.charge();
+            const auto& w = S.windows[i];
+            original.pos[i] = {w.cx, w.cy, w.scale, w.pinned};
+            if (w.role == role_t::resident) residents.push_back(i);
+            else base_hard.push_back(rect(i, original.pos[i]));
+        }
+        if (residents.empty()) return fail(status_t::unavailable, "no periphery windows");
+
+        // Every side offers the same input-derived distances to each resident. Edges created
+        // by an earlier placement are added to each later window's candidate list.
+        for (const auto& b : base_hard)
+        {
+            work.charge();
+            double left = mid - S.center_half, right = mid + S.center_half;
+            if (left - b.x0 >= -EPS) gather_levels[0].push_back(std::max(0.0, left - b.x0));
+            if (b.x1 - right >= -EPS) gather_levels[1].push_back(std::max(0.0, b.x1 - right));
+        }
+        for (size_t i : residents)
+        {
+            work.charge();
+            int side = side_of(win(i).cx);
+            box b = rect(i, original.pos[i]);
+            double border = side == 0 ? mid - S.center_half : mid + S.center_half;
+            double d = std::max(0.0, side == 0 ? border - b.x1 : b.x0 - border);
+            gather_levels[side].push_back(d);
+        }
+        for (auto& levels : gather_levels)
+        {
+            work.charge(levels.size());
+            levels.push_back(0);
+            std::sort(levels.begin(), levels.end());
+            levels.erase(std::unique(levels.begin(), levels.end(), [] (double a, double b) {
+                return std::abs(a - b) < 1e-6;
+            }), levels.end());
+        }
+        return true;
+    }
+
+    double gather_distance(size_t i, int side, const pos_t& p) const
+    {
+        box b = rect(i, p);
+        double border = side == 0 ? mid - S.center_half : mid + S.center_half;
+        return std::max(0.0, side == 0 ? border - b.x1 : b.x0 - border);
+    }
+
+    bool gather_legal(size_t i, int side, const pos_t& p, double before) const
+    {
+        if (side_of(p.cx) != side || !legal(i, p)) return false;
+        box b = rect(i, p);
+        double border = side == 0 ? mid - S.center_half : mid + S.center_half;
+        if (side == 0 ? b.x1 > border + 1.0 : b.x0 < border - 1.0) return false;
+        return gather_distance(i, side, p) <= before + 1.0;
+    }
+
+    bool gather_calm_side(int side)
+    {
+        std::vector<size_t> side_windows;
+        double height = -1;
+        for (size_t i : residents)
+        {
+            work.charge();
+            if (side_of(win(i).cx) != side) continue;
+            side_windows.push_back(i);
+            box r = rect(i, original.pos[i]);
+            if (height < 0) height = r.height();
+            else if (std::abs(r.height() - height) > 1.0) return false;
+            if (gather_distance(i, side, original.pos[i]) > 1.0) return false;
+        }
+        if (side_windows.empty()) return false;
+        if (side_windows.size() == 1 && std::abs(win(side_windows[0]).cy - S.screen_height / 2) > 0.5)
+            return false;
+        for (size_t n = 0; n < side_windows.size(); ++n)
+        {
+            size_t i = side_windows[n];
+            box a = rect(i, original.pos[i]);
+            for (size_t m = n + 1; m < side_windows.size(); ++m)
+            {
+                work.charge();
+                size_t j = side_windows[m];
+                if (normalized_overlap(a, rect(j, original.pos[j])) > 0.10 + 1e-9) return false;
+            }
+            for (const auto& b : base_hard)
+            {
+                work.charge();
+                if (clearance(a, b) <= EPS) return false;
+            }
+            for (size_t j : residents)
+            {
+                work.charge();
+                if (side_of(win(j).cx) != side && clearance(a, rect(j, original.pos[j])) <= EPS) return false;
+            }
+        }
+        return true;
+    }
+
+    void gather_add_x(size_t i, double x, std::vector<double>& out)
+    {
+        const auto& w = win(i);
+        double c = representable(x, w.width);
+        work.charge(3);
+        for (double p : {c - 1, c, c + 1}) out.push_back(p);
+    }
+
+    void gather_x_candidates(size_t i, int side, double distance, std::vector<double>& out)
+    {
+        const auto& w = win(i);
+        double lo = dom_lo[side], hi = dom_hi[side];
+        double border = side == 0 ? mid - S.center_half : mid + S.center_half;
+        double target = side == 0 ? border - distance : border + distance;
+        auto edge = [&] (double x) {
+            double half = w.width * scale_at(i, x) / 2;
+            return side == 0 ? x + half - target : x - half - target;
+        };
+        constexpr int SAMPLES = 16;
+        double x[SAMPLES + 1], f[SAMPLES + 1];
+        for (int k = 0; k <= SAMPLES; ++k)
+        {
+            work.charge();
+            x[k] = lo + (hi - lo) * k / SAMPLES;
+            f[k] = edge(x[k]);
+            if (std::abs(f[k]) <= 0.5) gather_add_x(i, x[k], out);
+        }
+        for (int k = 0; k < SAMPLES; ++k)
+        {
+            work.charge();
+            if ((f[k] <= 0) == (f[k + 1] <= 0)) continue;
+            double a = x[k], b = x[k + 1], fa = f[k];
+            for (int it = 0; it < 20; ++it)
+            {
+                work.charge();
+                double m = (a + b) / 2, fm = edge(m);
+                if ((fm <= 0) == (fa <= 0)) { a = m; fa = fm; } else b = m;
+            }
+            gather_add_x(i, (a + b) / 2, out);
+        }
+        if (std::abs(distance - gather_distance(i, side, original.pos[i])) <= 1.0)
+            gather_add_x(i, win(i).cx, out);
+        work.charge(out.size());
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end(), [] (double a, double b) {
+            return std::abs(a - b) < 0.25;
+        }), out.end());
+    }
+
+    bool gather_better_y(const pos_t& a, const pos_t& b, size_t i) const
+    {
+        double da = std::abs(a.cy - S.screen_height / 2), db = std::abs(b.cy - S.screen_height / 2);
+        if (std::abs(da - db) > 0.5) return da < db;
+        da = std::abs(a.cy - win(i).cy); db = std::abs(b.cy - win(i).cy);
+        if (std::abs(da - db) > 0.5) return da < db;
+        return a.cy < b.cy;
+    }
+
+    gather_y_t gather_y(size_t i, double x, const std::vector<box>& obstacles)
+    {
+        gather_y_t out;
+        const auto& w = win(i);
+        double s = scale_at(i, x), ww = w.width * s, hh = w.height * s;
+        auto yd = y_domain(hh);
+        if (!yd || !x_legal(ww, x)) return out;
+        double ylo = yd->first, yhi = yd->second;
+        auto add = [&] (double y) {
+            for (double delta : {-1.0, 0.0, 1.0})
+            {
+                work.charge();
+                double c = representable(y + delta, w.height);
+                if (c >= ylo - EPS && c <= yhi + EPS) gather_ys.push_back(c);
+            }
+        };
+        gather_ys.clear();
+        add(ylo); add(yhi); add(std::clamp(S.screen_height / 2, ylo, yhi));
+        add(std::clamp(w.cy, ylo, yhi));
+        for (const auto& b : obstacles)
+        {
+            work.charge();
+            double ox = std::min(b.x1, x + ww / 2) - std::max(b.x0, x - ww / 2);
+            if (ox <= TOLERANCE) continue;
+            double min_area = std::min(ww * hh, b.width() * b.height());
+            double min_height = std::min(hh, b.height());
+            double limit = std::max(TOLERANCE, 0.10 * min_area / ox);
+            if (limit < min_height)
+            {
+                add(b.y0 + limit - hh / 2);
+                add(b.y1 - limit + hh / 2);
+            }
+            if (min_height > TOLERANCE)
+            {
+                add(b.y0 + TOLERANCE - hh / 2);
+                add(b.y0 + min_height - hh / 2);
+                add(b.y1 - min_height + hh / 2);
+                add(b.y1 - TOLERANCE + hh / 2);
+            }
+        }
+        work.charge(gather_ys.size());
+        std::sort(gather_ys.begin(), gather_ys.end());
+        gather_ys.erase(std::unique(gather_ys.begin(), gather_ys.end(), [] (double a, double b) {
+            return std::abs(a - b) < 0.25;
+        }), gather_ys.end());
+        bool have_within = false, have_fallback = false;
+        double best_overlap = INF;
+        for (double y : gather_ys)
+        {
+            work.charge();
+            pos_t p{x, y, s, w.pinned && std::abs(x - w.cx) < 1e-6};
+            if (!legal(i, p)) continue;
+            double overlap = 0;
+            bool within = true;
+            for (const auto& b : obstacles)
+            {
+                work.charge();
+                double value = normalized_overlap(rect(i, p), b);
+                overlap += value;
+                if (value > 0.10 + 1e-9) within = false;
+            }
+            if (within && (!have_within || gather_better_y(p, out.position, i)))
+            {
+                out.within = true; out.position = p; have_within = true;
+            }
+            bool better = !have_fallback || overlap < best_overlap - 1e-9 ||
+                (std::abs(overlap - best_overlap) <= 1e-9 && gather_better_y(p, out.position, i));
+            if (better)
+            {
+                if (!have_within) out.position = p;
+                out.overlap = overlap; best_overlap = overlap; have_fallback = true;
+            }
+        }
+        if (have_within)
+        {
+            out.overlap = 0;
+            for (const auto& b : obstacles)
+            {
+                work.charge();
+                out.overlap += normalized_overlap(rect(i, out.position), b);
+            }
+        }
+        return out;
+    }
+
+    std::optional<pos_t> gather_place(size_t i, int side, double before, const std::vector<box>& obstacles)
+    {
+        const auto& w = win(i);
+        box old = rect(i, original.pos[i]);
+        double border = side == 0 ? mid - S.center_half : mid + S.center_half;
+        double old_distance = std::max(0.0, side == 0 ? border - old.x1 : old.x0 - border);
+        std::vector<double> levels = gather_levels[side];
+        for (const auto& b : obstacles)
+        {
+            work.charge();
+            double d = side == 0 ? border - b.x0 : b.x1 - border;
+            if (d >= -EPS) levels.push_back(std::max(0.0, d));
+        }
+        work.charge(levels.size());
+        std::sort(levels.begin(), levels.end());
+        levels.erase(std::unique(levels.begin(), levels.end(), [] (double a, double b) {
+            return std::abs(a - b) < 1e-6;
+        }), levels.end());
+
+        bool have_fallback = false;
+        pos_t fallback;
+        double fallback_overlap = INF, fallback_distance = INF;
+        for (double d : levels)
+        {
+            if (d > old_distance + 1.0) break;
+            work.charge();
+            xs.clear();
+            gather_x_candidates(i, side, d, xs);
+            bool have_within = false;
+            pos_t best_at_distance;
+            for (double x : xs)
+            {
+                work.charge();
+                double s = scale_at(i, x);
+                auto yd = y_domain(w.height * s);
+                if (!yd) continue;
+                auto y0 = snap_into(std::clamp(w.cy, yd->first, yd->second), w.height, yd->first, yd->second);
+                if (!y0) continue;
+                pos_t probe{x, *y0, s, w.pinned && std::abs(x - w.cx) < 1e-6};
+                if (!gather_legal(i, side, probe, before) ||
+                    std::abs(gather_distance(i, side, probe) - d) > 1.5) continue;
+                auto y = gather_y(i, x, obstacles);
+                if (!y.position.s) continue;
+                double actual_distance = gather_distance(i, side, y.position);
+                if (y.within)
+                {
+                    bool better = !have_within || y.position.s > best_at_distance.s + 1e-9 ||
+                        (std::abs(y.position.s - best_at_distance.s) <= 1e-9 &&
+                         (std::abs(x - w.cx) < std::abs(best_at_distance.cx - w.cx) - 1e-9 ||
+                          (std::abs(std::abs(x - w.cx) - std::abs(best_at_distance.cx - w.cx)) <= 1e-9 &&
+                           gather_better_y(y.position, best_at_distance, i))));
+                    if (better) { best_at_distance = y.position; have_within = true; }
+                }
+                bool better_fallback = !have_fallback || y.overlap < fallback_overlap - 1e-9 ||
+                    (std::abs(y.overlap - fallback_overlap) <= 1e-9 &&
+                     (actual_distance < fallback_distance - 1e-6 ||
+                      (std::abs(actual_distance - fallback_distance) <= 1e-6 &&
+                       gather_better_y(y.position, fallback, i))));
+                if (better_fallback)
+                {
+                    fallback = y.position; fallback_overlap = y.overlap;
+                    fallback_distance = actual_distance; have_fallback = true;
+                }
+            }
+            if (have_within) return best_at_distance;
+        }
+        if (have_fallback) return fallback;
+        return std::nullopt;
+    }
+
+    void gather_schedule(layout_t& L)
+    {
+        for (int side : {0, 1})
+        {
+            if (gather_calm_side(side)) continue;
+            std::vector<size_t> order;
+            for (size_t i : residents)
+            {
+                work.charge();
+                if (side_of(win(i).cx) == side) order.push_back(i);
+            }
+            auto distance = [&] (size_t i) {
+                box b = rect(i, original.pos[i]);
+                double border = side == 0 ? mid - S.center_half : mid + S.center_half;
+                return std::max(0.0, side == 0 ? border - b.x1 : b.x0 - border);
+            };
+            work.charge(order.size());
+            std::stable_sort(order.begin(), order.end(), [&] (size_t a, size_t b) {
+                double da = distance(a), db = distance(b);
+                if (std::abs(da - db) > 1e-9) return da < db;
+                double ya = std::abs(win(a).cy - S.screen_height / 2);
+                double yb = std::abs(win(b).cy - S.screen_height / 2);
+                if (std::abs(ya - yb) > 1e-9) return ya < yb;
+                return win(a).id < win(b).id;
+            });
+            std::vector<size_t> placed;
+            for (size_t i : order)
+            {
+                work.charge();
+                work.charge(base_hard.size() + placed.size());
+                hard_scratch = base_hard;
+                for (size_t j : placed) hard_scratch.push_back(rect(j, L.pos[j]));
+                double before = distance(i);
+                if (auto p = gather_place(i, side, before, hard_scratch)) L.pos[i] = *p;
+                placed.push_back(i);
+            }
+        }
+    }
+
+    result_t finish_gather(const layout_t& L)
+    {
+        result_t r;
+        r.status = status_t::clear;
+        r.checkpoint = "gather";
+        r.complete = complete;
+        r.work = work.used;
+        r.arrangements = 1;
+        std::vector<uint8_t> moved(S.windows.size(), 0);
+        std::vector<box> rects(S.windows.size());
+        for (size_t i = 0; i < S.windows.size(); ++i)
+        {
+            work.charge();
+            rects[i] = rect(i, L.pos[i]);
+            if (win(i).role != role_t::resident || same_pos(L.pos[i], original.pos[i])) continue;
+            moved[i] = 1;
+            move_t m;
+            m.id = win(i).id; m.cx = L.pos[i].cx; m.cy = L.pos[i].cy; m.scale = L.pos[i].s;
+            if (L.pos[i].pin) m.pin = L.pos[i].s;
+            r.moves.push_back(m);
+        }
+        bool over_limit = false;
+        for (size_t i = 0; i < S.windows.size(); ++i)
+        {
+            if (!moved[i]) continue;
+            for (size_t j = 0; j < S.windows.size(); ++j)
+            {
+                if (j == i || (moved[j] && j < i)) continue;
+                work.charge();
+                double overlap = normalized_overlap(rects[i], rects[j]);
+                r.score.overlap += overlap;
+                if (overlap > 0.10 + 1e-9)
+                {
+                    over_limit = true;
+                    r.overlaps.emplace_back(win(i).id, win(j).id);
+                }
+            }
+            for (const auto& b : S.fixed)
+            {
+                work.charge();
+                double overlap = normalized_overlap(rects[i], b);
+                r.score.overlap += overlap;
+                if (overlap > 0.10 + 1e-9)
+                {
+                    over_limit = true;
+                    r.overlaps.emplace_back(win(i).id, UINT64_MAX);
+                }
+            }
+        }
+        if (over_limit) r.status = status_t::overlap_exhausted;
+        r.work = work.used;
+        return r;
     }
 
     bool is_moved(size_t i, const layout_t& L) const { return !same_pos(L.pos[i], original.pos[i]); }

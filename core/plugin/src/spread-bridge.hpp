@@ -1,4 +1,4 @@
-// Private integration fragment for scottland_plugin_t: spread and solo (docs/spread.md).
+// Private integration fragment for scottland_plugin_t: spread, solo and gather (docs/spread.md).
 // The solver is pure (spread.hpp). This bridge builds its snapshot from the desktop model, runs it
 // in measured slices on the event loop (spread-job.hpp) until the main-loop worker takes the job
 // over, and applies a result: committed outright for a hint hold or three-finger hold on the
@@ -38,8 +38,16 @@
     };
     std::optional<spread_run_t> spread_run;
     wf::wl_timer<true> spread_tick;
+    wf::wl_timer<true> spread_queue_tick;
+    std::deque<std::function<void()>> spread_queue;
+    bool spread_pumping = false;
+    bool spread_gather_active = false;
+    std::vector<wf::output_t*> spread_gather_outputs;
+    size_t spread_gather_index = 0;
     wf::json_t spread_last;  // the last delivered solve (scottland/spread-state)
     uint64_t spread_solves = 0;
+    wf::json_t spread_gather_records = wf::json_t::array();
+    size_t spread_gather_current_screen = 0;
     // Test sessions only (SCOTTLAND_TEST_MODEL): stretch a solve over many event-loop turns, so a
     // reload or an input can land while it is in flight.
     bool spread_test_slow = false;
@@ -56,6 +64,7 @@
         out << zone.center << ',' << zone.rail << ',' << zone.minimum << ',' <<
             zone.maximum << ',' << zone.blend << ',' << *zone.curve_text << ';' <<
             screen.width << 'x' << screen.height << ';' << a.x << ',' << a.y << ',' << a.width << ',' << a.height << ';';
+        out << "drag:" << (drag->view ? drag->view->get_id() : 0) << ';';
         for (auto& view : output->wset()->get_views(wf::WSET_MAPPED_ONLY))
         {
             if (view->get_id() == excluded) continue;
@@ -70,18 +79,19 @@
     }
 
     std::optional<scottland::spread::snapshot_t> spread_snapshot(wf::output_t *output, uint64_t solo,
-        scottland::spread::box solo_box)
+        scottland::spread::box solo_box, scottland::spread::mode_t mode = scottland::spread::mode_t::solo)
     {
         namespace sp = scottland::spread;
         if (!output_alive(output)) return std::nullopt;
         // The solver's caps, checked in constant time before anything is collected.
-        if (model.windows.size() + 1 > sp::MAX_OBSTACLES)
+        if (mode == sp::mode_t::solo && model.windows.size() + 1 > sp::MAX_OBSTACLES)
         {
             LOGI("scottland: spread: ", model.windows.size(), " windows, more than spread considers");
             return std::nullopt;
         }
         auto screen = output->get_relative_geometry(); auto a = output->workarea->get_workarea();
         sp::snapshot_t s;
+        s.mode = mode;
         double W = screen.width;
         auto zone = zone_for(output);
         s.screen_width = W; s.screen_height = screen.height;
@@ -108,7 +118,7 @@
         auto rect_of = [] (scottland::rectf_t r) { return sp::box{r.x1, r.y1, r.x2, r.y2}; };
         for (auto e : window_entries())
         {
-            if (e.id == solo) continue;
+            if (solo && e.id == solo) continue;
             auto window = wf::toplevel_cast(view_by_id(e.id));
             auto shown = represented_view(e.id);
             if (!window || !shown || !shown->is_mapped() || shown->get_output() != output) continue;
@@ -118,8 +128,18 @@
                 if (auto frame = frame_of(shown, false)) s.fixed.push_back(rect_of(frame->screen_rect()));
                 continue;
             }
-            if (window->pending_fullscreen() || drag->view == window) continue;
             auto g = window->get_geometry();
+            if (window->pending_fullscreen() || drag->view == window)
+            {
+                if (mode == sp::mode_t::gather)
+                {
+                    double cx = g.x + g.width / 2.0, cy = g.y + g.height / 2.0;
+                    double scale = std::clamp(scale_for(window), 0.05, 1.0);
+                    s.fixed.push_back({cx - g.width * scale / 2, cy - g.height * scale / 2,
+                        cx + g.width * scale / 2, cy + g.height * scale / 2});
+                }
+                continue;
+            }
             sp::window_t w;
             w.id = e.id;
             w.width = g.width; w.height = g.height;
@@ -138,12 +158,83 @@
         return s;
     }
 
+    void spread_enqueue(std::function<void()> request)
+    {
+        spread_queue.push_back(std::move(request));
+        spread_pump();
+    }
+
+    void spread_gather_next_screen()
+    {
+        while (spread_gather_index < spread_gather_outputs.size())
+        {
+            auto output = spread_gather_outputs[spread_gather_index++];
+            if (!output_alive(output)) continue;
+            spread_gather_current_screen = spread_gather_index - 1;
+            auto captured = std::chrono::steady_clock::now();
+            auto snapshot = spread_snapshot(output, 0, {}, scottland::spread::mode_t::gather);
+            if (!snapshot) continue;
+            auto signature = spread_signature(output, 0);
+            double snapshot_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - captured).count();
+            spread_start(std::move(*snapshot), "gather", std::chrono::nanoseconds(0),
+                std::chrono::nanoseconds(0), [=] (const scottland::spread::result_t& result) {
+                    if (output_alive(output) && spread_signature(output, 0) == signature)
+                    {
+                        auto started = std::chrono::steady_clock::now();
+                        double started_cpu = thread_cpu_ms();
+                        if (!result.moves.empty()) commit_spread_moves(result.moves);
+                        if (spread_last.has_member("sequence"))
+                        {
+                            spread_last["snapshot_ms"] = snapshot_ms;
+                            spread_last["commit_cpu_ms"] = thread_cpu_ms() - started_cpu;
+                            spread_last["commit_ms"] = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - started).count();
+                        }
+                    } else LOGI("scottland: gather: the screen changed while solving; not applied");
+                    spread_queue_tick.set_timeout(1, [=] () {
+                        spread_gather_next_screen();
+                        return false;
+                    });
+                });
+            return;
+        }
+        spread_gather_outputs.clear();
+        spread_gather_index = 0;
+        spread_gather_active = false;
+        spread_pump();
+    }
+
+    void gather_screens()
+    {
+        spread_enqueue([=] () {
+            spread_gather_outputs = wf::get_core().output_layout->get_outputs();
+            spread_gather_index = 0;
+            spread_gather_records = wf::json_t::array();
+            if (spread_gather_outputs.empty()) return;
+            spread_gather_active = true;
+            spread_gather_next_screen();
+        });
+    }
+
+    void spread_pump()
+    {
+        if (spread_pumping || spread_run || spread_gather_active) return;
+        spread_pumping = true;
+        while (!spread_run && !spread_gather_active && !spread_queue.empty())
+        {
+            auto request = std::move(spread_queue.front());
+            spread_queue.pop_front();
+            request();
+        }
+        spread_pumping = false;
+    }
+
     // ------------------------------------------------------------------ the sliced runner
     void spread_start(scottland::spread::snapshot_t snapshot, std::string purpose,
         std::chrono::nanoseconds compute_limit, std::chrono::nanoseconds wall_limit,
         std::function<void(const scottland::spread::result_t&)> deliver)
     {
-        spread_cancel();
         spread_run.emplace();
         auto& run = *spread_run;
         run.job = std::make_unique<scottland::spread::job_t>(std::move(snapshot));
@@ -152,9 +243,9 @@
         run.compute_limit = spread_test_slow ? std::chrono::nanoseconds(0) : compute_limit;
         run.wall_limit = spread_test_slow ? std::chrono::nanoseconds(0) : wall_limit;
         run.purpose = std::move(purpose);
-        // The first slice runs now (the key press or the pause); the rest from a timer, so input
-        // and frames are served between slices.
-        if (spread_step()) spread_tick.set_timeout(1, [=] () { return spread_step(); });
+        // Start on the next event-loop turn. The queue can then advance from a delivery callback
+        // without nesting jobs or starting another solve inside the previous timer callback.
+        spread_tick.set_timeout(1, [=] () { return spread_step(); });
     }
 
     double spread_cancel_ms = 0;  // the last cancellation, unwinding included
@@ -207,6 +298,7 @@
         double solving = std::chrono::duration<double, std::milli>(run.job->total).count();
         double longest = std::chrono::duration<double, std::milli>(run.job->longest).count();
         ++spread_solves;
+        uint64_t delivered_sequence = spread_solves;
         LOGI("scottland: spread (", run.purpose, "): ", scottland::spread::status_name(result.status),
             " via ", result.checkpoint.empty() ? "nothing" : result.checkpoint, ", ", result.moves.size(), " moves, ",
             run.job->input().windows.size(), " windows, work ", result.work, ", ", run.job->slices, " slices, longest ",
@@ -246,13 +338,24 @@
             overlaps.append(pair);
         }
         record["overlaps"] = overlaps;
+        if (run.purpose == "gather")
+        {
+            record["screen_index"] = (int64_t)spread_gather_current_screen;
+            spread_gather_records.append(record);
+            record["screens"] = spread_gather_records;
+        }
         spread_last = record;
         run.job.reset();
         if (run.deliver) run.deliver(result);
         // The whole delivery callback on the event loop: result copy, record, the job's
         // destruction and the caller's commit (apart from the slices themselves).
-        spread_last["deliver_ms"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - entered).count();
-        spread_last["deliver_cpu_ms"] = thread_cpu_ms() - entered_cpu;
+        if (spread_last.has_member("sequence") &&
+            uint64_t(spread_last["sequence"].as_int()) == delivered_sequence)
+        {
+            spread_last["deliver_ms"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - entered).count();
+            spread_last["deliver_cpu_ms"] = thread_cpu_ms() - entered_cpu;
+        }
+        if (!spread_run) spread_pump();
     }
 
     // ------------------------------------------------------------------ committing moves
@@ -317,6 +420,11 @@
 
     void solo_window(uint64_t id)
     {
+        spread_enqueue([=] () { solo_window_now(id); });
+    }
+
+    void solo_window_now(uint64_t id)
+    {
         auto window = wf::toplevel_cast(view_by_id(id));
         auto shown = represented_view(id);
         if (!window || !shown || !shown->get_output() || drag->view) return;
@@ -330,7 +438,7 @@
         auto g = window->get_geometry();
         scottland::spread::box solo{at.x - g.width / 2.0, at.y - g.height / 2.0, at.x + g.width / 2.0, at.y + g.height / 2.0};
         auto captured = std::chrono::steady_clock::now();
-        auto snapshot = spread_snapshot(output, id, solo);
+        auto snapshot = spread_snapshot(output, id, solo, scottland::spread::mode_t::solo);
         if (!snapshot) return;
         auto signature = spread_signature(output, id);
         double snapshot_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - captured).count();
@@ -404,7 +512,7 @@
             spread_test_slow = data["slow"].as_bool();
         wf::json_t reply = wf::ipc::json_ok();
         reply["last"] = spread_last;
-        reply["running"] = spread_run.has_value();
+        reply["running"] = spread_run.has_value() || spread_gather_active;
         reply["running_slices"] = spread_run ? (int64_t)spread_run->job->slices : (int64_t)0;
         reply["solves"] = (int64_t)spread_solves;
         reply["cancel_ms"] = spread_cancel_ms;
@@ -419,5 +527,9 @@
     void fini_spread()
     {
         ipc_repo->unregister_method("scottland/spread-state");
+        spread_queue_tick.disconnect();
+        spread_queue.clear();
+        spread_gather_outputs.clear();
+        spread_gather_active = false;
         spread_cancel();  // joins nothing: the job runs only inside step(); this unwinds it
     }

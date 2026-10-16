@@ -726,11 +726,89 @@ static void examples(const std::string& dir)
     }
 }
 
+static void gather_fixtures()
+{
+    // A lone periphery window reaches its border and midline at the natural scale there.
+    {
+        auto s = screen(2560, 1440);
+        s.mode = mode_t::gather;
+        add_resident(s, 1, 500, 400, 420, 250);
+        const auto before = s.windows.front();
+        auto r = solve(s);
+        auto f = final_layout(s, r).at(1);
+        double border = s.screen_width / 2 - s.center_half;
+        CHECK(r.complete && r.status == status_t::clear && r.checkpoint == "gather",
+            "gather: lone window result %s, complete=%d", status_name(r.status), r.complete);
+        CHECK(r.moves.size() == 1 && r.moves.front().id == 1, "gather: lone window was not moved once");
+        CHECK(std::abs(f.cx + before.width * f.s / 2 - border) <= 1.5,
+            "gather: inner edge %.2f did not reach border %.2f", f.cx + before.width * f.s / 2, border);
+        CHECK(std::abs(f.cy - s.screen_height / 2) <= 0.5, "gather: lone window missed the midline");
+        CHECK(f.s > before.scale, "gather: lone window did not grow toward the center");
+
+        auto settled = s;
+        settled.windows.front().cx = f.cx; settled.windows.front().cy = f.cy;
+        settled.windows.front().scale = f.s;
+        auto again = solve(settled);
+        CHECK(again.complete && again.moves.empty(), "gather: calm single-window column moved twice");
+    }
+    // An overhanging periphery window moves out to, but never through, the center border.
+    {
+        auto s = screen(2560, 1440);
+        s.mode = mode_t::gather;
+        add_resident(s, 2, 700, 850, 800, 400);
+        auto r = solve(s);
+        const auto& w = s.windows.front();
+        auto f = final_layout(s, r).at(2);
+        double border = s.screen_width / 2 - s.center_half;
+        CHECK(r.moves.size() == 1, "gather: overhang was not corrected");
+        CHECK(std::abs(f.cx + w.width * f.s / 2 - border) <= 1.5,
+            "gather: overhang ended beyond border (%.2f vs %.2f)", f.cx + w.width * f.s / 2, border);
+    }
+    // A fixed obstacle that spans the workarea forces the bounded least-overlap fallback.
+    {
+        auto s = screen(2560, 1080);
+        s.mode = mode_t::gather;
+        s.fixed.push_back({200, 0, 900, 1080});
+        add_resident(s, 3, 500, 400, 400, 300);
+        auto r = solve(s);
+        const auto& w = s.windows.front();
+        auto f = final_layout(s, r).at(3);
+        double border = s.screen_width / 2 - s.center_half;
+        CHECK(r.complete && r.status == status_t::overlap_exhausted && !r.overlaps.empty(),
+            "gather: impossible 10%% layout was not reported as bounded overlap");
+        CHECK(f.cx + w.width * f.s / 2 <= border + 1.5,
+            "gather: fallback crossed the center border");
+        CHECK(std::abs(f.cx - w.cx) > 1, "gather: fixed obstacle fixture did not exercise fallback movement");
+    }
+    // A periphery window too wide to fit between its rail and border stays unchanged.
+    {
+        auto s = screen(2560, 1080);
+        s.mode = mode_t::gather;
+        s.windows.push_back(window(4, role_t::resident, 1000, 500, 600, 400, .8));
+        auto r = solve(s);
+        CHECK(r.complete && r.moves.empty(), "gather: too-wide window moved");
+        CHECK(r.status == status_t::clear, "gather: unchanged too-wide window status %s", status_name(r.status));
+    }
+    // A work-cap cut is deterministic and delivers no partial layout.
+    {
+        auto s = screen(2560, 1080);
+        s.mode = mode_t::gather;
+        s.work_cap = 1;
+        add_resident(s, 5, 500, 400, 420, 250);
+        auto a = solve(s), b = solve(s);
+        CHECK(a.status == status_t::unchanged_budget && a.moves.empty() && !a.complete,
+            "gather: budget cut delivered a partial layout");
+        CHECK(b.status == a.status && b.work == a.work && b.moves.empty(),
+            "gather: fixed-work budget result was not deterministic");
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 2 && !std::strcmp(argv[1], "--svg")) { examples(argv[2]); std::printf("%d failures\n", failures); return 0; }
     bool bench = argc > 1 && !std::strcmp(argv[1], "--bench");
     fixtures();
+    gather_fixtures();
     fuzz(bench ? 200 : 600);
     starved();
     crowding(bench ? 500 : 4000);

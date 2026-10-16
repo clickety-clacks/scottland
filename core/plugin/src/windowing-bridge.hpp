@@ -1915,7 +1915,12 @@
         else if (first || arrow_key(code)) window_keys.interrupt();
         if (arrow_key(code)) { press_arrow(code, keyboard, first); return; }
         if (!first) return;
-        if (code == KEY_ESC) { cancel_keyboard_motion(); end_window_keys(); }
+        if (code == KEY_SPACE)
+        {
+            uint32_t blockers = modifier_mask(keyboard->keymap, "CTRL SHIFT SUPER");
+            if (!(keyboard->modifiers.depressed & blockers)) gather_screens();
+        }
+        else if (code == KEY_ESC) { cancel_keyboard_motion(); end_window_keys(); }
         else if (code == KEY_TAB)
             window_keys.tab(held_keys.count(KEY_LEFTSHIFT) || held_keys.count(KEY_RIGHTSHIFT));
         else if (code == KEY_F4) window_keys.close_selected();
