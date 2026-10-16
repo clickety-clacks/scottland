@@ -5004,8 +5004,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return view;
     }
 
-    /** The halo can have no pointer focus node or client surface, so resolve its scene hit to the
-     * frame's toplevel before applying the same middle-button move as on the client. */
+    /** The halo can have no pointer focus node or client surface. Resolve that empty scene hit
+     * with the same topmost-frame selection used to track the halo under the cursor. */
     wayfire_toplevel_view middle_press_target()
     {
         auto& core = wf::get_core();
@@ -5017,17 +5017,22 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             frame = dynamic_cast<scottland::frame_t*>(hit->node.get());
         }
 
-        auto view = frame ? frame->toplevel() : (hit ?
-            wf::toplevel_cast(wf::node_to_view(hit->node->shared_from_this())) :
-            wf::toplevel_cast(core.get_cursor_focus_view()));
         auto cursor_view = wf::toplevel_cast(core.get_cursor_focus_view());
-        LOGI("scottland: middle target diagnostic cursor=", core.get_cursor_position().x, ",",
-            core.get_cursor_position().y,
-            " focus=", focus ? focus->stringify() : "<none>",
-            " hit=", hit ? hit->node->stringify() : "<none>",
-            " hit_frame=", frame ? "yes" : "no",
-            " cursor_view=", cursor_view ? cursor_view->get_id() : 0,
-            " target=", view ? view->get_id() : 0);
+        auto view = frame ? frame->toplevel() : (hit ?
+            wf::toplevel_cast(wf::node_to_view(hit->node->shared_from_this())) : cursor_view);
+        if (!focus && !hit && !cursor_view)
+        {
+            auto cursor = core.get_cursor_position();
+            auto output = core.output_layout->find_closest_output(cursor);
+            if (output && !output->is_plugin_active("move") &&
+                !output->is_plugin_active("scottland-resize"))
+            {
+                auto local = cursor - wf::origin(output->get_layout_geometry());
+                auto halo_frame = frame_near(output, local);
+                view = halo_frame ? halo_frame->toplevel() : nullptr;
+            }
+        }
+
         if (!view || !view->is_mapped() || view->pending_fullscreen() || !frame_of(view, false))
         {
             return nullptr;
