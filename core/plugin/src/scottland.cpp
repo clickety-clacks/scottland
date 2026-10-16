@@ -67,6 +67,7 @@ extern "C" {
 #include "declutter.hpp"
 #include "peek.hpp"
 #include "alt-mode.hpp"
+#include "window-filter.hpp"
 #include "pairing.hpp"
 #include "navigation.hpp"
 #include "inertia.hpp"
@@ -1187,14 +1188,85 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return place_at(output, x, output->get_relative_geometry().width);
     }
 
+    // Fullscreen surfaces have no Scottland frame. A filter-only view transformer
+    // hides excluded fullscreen windows and is removed when they match or the mode ends.
+    struct fullscreen_filter_visual_t
+    {
+        std::weak_ptr<wf::view_interface_t> view;
+        std::shared_ptr<scottland::view_2d_t> opacity;
+    };
+    std::map<uint64_t, fullscreen_filter_visual_t> fullscreen_filter_visuals;
+
+    void set_fullscreen_filter_hidden(wayfire_toplevel_view view, bool hidden)
+    {
+        if (!view) return;
+        auto found = fullscreen_filter_visuals.find(view->get_id());
+        if (found != fullscreen_filter_visuals.end())
+        {
+            if (auto old = found->second.view.lock())
+            {
+                if (old.get() == view.get() && hidden) return;
+                old->damage();
+                old->get_transformed_node()->rem_transformer("scottland-filter-fullscreen");
+                old->damage();
+            }
+            fullscreen_filter_visuals.erase(found);
+        }
+        if (!hidden) return;
+
+        auto opacity = std::make_shared<scottland::view_2d_t>(view);
+        opacity->alpha = 0.0;
+        view->damage();
+        view->get_transformed_node()->add_transformer(opacity, wf::TRANSFORMER_HIGHLEVEL,
+            "scottland-filter-fullscreen");
+        view->damage();
+        fullscreen_filter_visuals.emplace(view->get_id(),
+            fullscreen_filter_visual_t{view->weak_from_this(), opacity});
+    }
+
+    void clear_window_filter_fullscreen_visuals()
+    {
+        while (!fullscreen_filter_visuals.empty())
+        {
+            auto found = fullscreen_filter_visuals.begin();
+            if (auto view = found->second.view.lock())
+            {
+                view->damage();
+                view->get_transformed_node()->rem_transformer("scottland-filter-fullscreen");
+                view->damage();
+            }
+            fullscreen_filter_visuals.erase(found);
+        }
+    }
+
+    bool matches_window_filter(wayfire_toplevel_view view)
+    {
+        if (!view) return false;
+        auto widget = link_of_widget(view);
+        auto link = widget ? widget : link_of_window(view);
+        if (!link) return window_filter.matches(view->get_title(), view->get_app_id());
+        if (window_filter.matches(view->get_title(), view->get_app_id(), link->name)) return true;
+
+        // A card and its hidden application window are one filter target: either side's
+        // user-facing identity can keep that target visible.
+        auto partner = widget ? wf::toplevel_cast(view_by_id(link->window_id)) :
+            wf::toplevel_cast(link->widget.lock());
+        return partner && window_filter.matches(partner->get_title(), partner->get_app_id());
+    }
+
     void apply_opacity(wayfire_toplevel_view view, std::optional<double> center_x = {})
     {
-        if (!view || !view->is_mapped() || view->pending_fullscreen()) return;
+        if (!view) return;
+        bool excluded = view->is_mapped() && window_keys.active && !matches_window_filter(view);
+        set_fullscreen_filter_hidden(view, view->pending_fullscreen() && excluded);
+        if (!view->is_mapped() || view->pending_fullscreen()) return;
         auto frame = frame_of(view, false);
         if (!frame) return;
         bool focused = wf::get_core().seat->get_active_view() == view;
         double target;
-        if (untouched_since_pairing(view))
+        if (excluded)
+            target = 0.0;
+        else if (untouched_since_pairing(view))
             target = 1.0;  // pairing shows both fully opaque, once (WK36)
         else if (window_keys.active)
             target = focused ? double(window_mode_opacity_focused) : double(window_mode_opacity_unfocused);
@@ -1584,6 +1656,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 if (pending_drag_layout->empty()) pending_drag_layout.reset();
             }
             stop_widget_transition(toplevel);
+            set_fullscreen_filter_hidden(toplevel, false);
             model.windows.erase(toplevel->get_id());
             render_hidden(toplevel, false);  // return our lease even if Wayfire already unmapped it
             if (auto frame = frame_of(toplevel, false))
@@ -4621,6 +4694,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         observe_view(wf::toplevel_cast(ev->view));
         publish_model();
+        if (window_keys.active && !window_filter.query.empty()) update_window_filter();
     };
 
     wf::signal::connection_t<wf::view_app_id_changed_signal> on_app_id =
@@ -4628,6 +4702,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         observe_view(wf::toplevel_cast(ev->view));
         publish_model();
+        if (window_keys.active && !window_filter.query.empty()) update_window_filter();
     };
 
     // What the widget's manifest says that Scottland acts on, told by the launcher once it has
@@ -4662,6 +4737,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         link.icon = data["icon"].as_string();
         link.card = data.has_member("card") && data["card"].as_bool();
         publish_model();
+        if (window_keys.active && !window_filter.query.empty()) update_window_filter();
         return wf::ipc::json_ok();
     };
 
