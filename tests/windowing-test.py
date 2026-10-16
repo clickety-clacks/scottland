@@ -232,8 +232,10 @@ def close_all():
 
 try:
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/alt_hold_delay': 300})
-    outputs = sorted(ipc('window-rules/list-outputs'), key=lambda o: o['geometry']['x'])
-    check(len(outputs) == 2, 'Gather input coverage uses two independent outputs')
+    outputs = wait_for(lambda: (lambda current: current if len(current) == 2 else None)(
+        sorted(ipc('window-rules/list-outputs'), key=lambda o: o['geometry']['x'])))
+    check(len(outputs) == 2 and outputs[0]['id'] != outputs[1]['id'],
+          'Gather input coverage uses two independent outputs')
     output0, output1 = outputs
     output = output0['geometry']
     width, height = output['width'], output['height']
