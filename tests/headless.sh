@@ -214,6 +214,7 @@ if ((inside == 0)); then
     --setenv XDG_RUNTIME_DIR "$runtime" --setenv TMPDIR "$tmp_scratch")
   start_stderr_forwarded=0
   start_diagnostics_ready=0
+  start_stderr_fd=
   record_start_failure() {
     local status=$1 stage=private-runtime candidate stderr_state=unavailable wayfire_state=absent
     if [[ -n $start_stage_file && -f $start_stage_file && ! -L $start_stage_file ]]; then
@@ -241,7 +242,7 @@ if ((inside == 0)); then
       chmod 600 -- "$start_stderr_copy" || return 1
     fi
     printf 'headless start failed at stage=%s (status=%s); owned diagnostics are retained with scratch\n' \
-      "$stage" "$status" >&2
+      "$stage" "$status" >&2 || true
     return 0
   }
   forward_start_stderr() {
@@ -255,7 +256,7 @@ if ((inside == 0)); then
     [[ -n $start_diagnostics_dir ]] || return 0
     [[ -d $start_diagnostics_dir && ! -L $start_diagnostics_dir && \
        $(stat -c '%u:%a' -- "$start_diagnostics_dir" 2>/dev/null || true) == "$uid:700" ]] || {
-      echo 'temporary startup diagnostics changed; preserving them' >&2
+      echo 'temporary startup diagnostics changed; preserving them' >&2 || true
       return 1
     }
     rm -rf -- "$start_diagnostics_dir"
@@ -269,13 +270,13 @@ if ((inside == 0)); then
         if record_start_failure "$status"; then
           cleanup_start_diagnostics || true
         else
-          echo "startup diagnostics preserved at $start_diagnostics_dir" >&2
+          echo "startup diagnostics preserved at $start_diagnostics_dir" >&2 || true
         fi
         if ! "$repo/tests/headless.sh" stop --preserve-scratch; then
-          echo 'failed to stop partial headless session; preserving owned scratch for inspection' >&2
+          echo 'failed to stop partial headless session; preserving owned scratch for inspection' >&2 || true
         fi
       else
-        echo "startup diagnostics preserved at $start_diagnostics_dir" >&2
+        echo "startup diagnostics preserved at $start_diagnostics_dir" >&2 || true
       fi
     else
       cleanup_start_diagnostics || true
@@ -287,7 +288,7 @@ if ((inside == 0)); then
     # copy them into owned scratch before the existing preserve-scratch cleanup.
     start_diagnostics_dir=$(mktemp -d -m 700 -- "$build/.headless-start.XXXXXX" 2>/dev/null) || {
       start_diagnostics_dir=
-      echo 'private headless startup diagnostics unavailable; continuing without capture' >&2
+      echo 'private headless startup diagnostics unavailable; continuing without capture' >&2 || true
     }
     if [[ -n $start_diagnostics_dir ]]; then
       start_stage_file=$start_diagnostics_dir/stage
@@ -305,26 +306,35 @@ if ((inside == 0)); then
     else
       start_stage_file=
       start_stderr_file=
-      echo 'private headless startup diagnostics unavailable; continuing without capture' >&2
+      echo 'private headless startup diagnostics unavailable; continuing without capture' >&2 || true
     fi
   fi
   # Explicitly bind /dev in the root-bind namespace so Bash can open /dev/null and the
   # compositor can see its render node. Reuse a live session's user namespace for later
   # invocations so run processes retain access to that session's /proc entries; runtime and
   # TMPDIR are still privately bound to this run's owned scratch.
-  if [[ $action == start && $start_diagnostics_ready == 1 ]]; then
+  if [[ $action == start && $start_diagnostics_ready == 1 ]] && \
+     { exec {start_stderr_fd}>>"$start_stderr_file"; } 2>/dev/null; then
     if SCOTTLAND_HEADLESS_DIAGNOSTICS_DIR="$start_diagnostics_dir" bwrap "${bwrap_args[@]}" -- \
-      "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@" 2>"$start_stderr_file"; then
+      "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@" \
+      2>&"$start_stderr_fd" {start_stderr_fd}>&-; then
       status=0
     else
       status=$?
     fi
+    exec {start_stderr_fd}>&- 2>/dev/null || true
     forward_start_stderr
-  elif bwrap "${bwrap_args[@]}" -- \
-    "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@"; then
-    status=0
   else
-    status=$?
+    if [[ $action == start && $start_diagnostics_ready == 1 ]]; then
+      start_stderr_file=
+      echo 'private headless startup stderr capture unavailable; continuing without capture' >&2 || true
+    fi
+    if bwrap "${bwrap_args[@]}" -- \
+      "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@"; then
+      status=0
+    else
+      status=$?
+    fi
   fi
   if [[ $action == stop && $status -eq 0 && $preserve_scratch -eq 0 ]]; then
     remove_owned_scratch || exit 2
@@ -337,25 +347,31 @@ export XDG_RUNTIME_DIR=$runtime TMPDIR=$tmp_scratch SCOTTLAND_HEADLESS_DIR=$dir
 startup_diagnostics=0
 start_diagnostics_dir=${SCOTTLAND_HEADLESS_DIAGNOSTICS_DIR:-}
 if [[ -n $start_diagnostics_dir ]]; then
-  case $start_diagnostics_dir in
-    "$build"/*) ;;
-    *) echo 'headless startup diagnostics must stay below this checkout build/' >&2; exit 2 ;;
-  esac
-  [[ -d $start_diagnostics_dir && ! -L $start_diagnostics_dir && \
-     $(stat -c '%u:%a' -- "$start_diagnostics_dir") == "$uid:700" ]] || {
-    echo 'headless startup diagnostics directory is not private; preserving scratch' >&2
-    exit 2
-  }
   start_stage_file=$start_diagnostics_dir/stage
   start_stderr_file=$start_diagnostics_dir/stderr.log
-  [[ -f $start_stage_file && ! -L $start_stage_file && \
-     -f $start_stderr_file && ! -L $start_stderr_file && \
-     $(stat -c '%u:%a' -- "$start_stage_file") == "$uid:600" && \
-     $(stat -c '%u:%a' -- "$start_stderr_file") == "$uid:600" ]] || {
-    echo 'headless startup diagnostics are invalid; preserving scratch' >&2
-    exit 2
-  }
-  startup_diagnostics=1
+  case $start_diagnostics_dir in
+    "$build"/*)
+      if [[ -d $start_diagnostics_dir && ! -L $start_diagnostics_dir && \
+            $(stat -c '%u:%a' -- "$start_diagnostics_dir" 2>/dev/null) == "$uid:700" && \
+            -f $start_stage_file && ! -L $start_stage_file && \
+            -f $start_stderr_file && ! -L $start_stderr_file && \
+            $(stat -c '%u:%a' -- "$start_stage_file" 2>/dev/null) == "$uid:600" && \
+            $(stat -c '%u:%a' -- "$start_stderr_file" 2>/dev/null) == "$uid:600" ]]; then
+        startup_diagnostics=1
+      else
+        echo 'headless startup diagnostics unavailable; continuing without capture' >&2 || true
+        start_diagnostics_dir=
+        start_stage_file=
+        start_stderr_file=
+      fi
+      ;;
+    *)
+      echo 'headless startup diagnostics unavailable; continuing without capture' >&2 || true
+      start_diagnostics_dir=
+      start_stage_file=
+      start_stderr_file=
+      ;;
+  esac
 fi
 isolation=${SCOTTLAND_HEADLESS_ISOLATION:-0}
 if [[ $isolation == 1 ]]; then
@@ -445,7 +461,7 @@ PY
 }
 record_start_stage() {
   ((startup_diagnostics)) || return 0
-  printf '%s\n' "$1" >"$start_stage_file"
+  printf '%s\n' "$1" 2>/dev/null >"$start_stage_file" || true
 }
 stop_color_scheme_watcher() {
   local pid_file helper group result group_alive
