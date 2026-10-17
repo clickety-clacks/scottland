@@ -262,6 +262,28 @@ def launch_with_note_behavior():
             for entry in entries if entry.get("id") == note["id"]) == 1,
         {"window_id": view["id"], "note": note, "notes": note_slice})
 
+    configured = {"x": 240, "y": 120, "width": 520, "height": 500}
+    place(title, configured)
+    focus("Notes focus target")
+    browser = wait_for(lambda: scene(title), "Chromium scene for note rendering")
+    frame = browser.get("scene_frame", browser["frame"])
+    dot_x, dot_y = round(frame["x"] + frame["width"] + 8), round(frame["y"] + 4)
+    _, dot_pixels = wait_shot("nt19-chromium-note-dot", lambda image:
+        pixel(image, dot_x, dot_y) != pixel(image, dot_x + 6, dot_y))
+    require("the bound Chromium window draws its note dot while unfocused",
+        pixel(dot_pixels, dot_x, dot_y) != pixel(dot_pixels, dot_x + 6, dot_y),
+        {"dot": pixel(dot_pixels, dot_x, dot_y), "nearby": pixel(dot_pixels, dot_x + 6, dot_y)})
+
+    focus(title)
+    _, panel_pixels = wait_shot("nt19-chromium-note-panel", lambda image:
+        changed_pixels(dot_pixels, image,
+            (dot_x - 4, dot_y - 4, dot_x + 340, dot_y + 420)) > 500)
+    require("focusing Chromium renders the bound note panel",
+        changed_pixels(dot_pixels, panel_pixels,
+            (dot_x - 4, dot_y - 4, dot_x + 340, dot_y + 420)) > 500,
+        changed_pixels(dot_pixels, panel_pixels,
+            (dot_x - 4, dot_y - 4, dot_x + 340, dot_y + 420)))
+
 
 def pointer(x, y):
     reply = ipc("stipc/move_cursor", {"x": round(x), "y": round(y)})
@@ -556,7 +578,9 @@ try:
     plugin_names = plugins.split()
     require("test config currently loads Scottland", "scottland" in plugin_names, plugins)
     replacement = " ".join(str(fresh_plugin) if name == "scottland" else name for name in plugin_names)
-    runtime = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
+    session_dir = Path(os.environ.get("SCOTTLAND_SESSION_DIR",
+        str(Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland")))
+    runtime = session_dir / (os.environ.get("WAYLAND_DISPLAY", "wayland") + ".reloading")
     runtime.parent.mkdir(parents=True, exist_ok=True)
     runtime.touch()
     try:
@@ -633,10 +657,16 @@ try:
     require("dragging to a rail preserves notes on the application window",
         row_for(notes(), anchor_id) is not None and len(row_for(notes(), anchor_id)["notes"]) ==
             len(row_for(before_reload, anchor_id)["notes"]) + 1, notes())
+    def mapped_widget_view_id():
+        current = next((row for row in ipc("scottland/widgets")["widgets"]
+            if row.get("title") == "Notes anchor"), None)
+        if current is None:
+            return None
+        value = int(current.get("widget_view", -1))
+        return value if value > 0 else None
+
     try:
-        widget_view_id = wait_for(lambda: (int(widget["widget_view"])
-            if int(widget.get("widget_view", -1)) > 0 else None),
-            "mapped notes widget card", seconds=25)
+        widget_view_id = wait_for(mapped_widget_view_id, "mapped notes widget card", seconds=25)
     except AssertionError as error:
         raise AssertionError(f"{error}; widget={widget!r}; views={ipc('scottland/layout-state')['views']!r}")
     widget_view = wait_for(lambda: next((row for row in ipc("scottland/layout-state")["views"]

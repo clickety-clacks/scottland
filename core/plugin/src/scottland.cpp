@@ -1700,6 +1700,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             set_fullscreen_filter_hidden(toplevel, false);
             model.windows.erase(toplevel->get_id());
             model.notes.erase(toplevel->get_id());
+            note_panel_layout_cache.erase(toplevel->get_id());
             clear_note_dot(toplevel->get_id());
             render_hidden(toplevel, false);  // return our lease even if Wayfire already unmapped it
             if (auto frame = frame_of(toplevel, false))
@@ -2793,6 +2794,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 auto& notes = model.notes[view->get_id()];
                 for (auto& note : staged_notes) notes.push_back(std::move(note));
+                note_panel_layout_cache.erase(view->get_id());
             }
             discard_pending_provenance(token);
             publish_model();
@@ -2860,8 +2862,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         for (const auto& [path_pid, before] : path)
         {
             auto after = read_process_identity(path_pid);
-            if (!after || after->parent != before.parent || after->start_ticks != before.start_ticks ||
-                after->state != before.state) return false;
+            if (!after || after->parent != before.parent || after->start_ticks != before.start_ticks)
+                return false;
         }
         return bind_provenance(selected, view);
     }

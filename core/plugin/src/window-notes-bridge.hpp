@@ -10,6 +10,23 @@
     std::map<wf::output_t*, std::shared_ptr<scottland::windowing::note_overlay_node_t>> note_panel_nodes;
     wf::wl_timer<true> note_tick;
     scottland::windowing::note_layout_t note_layout;
+    struct note_panel_cache_entry_t
+    {
+        int64_t id = 0;
+        std::string writer, text;
+        bool full_ready = false, limited_ready = false;
+        double limited_height = 0;
+        scottland::windowing::note_panel_layout_t full, limited;
+    };
+    struct note_panel_cache_t
+    {
+        bool configured = false, marker_ready = false;
+        std::string font_family, marker_text;
+        double scale = 0, width_limit = 0, area_width = 0, area_height = 0;
+        scottland::windowing::note_panel_layout_t marker;
+        std::vector<note_panel_cache_entry_t> panels;
+    };
+    std::map<uint64_t, note_panel_cache_t> note_panel_layout_cache;
 
     wf::json_t notes_windows_snapshot() const
     {
@@ -90,20 +107,125 @@
         return dx * dx + dy * dy <= radius * radius;
     }
 
-    void position_window_dot(uint64_t window_id, wayfire_toplevel_view view, wf::output_t *output,
+    note_panel_cache_t& note_panel_cache_for(uint64_t window_id, wf::geometry_t area,
+        double width_limit, double scale)
+    {
+        auto& cache = note_panel_layout_cache[window_id];
+        const std::string family = hints_palette.font_family.empty() ?
+            "sans-serif" : hints_palette.font_family;
+        if (cache.configured && (cache.font_family != family || cache.scale != scale ||
+            cache.width_limit != width_limit || cache.area_width != area.width ||
+            cache.area_height != area.height))
+        {
+            cache = {};
+        }
+
+        if (!cache.configured)
+        {
+            cache.configured = true;
+            cache.font_family = family;
+            cache.scale = scale;
+            cache.width_limit = width_limit;
+            cache.area_width = area.width;
+            cache.area_height = area.height;
+        }
+
+        return cache;
+    }
+
+    scottland::windowing::note_panel_layout_t cached_note_panel(note_panel_cache_t& cache,
+        size_t index, const scottland::window_notes::note_t& note, double height_limit)
+    {
+        if (cache.panels.size() <= index) cache.panels.resize(index + 1);
+        auto& entry = cache.panels[index];
+        if (entry.id != note.id || entry.writer != note.writer || entry.text != note.text)
+        {
+            entry = {};
+            entry.id = note.id;
+            entry.writer = note.writer;
+            entry.text = note.text;
+        }
+
+        if (height_limit == cache.area_height)
+        {
+            if (!entry.full_ready)
+            {
+                entry.full = note_layout.panel(note.writer, note.text, hints_palette,
+                    cache.width_limit, height_limit);
+                entry.full_ready = true;
+            }
+
+            return entry.full;
+        }
+
+        if (!entry.limited_ready || entry.limited_height != height_limit)
+        {
+            entry.limited = note_layout.panel(note.writer, note.text, hints_palette,
+                cache.width_limit, height_limit);
+            entry.limited_height = height_limit;
+            entry.limited_ready = true;
+        }
+
+        return entry.limited;
+    }
+
+    scottland::windowing::note_panel_layout_t cached_note_more(note_panel_cache_t& cache,
+        const std::string& label)
+    {
+        if (!cache.marker_ready || cache.marker_text != label)
+        {
+            cache.marker = note_layout.panel("", label, hints_palette,
+                cache.width_limit, cache.area_height, false);
+            cache.marker_text = label;
+            cache.marker_ready = true;
+        }
+
+        return cache.marker;
+    }
+
+    wf::output_t *note_output_for_point(wf::pointf_t point)
+    {
+        auto outputs = wf::get_core().output_layout->get_outputs();
+        for (auto output : outputs)
+        {
+            const auto geometry = output->get_layout_geometry();
+            if (point.x >= geometry.x && point.x < geometry.x + geometry.width &&
+                point.y >= geometry.y && point.y < geometry.y + geometry.height)
+                return output;
+        }
+
+        return nullptr;
+    }
+
+    void position_window_dot(uint64_t window_id, wayfire_toplevel_view view,
+        wf::output_t *view_output, wf::output_t *output,
         const std::vector<scottland::windowing::note_overlay_item_t>& items)
     {
-        if (items.empty() || !view || !output)
+        if (items.empty() || !view || !view_output || !output)
         {
             clear_note_dot(window_id);
             return;
         }
 
+        auto widget = link_of_widget(view);
+        auto positioned = items;
+        if (!widget && view_output != output)
+        {
+            const auto view_origin = wf::origin(view_output->get_layout_geometry());
+            const auto output_origin = wf::origin(output->get_layout_geometry());
+            const double dx = output_origin.x - view_origin.x;
+            const double dy = output_origin.y - view_origin.y;
+            for (auto& item : positioned)
+            {
+                item.box.x += dx;
+                item.box.y += dy;
+            }
+        }
+
         auto& node = note_dot_nodes[window_id];
         if (!node) node = std::make_shared<scottland::windowing::note_overlay_node_t>();
-        node->update(items, hints_palette, output->get_scale());
+        node->update(positioned, hints_palette, output->get_scale());
 
-        auto widget = link_of_widget(view);
         std::shared_ptr<wf::scene::floating_inner_node_t> parent;
         auto root = view->get_root_node();
         if (widget)
@@ -185,69 +307,81 @@
     }
 
     void append_note_panel_stack(std::vector<scottland::windowing::note_overlay_item_t>& items,
-        const std::vector<scottland::window_notes::note_t>& notes, wf::geometry_t area,
-        double left, double top)
+        uint64_t window_id, const std::vector<scottland::window_notes::note_t>& notes,
+        wf::geometry_t area, double left, double top)
     {
         if (notes.empty()) return;
         const double scale = std::clamp(hints_palette.text_scale, 0.5, 3.0);
         const double width_limit = std::max(1.0, std::min(320 * scale, double(area.width)));
         const double gap = 6 * scale;
-        std::vector<scottland::windowing::note_panel_layout_t> full;
-        full.reserve(notes.size());
-        double total = 0;
-        for (const auto& note : notes)
-        {
-            auto panel = note_layout.panel(note.writer, note.text, hints_palette, width_limit, area.height);
-            if (!panel.drawable) return;
-            total += panel.height;
-            full.push_back(std::move(panel));
-        }
-
-        bool overflow = total + gap * std::max<int64_t>(0, notes.size() - 1) > area.height;
+        auto& cache = note_panel_cache_for(window_id, area, width_limit, scale);
         std::vector<scottland::windowing::note_panel_layout_t> chosen;
-        if (!overflow)
+        size_t shown = 0, attempted = 0;
+        double used_height = 0;
+        for (size_t index = 0; index < notes.size(); ++index)
         {
-            chosen = std::move(full);
-        } else
-        {
-            // Reserve the final small panel first, then keep the longest prefix whose panels and
-            // remaining-count panel both fit. The last visible note is shortened to its remaining height.
-            for (size_t count = notes.size() - 1; ; --count)
-            {
-                const auto more_text = "+" + std::to_string(notes.size() - count) + " more";
-                auto more = note_layout.panel("", more_text, hints_palette, width_limit, area.height, false);
-                if (more.drawable)
-                {
-                    double prior_height = gap * count + more.height;
-                    for (size_t i = 0; i + 1 < count; ++i) prior_height += full[i].height;
-                    const double last_limit = area.height - prior_height;
-                    if (count == 0)
-                    {
-                        chosen.push_back(std::move(more));
-                        break;
-                    }
+            attempted = index + 1;
+            auto full = cached_note_panel(cache, index, notes[index], area.height);
+            if (!full.drawable) break;
 
-                    if (last_limit > 0)
-                    {
-                        auto last = note_layout.panel(notes[count - 1].writer, notes[count - 1].text,
-                            hints_palette, width_limit, last_limit);
-                        bool prefix_fits = true;
-                        for (size_t i = 0; i + 1 < count; ++i)
-                            prefix_fits = prefix_fits && full[i].drawable;
-                        if (prefix_fits && last.drawable)
-                        {
-                            for (size_t i = 0; i + 1 < count; ++i) chosen.push_back(full[i]);
-                            chosen.push_back(std::move(last));
-                            chosen.push_back(std::move(more));
-                            break;
-                        }
-                    }
+            const double before_panel = used_height + (shown ? gap : 0);
+            const double available = area.height - before_panel;
+            if (index + 1 == notes.size())
+            {
+                if (full.height <= available)
+                {
+                    chosen.push_back(std::move(full));
+                    used_height = before_panel + chosen.back().height;
+                    ++shown;
+                } else if (available > 0)
+                {
+                    auto shortened = cached_note_panel(cache, index, notes[index], available);
+                    if (!shortened.drawable) break;
+                    chosen.push_back(std::move(shortened));
+                    used_height = before_panel + chosen.back().height;
+                    ++shown;
                 }
 
-                if (count == 0) break;
+                break;
             }
+
+            const size_t remaining_after = notes.size() - index - 1;
+            auto more = cached_note_more(cache, "+" + std::to_string(remaining_after) + " more");
+            if (!more.drawable) break;
+            const double panel_limit = available - gap - more.height;
+            if (panel_limit <= 0) break;
+            if (full.height <= panel_limit)
+            {
+                chosen.push_back(std::move(full));
+                used_height = before_panel + chosen.back().height;
+                ++shown;
+                continue;
+            }
+
+            auto shortened = cached_note_panel(cache, index, notes[index], panel_limit);
+            if (shortened.drawable)
+            {
+                chosen.push_back(std::move(shortened));
+                used_height = before_panel + chosen.back().height;
+                ++shown;
+            }
+
+            break;
         }
 
+        if (shown < notes.size())
+        {
+            auto more = cached_note_more(cache, "+" + std::to_string(notes.size() - shown) + " more");
+            if (!more.drawable)
+            {
+                cache.panels.resize(attempted);
+                return;
+            }
+
+            chosen.push_back(std::move(more));
+        }
+
+        cache.panels.resize(attempted);
         if (chosen.empty()) return;
         double stack_height = 0, stack_width = 0;
         for (size_t i = 0; i < chosen.size(); ++i)
@@ -294,32 +428,46 @@
             auto view = represented_view(window_id);
             if (!view || !view->is_mapped() || !view->get_output() || !view->get_root_node()->is_enabled())
                 continue;
-            auto output = view->get_output();
-            if (window_keys.active || in_focus_mode(output)) continue;
-            auto area = output->workarea->get_workarea();
+            auto view_output = view->get_output();
             auto link = link_of_widget(view);
+            auto rect = scene_rectangle(view, view_output);
+            if (rect.width() <= 0 || rect.height() <= 0) continue;
+            const auto view_geometry = view_output->get_layout_geometry();
+            wf::pointf_t visual_anchor = link ?
+                wf::pointf_t{view_geometry.x + (link->rail == "left" ? rect.x2 : rect.x1),
+                    view_geometry.y + rect.y2} :
+                wf::pointf_t{view_geometry.x + rect.x2, view_geometry.y + rect.y1};
+            const wf::pointf_t window_center{view_geometry.x + (rect.x1 + rect.x2) / 2,
+                view_geometry.y + (rect.y1 + rect.y2) / 2};
+            auto output = note_output_for_point(visual_anchor);
+            if (!output) output = note_output_for_point(window_center);
+            if (!output) output = wf::get_core().output_layout->find_closest_output(visual_anchor);
+            if (!output) output = view_output;
+            if (window_keys.active || in_focus_mode(view_output) || in_focus_mode(output)) continue;
+            auto area = output->workarea->get_workarea();
             auto active = wf::toplevel_cast(wf::get_core().seat->get_active_view());
             const bool focused = !link && active == view;
             note_anchor_visual_t anchor;
             anchor.output = output;
             anchor.widget = link != nullptr;
 
-            auto rect = scene_rectangle(view, output);
-            if (rect.width() <= 0 || rect.height() <= 0) continue;
+            const auto output_origin = wf::origin(output->get_layout_geometry());
+            const double anchor_x = visual_anchor.x - output_origin.x;
+            const double anchor_y = visual_anchor.y - output_origin.y;
             std::vector<scottland::windowing::note_overlay_item_t> dot_items;
             if (link)
             {
                 if (model.widget_mode == widget_mode_t::hidden || link->away) continue;
-                const double cx = link->rail == "left" ? rect.x2 : rect.x1;
-                auto box = note_clamp({cx - dot_size / 2, rect.y2 - dot_size / 2, dot_size, dot_size}, area);
+                auto box = note_clamp({anchor_x - dot_size / 2, anchor_y - dot_size / 2,
+                    dot_size, dot_size}, area);
                 scottland::windowing::note_overlay_item_t item;
                 item.kind = scottland::windowing::note_overlay_item_t::kind_t::dot;
                 item.box = box;
                 dot_items.push_back(item);
             } else if (!focused)
             {
-                const double x = rect.x2 + 4 * scale;
-                const double y = rect.y1;
+                const double x = anchor_x + 4 * scale;
+                const double y = anchor_y;
                 if (notes.size() <= 5)
                 {
                     wf::geometry_t column{x, y, dot_size, notes.size() * dot_size + (notes.size() - 1) * dot_gap};
@@ -352,29 +500,30 @@
             if (focused)
             {
                 clear_note_dot(window_id);
-                append_note_panel_stack(panels_by_output[output], notes, area,
-                    rect.x2 + 4 * scale, rect.y1);
+                append_note_panel_stack(panels_by_output[output], window_id, notes, area,
+                    anchor_x + 4 * scale, anchor_y);
                 continue;
             }
 
             if (dot_items.empty()) continue;
             seen_dots.insert(window_id);
-            position_window_dot(window_id, view, output, dot_items);
+            position_window_dot(window_id, view, view_output, output, dot_items);
             if (link) continue;
 
             auto origin = wf::origin(output->get_layout_geometry());
             const double px = cursor.x - origin.x, py = cursor.y - origin.y;
             if (anchor.count_marker && note_hit(anchor.marker, px, py, margin))
             {
-                append_note_panel_stack(hover_by_output[output], notes, area,
+                append_note_panel_stack(hover_by_output[output], window_id, notes, area,
                     anchor.marker.x + anchor.marker.width + 4 * scale, anchor.marker.y);
             } else
             {
                 for (size_t i = 0; i < anchor.dots.size(); ++i)
                 {
                     if (!note_dot_hit(anchor.dots[i], px, py, margin)) continue;
-                    auto panel = note_layout.panel(notes[i].writer, notes[i].text, hints_palette,
-                        std::max(1.0, std::min(320 * scale, double(area.width))), area.height);
+                    const double width_limit = std::max(1.0, std::min(320 * scale, double(area.width)));
+                    auto& cache = note_panel_cache_for(window_id, area, width_limit, scale);
+                    auto panel = cached_note_panel(cache, i, notes[i], area.height);
                     if (panel.drawable)
                     {
                         auto box = note_clamp({anchor.dots[i].x + dot_size + 4 * scale,
@@ -559,6 +708,7 @@
             note.writer = data["writer"].as_string();
             note.text = data["text"].as_string();
             model.notes[uint64_t(window_id)].push_back(note);
+            note_panel_layout_cache.erase(uint64_t(window_id));
             publish_model();
             update_note_visuals();
             auto reply = wf::ipc::json_ok();
@@ -580,8 +730,10 @@
                 auto& notes = window_it->second;
                 auto found = std::find_if(notes.begin(), notes.end(), [=] (const auto& note) { return note.id == id; });
                 if (found == notes.end()) continue;
+                const auto window_id = window_it->first;
                 if (action == "update") found->text = data["text"].as_string();
                 else notes.erase(found);
+                note_panel_layout_cache.erase(window_id);
                 if (notes.empty()) model.notes.erase(window_it);
                 publish_model(action == "update");
                 update_note_visuals();

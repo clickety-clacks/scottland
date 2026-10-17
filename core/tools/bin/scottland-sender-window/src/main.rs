@@ -5,7 +5,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_INPUT_BYTES: usize = 262_144;
 const MAX_RESOLVER_OUTPUT_BYTES: usize = 1_048_576;
@@ -438,7 +438,12 @@ fn lookup_hub_agentd(identity: &AgentdIdentity, hub: &Value) -> RegistryLookup {
     let matching_sources: Vec<&Value> = sources
         .iter()
         .filter(|source| {
-            source.get("machine").and_then(Value::as_str) == Some(identity.machine.as_str())
+            source
+                .get("machine")
+                .and_then(Value::as_str)
+                .map_or(false, |machine| {
+                    canonical_machine(machine) == identity.machine
+                })
         })
         .collect();
     if matching_sources.len() != 1 {
@@ -483,7 +488,7 @@ fn lookup_hub_agentd(identity: &AgentdIdentity, hub: &Value) -> RegistryLookup {
                 "an Agentd Hub entry has no machine",
             ));
         };
-        if machine != identity.machine {
+        if canonical_machine(machine) != identity.machine {
             continue;
         }
         let Some(instance_id) = agent.get("instanceId").and_then(Value::as_str) else {
@@ -593,8 +598,51 @@ fn agent_to_resolver_target(
     Ok(target)
 }
 
+fn wait_for_child_stdout_until(
+    child: &mut std::process::Child,
+    deadline: Instant,
+) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "the Agentd Hub response stream is unavailable".to_string())?;
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return Err("the Agentd Hub request exceeded its deadline".to_string());
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let bytes = reader
+                    .join()
+                    .map_err(|_| "the Agentd Hub response reader failed".to_string())?
+                    .map_err(|_| "the Agentd Hub response could not be read".to_string())?;
+                return Ok((status, bytes));
+            }
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Err("the Agentd Hub request could not be monitored".to_string());
+            }
+        }
+
+        thread::sleep((deadline - now).min(Duration::from_millis(10)));
+    }
+}
+
 fn fetch_hub_snapshot(base_url: &str) -> Result<Value, String> {
-    const MAX_HUB_BYTES: usize = 4 * 1024 * 1024;
+    let deadline = Instant::now() + Duration::from_secs(3);
     const SCRIPT: &str = r#"
 import json, sys, urllib.request, urllib.parse
 try:
@@ -608,9 +656,7 @@ try:
     with urllib.request.urlopen(request, timeout=3) as response:
         if urllib.parse.urlsplit(response.geturl()).scheme != 'https':
             raise ValueError()
-        body = response.read(4194305)
-    if len(body) > 4194304:
-        raise ValueError()
+        body = response.read()
     sys.stdout.buffer.write(body)
 except Exception:
     raise SystemExit(2)
@@ -623,17 +669,17 @@ except Exception:
         .spawn()
         .map_err(|_| "python could not read the Agentd Hub".to_string())?;
     if let Some(mut stdin) = child.stdin.take() {
-        serde_json::to_writer(&mut stdin, base_url)
-            .map_err(|_| "could not send the Agentd Hub URL to python".to_string())?;
+        if serde_json::to_writer(&mut stdin, base_url).is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("could not send the Agentd Hub URL to python".to_string());
+        }
     }
-    let output = child
-        .wait_with_output()
-        .map_err(|_| "python could not read the Agentd Hub".to_string())?;
-    if !output.status.success() || output.stdout.len() > MAX_HUB_BYTES {
+    let (status, stdout) = wait_for_child_stdout_until(&mut child, deadline)?;
+    if !status.success() {
         return Err("the Agentd Hub request failed".to_string());
     }
-    serde_json::from_slice(&output.stdout)
-        .map_err(|_| "the Agentd Hub returned invalid JSON".to_string())
+    serde_json::from_slice(&stdout).map_err(|_| "the Agentd Hub returned invalid JSON".to_string())
 }
 
 fn read_input() -> Result<Vec<u8>, String> {
@@ -882,7 +928,7 @@ fn parse_agentd_sender_id(value: &str) -> Option<AgentdIdentity> {
     let pid = pid.parse::<u32>().ok().filter(|pid| *pid > 0)?;
     let start_time_ticks = ticks.parse::<u64>().ok().filter(|ticks| *ticks > 0)?;
     Some(AgentdIdentity {
-        machine: parts[0].to_string(),
+        machine: canonical_machine(parts[0]),
         instance_id: parts[1].to_string(),
         pid,
         start_time_ticks,
@@ -891,7 +937,11 @@ fn parse_agentd_sender_id(value: &str) -> Option<AgentdIdentity> {
 
 fn canonical_local_machine() -> Result<String, String> {
     let machine = local_machine()?;
-    Ok(machine.trim_end_matches('.').to_ascii_lowercase())
+    Ok(canonical_machine(&machine))
+}
+
+fn canonical_machine(machine: &str) -> String {
+    machine.trim_end_matches('.').to_ascii_lowercase()
 }
 
 fn canonical_ticks(value: &str) -> bool {
@@ -1692,6 +1742,14 @@ print("valid")
         assert!(parse_agentd_sender_id("agentd://example-host/inst-7/48211").is_none());
     }
 
+    #[test]
+    fn agentd_machine_names_are_normalized_for_location_matching() {
+        let identity =
+            parse_agentd_sender_id("agentd://Example-Host./inst-7/48211:9127734").unwrap();
+        assert_eq!(identity.machine, "example-host");
+        assert_eq!(canonical_machine("EXAMPLE-HOST."), "example-host");
+    }
+
     fn hub_snapshot(health: &str, scan: &str) -> Value {
         json!({
             "type": "snapshot",
@@ -1726,6 +1784,19 @@ print("valid")
         assert_eq!(target["identity"]["startTimeTicks"], "9127734");
         assert_eq!(target["tmux"]["windowIndex"], "2");
         assert_eq!(validate_target(&target), Ok(true));
+    }
+
+    #[test]
+    fn hub_sender_lookup_normalizes_source_and_agent_machine_names() {
+        let identity =
+            parse_agentd_sender_id("agentd://example-host/inst-7/48211:9127734").unwrap();
+        let mut hub = hub_snapshot("reporting", "complete");
+        hub["sources"][0]["machine"] = json!("Example-Host.");
+        hub["agents"][0]["machine"] = json!("EXAMPLE-HOST.");
+        assert!(matches!(
+            lookup_hub_agentd(&identity, &hub),
+            RegistryLookup::Target(_)
+        ));
     }
 
     #[test]
