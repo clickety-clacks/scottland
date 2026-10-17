@@ -13,7 +13,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -27,9 +29,66 @@ inline constexpr double TOLERANCE = 1.0;        // overlap deeper than this is r
 inline constexpr double EDGE_MARGIN = 2.0;      // rounding-safe distance of a center from a zone edge
 inline constexpr size_t MAX_MOVABLE = 128;      // arrivals plus residents
 inline constexpr size_t MAX_OBSTACLES = 256;    // fixed rectangles plus every window
+inline constexpr size_t MAX_SNAPSHOT_VIEWS = MAX_OBSTACLES * 2; // bounded raw compositor views per output
 // About 12 ms of solving on the x86 test machine at -O2 (90 units per microsecond, tests/spread-unit.sh
 // timing); final.md started at 150,000 with a prototype that counted coarser units.
 inline constexpr uint64_t WORK_CAP = 1000000;
+
+// Index the mapped top-level views belonging to each Wayfire workspace set. The compositor's
+// get_views() returns a copied vector, so Gather uses this lifecycle-maintained index to check its
+// admission bound before inspecting any individual view.
+template<class WorkspaceSetKey>
+class mapped_view_index_t
+{
+    std::map<WorkspaceSetKey, std::set<uint64_t>> views_by_set;
+    std::map<uint64_t, WorkspaceSetKey> set_by_view;
+
+  public:
+    void insert(WorkspaceSetKey set, uint64_t view)
+    {
+        auto owner = set_by_view.find(view);
+        if (owner != set_by_view.end() && owner->second == set)
+            return;
+
+        erase(view);
+        views_by_set[set].insert(view);
+        set_by_view[view] = set;
+    }
+
+    void erase(uint64_t view)
+    {
+        auto owner = set_by_view.find(view);
+        if (owner == set_by_view.end())
+            return;
+
+        auto group = views_by_set.find(owner->second);
+        if (group != views_by_set.end())
+        {
+            group->second.erase(view);
+            if (group->second.empty())
+                views_by_set.erase(group);
+        }
+        set_by_view.erase(owner);
+    }
+
+    size_t size(WorkspaceSetKey set) const
+    {
+        auto found = views_by_set.find(set);
+        return found == views_by_set.end() ? 0 : found->second.size();
+    }
+
+    bool exceeds(WorkspaceSetKey set, size_t limit) const
+    {
+        return size(set) > limit;
+    }
+
+    const std::set<uint64_t>& members(WorkspaceSetKey set) const
+    {
+        static const std::set<uint64_t> empty;
+        auto found = views_by_set.find(set);
+        return found == views_by_set.end() ? empty : found->second;
+    }
+};
 
 struct box
 {
@@ -47,6 +106,11 @@ enum class role_t : uint8_t
     fixed,     // never moved by spread (a window on a rail, outside the request)
 };
 
+enum class mode_t : uint8_t
+{
+    solo, gather,
+};
+
 struct window_t
 {
     uint64_t id = 0;
@@ -61,6 +125,8 @@ struct window_t
 
 struct snapshot_t
 {
+    mode_t mode = mode_t::solo;
+    std::string unavailable_reason; // compositor-side admission stopped before solver input was complete
     double screen_width = 0, screen_height = 0;
     box workarea;                  // output-local; panels are outside it
     double padding = 0;            // WP7 screen-edge padding, kept whenever the window fits with it

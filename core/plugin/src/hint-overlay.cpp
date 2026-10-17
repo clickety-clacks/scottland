@@ -167,10 +167,23 @@ void fullscreen_hint_node::gen_render_instances(std::vector<wf::scene::render_in
 void center_switcher_node::update(double output_width, const std::string& title, unsigned position,
     unsigned count, const hint_palette& palette, double scale)
 {
-    wf::scene::damage_node(this, box);
-    texture.reset();
     std::string caption = count ? std::to_string(position) + " / " + std::to_string(count) + "   " +
         (title.empty() ? "Window" : title) : "No center windows";
+    update_plate(output_width, 0, caption, palette, scale, false);
+}
+
+void center_switcher_node::update_filter(double output_width, double output_height,
+    const std::string& query, const hint_palette& palette, double scale)
+{
+    update_plate(output_width, output_height, "Search windows and widgets: " + query + "|",
+        palette, scale, true);
+}
+
+void center_switcher_node::update_plate(double output_width, double output_height, std::string caption,
+    const hint_palette& palette, double scale, bool bottom)
+{
+    wf::scene::damage_node(this, box);
+    texture.reset();
     double font_size = std::clamp(15.0 * palette.text_scale, 12.0, 27.0);
     double height = std::ceil(font_size + 22);
     double max_text_width = std::max(80.0, output_width - 76.0);
@@ -194,7 +207,9 @@ void center_switcher_node::update(double output_width, const std::string& title,
     if (shortened) caption += "…";
     double width = std::min(output_width - 24.0, std::ceil(ext.width + 34));
     width = std::max(40.0, width);
-    box = {std::round((output_width - width) / 2.0), 18, std::round(width), std::round(height)};
+    box = {std::round((output_width - width) / 2.0),
+        bottom ? std::round(std::max(0.0, output_height - height - 24.0)) : 18,
+        std::round(width), std::round(height)};
     double raster_scale = std::max(1.0, scale);
     pixel_width = std::max(1, int(std::ceil(box.width * raster_scale)));
     pixel_height = std::max(1, int(std::ceil(box.height * raster_scale)));
