@@ -10,9 +10,8 @@ Every agent working in this repository follows this. It replaces ad hoc integrat
   fixes land on `main` until `v0.2.0` ships.
 - `0.3` is open for new feature work (adapter-fixes, monitor translation, the env-import fix, goo on new
   screens, middle-press drag, touchpad while typing, and later planned features).
-- No merge queue or CI exists yet. Until they are available, immediately before
-  merging: update your branch to the target branch's current tip and rerun the fast checks on that exact
-  result.
+- No merge queue or CI exists yet. Use the interim procedure under **Landing a change** until a
+  functioning merge queue is configured for the target branch.
 
 **Branches**
 
@@ -28,10 +27,19 @@ Every agent working in this repository follows this. It replaces ad hoc integrat
 
 **Landing a change**
 
-- A PR lands only through the merge queue for its target branch. The queue tests the actual merge result
-  (target branch + PRs ahead of it + this PR) with the fast checks: build, unit tests, and the headless
-  suites on the shared test hosts. Do not merge by hand after a stale green run.
-- Review by an author of the other harness is still required before a PR enters the queue.
+- When a functioning merge queue is configured for the target branch, a PR lands through that queue.
+  The queue tests the actual merge result (target branch + PRs ahead of it + this PR) with the required
+  fast checks: build, unit tests, and the headless suites on the shared test hosts.
+- **Interim procedure while no queue is configured (2026-10-17):** reviewed PRs may merge directly.
+  Immediately before merging, update the PR branch to the target branch's current tip and run the
+  required fast checks on that exact result. Confirm that the PR head and target tip still match the
+  verified versions before merging; if either changes, reconcile the change and repeat the affected
+  verification before proceeding. Do not merge by hand after a stale green run. Confirm the actual
+  merge result afterward.
+- This interim procedure requires no per-PR exception. It does not authorize bypassing an existing
+  queue, disabling branch protections or checks, or changing installation and release requirements.
+- Review by an author of the other harness is required before either queue entry or an interim direct
+  merge.
 - A change that must land before it is finished goes in behind a setting that is off by default.
 - If the integrated branch breaks after a merge, revert or fix forward immediately; do not stack work on a
   red branch.
