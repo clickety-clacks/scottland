@@ -3,6 +3,7 @@ use std::io::{self, Write};
 use std::process::{Command, Output};
 
 pub(crate) mod color_scheme;
+pub(crate) mod brightness_target;
 pub(crate) mod gamma;
 pub(crate) mod night_light;
 
