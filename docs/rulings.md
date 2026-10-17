@@ -7,6 +7,12 @@ rules on something, add it here in the same change that updates the spec. Princi
 
 Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the session record.
 
+## Interim merge procedure
+
+| Date | Ruling | Where |
+|---|---|---|
+| 2026-10-17 | “Yes—make the interim merge procedure explicit.” Use a functioning target-branch merge queue when configured; until then, reviewed PRs may merge directly after updating to the current target and passing the required fast checks on that exact result. If either branch changes before merging, repeat the affected verification. No per-PR exception is required. | [AGENTS.md: Landing a change](../AGENTS.md#branches-and-releases-mike-2026-10-08) |
+
 ## Omarchy solar compatibility
 
 | Date | Ruling | Where |
