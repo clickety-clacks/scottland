@@ -1,0 +1,5 @@
+name = "{track}"
+priority = 69
+
+[source]
+provider = "mpris"

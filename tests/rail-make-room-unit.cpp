@@ -15,6 +15,7 @@
 #include <vector>
 
 using scottland::rail::interval_t;
+using scottland::rail::focused_solver_t;
 using scottland::rail::solver_t;
 using scottland::rail::status_t;
 
@@ -241,6 +242,42 @@ static fuzz_t run_fuzz()
 
 int main()
 {
+    {
+        // The lower side cannot fit in the upper span. Its presence must not invalidate
+        // useful movement for an arrival above the fixed focused card.
+        focused_solver_t solver;
+        const interval_t focused{99, 300, 396};
+        std::vector<interval_t> items{{2,397,493}, {1,180,276}, {3,494,590}, {4,591,687}};
+        bool began = solver.begin(items, &focused);
+        auto status = began ? solver.solve(180,276,24,696) : status_t::skipped;
+        const auto& shifts = solver.shifts();
+        check(status == status_t::clear && shifts.size() == items.size() && shifts[1] < 0 &&
+            items[1].hi + shifts[1] <= focused.lo - scottland::rail::CONTACT + 1e-9 &&
+            shifts[0] == 0 && shifts[2] == 0 && shifts[3] == 0,
+            "focused divider: near-side make-room survives an unfit far side without moving it");
+    }
+    {
+        // Placement that intersects the fixed focus stays aimed there and moves no rail card.
+        focused_solver_t solver;
+        const interval_t focused{99, 300, 396};
+        std::vector<interval_t> items{{1,180,276}, {2,397,493}};
+        bool began = solver.begin(items, &focused);
+        auto status = began ? solver.solve(280,376,24,696) : status_t::skipped;
+        check(status == status_t::overlap && solver.shifts() == std::vector<double>({0,0}),
+            "focused divider: overlap has no phantom landing or actor movement");
+    }
+    {
+        // When the arrival belongs below focus, only that side moves to make room.
+        focused_solver_t solver;
+        const interval_t focused{99, 300, 396};
+        std::vector<interval_t> items{{1,180,276}, {2,397,493}};
+        bool began = solver.begin(items, &focused);
+        auto status = began ? solver.solve(430,526,24,696) : status_t::skipped;
+        const auto& shifts = solver.shifts();
+        check(status == status_t::clear && shifts.size() == items.size() && shifts[0] == 0 &&
+            shifts[1] > 0 && items[1].lo + shifts[1] >= 527 - 1e-9,
+            "focused divider: required movement stays on the landing side");
+    }
     {
         solver_t solver;
         std::vector<interval_t> items{{0,100,196},{1,201,297}};

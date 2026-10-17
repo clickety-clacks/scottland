@@ -74,7 +74,7 @@ def panel_origin(q):
 def select_goo_tab(panel):
     q = settings_snapshot(panel)
     x, y = panel_origin(q)
-    # A large text scale wraps six tabs into two rows on plumbus.
+    # A large text scale wraps six tabs into two rows on test-host.
     wrapped = q["viewport"]["y"] > 190
     columns = 3 if wrapped else 6
     click(x+q["viewport"]["x"]+q["viewport"]["width"]*1.5/columns,

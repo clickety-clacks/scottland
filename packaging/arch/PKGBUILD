@@ -1,46 +1,98 @@
 # Local build: cd packaging/arch && makepkg -si
 pkgbase=scottland
-pkgname=(scottland scottland-omarchy)
-pkgver=0.2.0
+pkgname=(scottland scottland-sunlight scottland-omarchy)
+pkgver=0.4.0
 pkgrel=1
 pkgdesc="Spatial desktop on Wayfire, after Scott Jenson's working-memory concept"
 arch=('x86_64')
 license=('MIT')
-makedepends=('meson' 'ninja' 'wayfire' 'glm' 'libinput' 'cairo' 'cargo')
+makedepends=('meson' 'ninja' 'wayfire' 'glm' 'libinput' 'cairo' 'cargo' 'python')
 options=('!debug')
 
 _root="$startdir/../.."
 
 build() {
   arch-meson "$_root/core/plugin" build
-  meson compile -C build
-  # Scottland's system tools: every crate under core/tools/bin is one command.
-  local crate
-  for crate in "$_root"/core/tools/bin/*/; do
-    cargo install --locked --path "$crate" --root tools --target-dir cargo --force --no-track
-  done
+  meson compile -C build -j 2
+  # Build a single commit-consistent set for the on-machine source mechanism.
+  local source_commit
+  source_commit="$(git -C "$_root" rev-parse HEAD)"
+  if [[ "$(git -C "$_root" rev-parse --is-shallow-repository)" == true ]]; then
+    error "the package source must contain the full product history"
+    return 1
+  fi
+  if [[ -n "$(git -C "$_root" status --porcelain --untracked-files=all)" ]]; then
+    error "the package source must be a clean Git checkout"
+    return 1
+  fi
+  PRODUCT_SOURCE_BUILD_COMMIT="$source_commit" cargo build --locked --manifest-path "$_root/core/tools/Cargo.toml" --workspace --release --target-dir "$srcdir/cargo"
+  install -dm755 "$srcdir/tools/bin" "$srcdir/source"
+  cargo metadata --no-deps --format-version 1 --manifest-path "$_root/core/tools/Cargo.toml" > "$srcdir/metadata.json"
+  python - "$srcdir/metadata.json" "$srcdir/cargo/release" "$srcdir/tools/bin" <<'PY'
+import json
+import pathlib
+import shutil
+import sys
+
+metadata = json.loads(pathlib.Path(sys.argv[1]).read_text())
+release = pathlib.Path(sys.argv[2])
+output = pathlib.Path(sys.argv[3])
+for package in metadata["packages"]:
+    for target in package["targets"]:
+        name = target["name"]
+        if "bin" in target["kind"] and (name == "scottland" or name.startswith("scottland-")):
+            shutil.copy2(release / name, output / name)
+            (output / name).chmod(0o755)
+PY
+
+  printf '%s\n' "$source_commit" > "$srcdir/base.commit"
+  git clone --quiet --no-checkout --no-hardlinks "$_root" "$srcdir/source-bundle"
+  git -C "$srcdir/source-bundle" update-ref refs/heads/release "$source_commit"
+  git -C "$srcdir/source-bundle" bundle create "$srcdir/base.bundle" refs/heads/release
+  rm -rf "$srcdir/source-bundle"
+  mkdir -p "$srcdir/tools/lib"
+  cp -a "$_root/core/tools/vendor/agent_window_resolver" "$srcdir/tools/lib/"
 }
 
 package_scottland() {
+  install=scottland.install
   # quickshell: the default widget (card) and the layout settings app
   # xdg-desktop-portal-wlr: screen sharing and screenshots (scottland-portals.conf); gtk: the rest
-  depends=('wayfire' 'cairo' 'inotify-tools' 'python' 'python-dbus' 'python-gobject' 'glib2' 'quickshell'
+  # wayland: scottland-output-power and scottland-output-heads (wayland-client)
+  depends=('git' 'wayfire' 'cairo' 'inotify-tools' 'python' 'python-dbus' 'python-gobject' 'glib2' 'quickshell'
            'wayland' 'xdg-desktop-portal' 'xdg-desktop-portal-wlr' 'xdg-desktop-portal-gtk')
-  optdepends=('geoclue: automatic location for Sunlight')
-
+  optdepends=('geoclue: automatic location for Weather and Sunlight')
   meson install -C build --destdir "$pkgdir"
   install -Dm644 "$_root/core/config/scottland.ini" "$pkgdir/usr/share/scottland/scottland.ini"
+  install -dm755 "$pkgdir/usr/lib/scottland/window-names.d"
+  install -m644 "$_root"/core/window-names.d/*.toml "$pkgdir/usr/lib/scottland/window-names.d/"
   install -Dm644 "$_root/core/config/scottland-portals.conf" "$pkgdir/usr/share/xdg-desktop-portal/scottland-portals.conf"
   install -Dm755 "$_root/core/session/start-scottland" "$pkgdir/usr/bin/start-scottland"
   install -Dm644 "$_root/core/systemd/scottland-session.target" "$pkgdir/usr/lib/systemd/user/scottland-session.target"
   install -Dm644 "$_root/core/systemd/scottland-session-watch@.service" "$pkgdir/usr/lib/systemd/user/scottland-session-watch@.service"
+  install -Dm644 "$_root/core/systemd/attentiond.service" "$pkgdir/usr/lib/systemd/user/attentiond.service"
+  install -Dm755 "$srcdir/cargo/release/attentiond" "$pkgdir/usr/bin/attentiond"
+  install -dm755 "$pkgdir/usr/lib/systemd/user/default.target.wants"
+  ln -s ../attentiond.service "$pkgdir/usr/lib/systemd/user/default.target.wants/attentiond.service"
   install -Dm644 "$_root/core/session/scottland.desktop" "$pkgdir/usr/share/wayland-sessions/scottland.desktop"
   install -Dm755 "$_root/core/session/scottland-autostart" "$pkgdir/usr/lib/scottland/libexec/scottland-autostart"
   install -Dm755 "$_root/core/session/scottland-build-config" "$pkgdir/usr/lib/scottland/libexec/scottland-build-config"
+  install -Dm755 "$_root/core/autostart.d/04-output-scale-auto" "$pkgdir/usr/lib/scottland/autostart.d/04-output-scale-auto"
   install -Dm755 "$_root/core/autostart.d/06-watch-config" "$pkgdir/usr/lib/scottland/autostart.d/06-watch-config"
   install -Dm755 "$_root/core/libexec/scottland-ctl" "$pkgdir/usr/lib/scottland/libexec/scottland-ctl"
   install -Dm755 "$_root/core/libexec/scottland-exec" "$pkgdir/usr/lib/scottland/libexec/scottland-exec"
+  install -Dm755 "$_root/core/libexec/scottland-list-picker" "$pkgdir/usr/lib/scottland/libexec/scottland-list-picker"
+  install -Dm755 "$_root/core/libexec/scottland-output" "$pkgdir/usr/lib/scottland/libexec/scottland-output"
+  install -Dm644 "$_root/core/libexec/scottland_output_scale.py" "$pkgdir/usr/lib/scottland/libexec/scottland_output_scale.py"
+  install -Dm755 "$_root/core/libexec/scottland-list-picker" "$pkgdir/usr/lib/scottland/libexec/scottland-list-picker"
+  install -Dm755 "$_root/core/libexec/scottland-clipboard" "$pkgdir/usr/lib/scottland/libexec/scottland-clipboard"
+  install -Dm755 "$_root/core/libexec/scottland-emoji" "$pkgdir/usr/lib/scottland/libexec/scottland-emoji"
+  install -Dm755 "$_root/core/libexec/scottland-keybindings" "$pkgdir/usr/lib/scottland/libexec/scottland-keybindings"
   ln -s /usr/lib/scottland/libexec/scottland-exec "$pkgdir/usr/bin/scottland-exec"
+  ln -s /usr/lib/scottland/libexec/scottland-list-picker "$pkgdir/usr/bin/scottland-list-picker"
+  ln -s /usr/lib/scottland/libexec/scottland-clipboard "$pkgdir/usr/bin/scottland-clipboard"
+  ln -s /usr/lib/scottland/libexec/scottland-emoji "$pkgdir/usr/bin/scottland-emoji"
+  ln -s /usr/lib/scottland/libexec/scottland-keybindings "$pkgdir/usr/bin/scottland-keybindings"
   ln -s /usr/lib/scottland/libexec/scottland-ctl "$pkgdir/usr/bin/scottland-ctl"
   install -Dm644 "$_root/core/agents/skills/scottland/SKILL.md" "$pkgdir/usr/share/scottland/agents/skills/scottland/SKILL.md"
   install -Dm755 "$_root/core/autostart.d/02-link-agent-skills" "$pkgdir/usr/lib/scottland/autostart.d/02-link-agent-skills"
@@ -48,49 +100,75 @@ package_scottland() {
   install -Dm755 "$_root/core/libexec/scottland-widget-launch" "$pkgdir/usr/lib/scottland/libexec/scottland-widget-launch"
   install -Dm755 "$_root/core/libexec/scottland-widget-bus" "$pkgdir/usr/lib/scottland/libexec/scottland-widget-bus"
   install -Dm755 "$_root/core/autostart.d/08-widget-bus" "$pkgdir/usr/lib/scottland/autostart.d/08-widget-bus"
+  install -Dm755 "$_root/core/autostart.d/11-widget-osd-host" "$pkgdir/usr/lib/scottland/autostart.d/11-widget-osd-host"
+  install -Dm755 "$_root/core/autostart.d/10-clipboard-history" "$pkgdir/usr/lib/scottland/autostart.d/10-clipboard-history"
   install -Dm755 "$_root/core/libexec/scottland-attention-sources" "$pkgdir/usr/lib/scottland/libexec/scottland-attention-sources"
   install -Dm755 "$_root/core/libexec/scottland-focus-mode" "$pkgdir/usr/lib/scottland/libexec/scottland-focus-mode"
   install -Dm755 "$_root/core/autostart.d/09-attention-sources" "$pkgdir/usr/lib/scottland/autostart.d/09-attention-sources"
+  install -Dm755 "$_root/core/autostart.d/10-power-profiles" "$pkgdir/usr/lib/scottland/autostart.d/10-power-profiles"
   install -Dm755 "$_root/core/reload.d/09-attention-sources" "$pkgdir/usr/lib/scottland/reload.d/09-attention-sources"
   install -Dm755 "$_root/core/reload.d/08-widget-bus" "$pkgdir/usr/lib/scottland/reload.d/08-widget-bus"
   install -Dm644 "$_root/core/widgets/card/widget.toml" "$pkgdir/usr/lib/scottland/widgets/card/widget.toml"
   install -Dm644 "$_root/core/widgets/card/shell.qml" "$pkgdir/usr/lib/scottland/widgets/card/shell.qml"
+  install -Dm644 "$_root/core/widgets/session/shell.qml" "$pkgdir/usr/lib/scottland/widgets/session/shell.qml"
   install -Dm755 "$_root/core/autostart.d/01-record-environment" "$pkgdir/usr/lib/scottland/autostart.d/01-record-environment"
   install -Dm755 "$_root/core/libexec/scottland-color-scheme" "$pkgdir/usr/lib/scottland/libexec/scottland-color-scheme"
   install -Dm644 "$_root/core/session-env.d/10-cursor-size.sh" "$pkgdir/usr/lib/scottland/session-env.d/10-cursor-size.sh"
   install -Dm755 "$_root/core/autostart.d/07-follow-color-scheme" "$pkgdir/usr/lib/scottland/autostart.d/07-follow-color-scheme"
-  install -Dm755 "$_root/core/autostart.d/07-solar-theme" "$pkgdir/usr/lib/scottland/autostart.d/07-solar-theme"
-  install -Dm755 "$_root/core/libexec/scottland-solar-theme" "$pkgdir/usr/lib/scottland/libexec/scottland-solar-theme"
   install -Dm755 "$_root/core/reload.d/07-color-scheme" "$pkgdir/usr/lib/scottland/reload.d/07-color-scheme"
   install -Dm755 "$_root/core/config.d/20-layout-settings" "$pkgdir/usr/lib/scottland/config.d/20-layout-settings"
+  install -Dm755 "$_root/core/config.d/85-session-outputs" "$pkgdir/usr/lib/scottland/config.d/85-session-outputs"
   install -Dm755 "$_root/core/config.d/90-user-overrides" "$pkgdir/usr/lib/scottland/config.d/90-user-overrides"
   install -Dm755 "$_root/core/session/scottland-settings" "$pkgdir/usr/bin/scottland-settings"
   ln -s /usr/bin/scottland-settings "$pkgdir/usr/lib/scottland/libexec/scottland-settings"
+  # scottland-source runs the base binaries from tools/base; keep their
+  # vendored resolver at the matching sibling lib path.
+  install -dm755 "$pkgdir/usr/lib/scottland/tools/lib"
+  cp -a "$srcdir/tools/lib/agent_window_resolver" "$pkgdir/usr/lib/scottland/tools/lib/"
   install -Dm755 "$_root/core/session/scottland-reload" "$pkgdir/usr/lib/scottland/libexec/scottland-reload"
   ln -s /usr/lib/scottland/libexec/scottland-reload "$pkgdir/usr/bin/scottland-reload"
   install -dm755 "$pkgdir/usr/share/scottland/settings"
   install -m644 "$_root"/core/settings/*.qml "$pkgdir/usr/share/scottland/settings/"
+  install -Dm644 "$_root/core/list-picker/shell.qml" "$pkgdir/usr/share/scottland/list-picker/shell.qml"
+  install -Dm644 "$_root/core/emoji/emoji.tsv" "$pkgdir/usr/share/scottland/emoji/emoji.tsv"
+  install -Dm644 "$_root/core/emoji/data/LICENSE.txt" "$pkgdir/usr/share/licenses/scottland/Unicode-License.txt"
   install -Dm644 "$_root/core/settings/scottland-settings.desktop" "$pkgdir/usr/share/applications/scottland-settings.desktop"
+  install -Dm644 "$_root/core/apps/weather/shell.qml" "$pkgdir/usr/share/scottland/apps/weather/shell.qml"
+  install -Dm644 "$_root/core/apps/weather/runtime.py" "$pkgdir/usr/share/scottland/apps/weather/runtime.py"
+  install -Dm644 "$_root/core/apps/weather/scottland-weather.desktop" "$pkgdir/usr/share/applications/scottland-weather.desktop"
+  install -Dm644 "$_root/core/system-stats/scottland-system-stats.desktop" "$pkgdir/usr/share/applications/scottland-system-stats.desktop"
   install -Dm755 "$_root/core/autostart.d/05-import-environment" "$pkgdir/usr/lib/scottland/autostart.d/05-import-environment"
   install -dm755 "$pkgdir/usr/lib/scottland/early-exit.d" "$pkgdir/usr/lib/scottland/session-env.d"
   install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  # The system tools, last: a tool that replaces a script takes its place.
-  local tool
-  for tool in "$srcdir"/tools/bin/*; do
-    install -Dm755 "$tool" "$pkgdir/usr/lib/scottland/libexec/${tool##*/}"
-    ln -sf "/usr/lib/scottland/libexec/${tool##*/}" "$pkgdir/usr/bin/${tool##*/}"
-  done
+  # The package owns only the base build. The source mechanism copies it into
+  # the root-owned build store and manages the active switch and command links.
+  install -dm755 "$pkgdir/usr/lib/scottland/tools/base"
+  install -m755 "$srcdir"/tools/bin/* "$pkgdir/usr/lib/scottland/tools/base/"
+  install -Dm644 "$srcdir/base.bundle" "$pkgdir/usr/share/scottland/source/base.bundle"
+  install -Dm644 "$srcdir/base.commit" "$pkgdir/usr/share/scottland/source/base.commit"
+}
+
+package_scottland-sunlight() {
+  pkgdesc="Sunrise and sunset transition scheduler for Scottland"
+  arch=('any')
+  depends=("scottland=${pkgver}-${pkgrel}")
+  optdepends=('geoclue: automatic location for Sunlight')
+
+  install -Dm755 "$_root/core/autostart.d/07-solar-theme" "$pkgdir/usr/lib/scottland/autostart.d/07-solar-theme"
+  install -Dm755 "$_root/core/libexec/scottland-solar-theme" "$pkgdir/usr/lib/scottland/libexec/scottland-solar-theme"
 }
 
 package_scottland-omarchy() {
   pkgdesc="Omarchy integration for Scottland: switch between Scottland and Hyprland"
   arch=('any')
   # base-devel and curl: setup builds Gooarchy's xdg-desktop-portal-wlr (scottland-omarchy-setup)
-  depends=('scottland' 'omarchy' 'quickshell' 'jq' 'polkit' 'sddm' 'python' 'lua' 'base-devel' 'curl')
+  # The adapter and core are a matched pair from this split-package build.
+  depends=("scottland=${pkgver}-${pkgrel}" 'omarchy' 'quickshell' 'jq' 'polkit' 'sddm' 'python' 'lua' 'base-devel' 'curl')
   install=scottland-omarchy.install
 
   local o="$_root/omarchy"
   install -Dm755 "$o/bin/scottland-switch" "$pkgdir/usr/bin/scottland-switch"
+  install -Dm755 "$o/bin/scottland-omarchy-logout" "$pkgdir/usr/bin/scottland-omarchy-logout"
   install -Dm755 "$o/bin/scottland-omarchy-setup" "$pkgdir/usr/bin/scottland-omarchy-setup"
   install -Dm755 "$o/helper/scottland-session-helper" "$pkgdir/usr/lib/scottland/scottland-session-helper"
   install -Dm644 "$o/helper/org.scottland.session.policy" "$pkgdir/usr/share/polkit-1/actions/org.scottland.session.policy"
@@ -100,22 +178,25 @@ package_scottland-omarchy() {
   install -Dm644 "$o/session-env.d/07-hyprland-env.sh" "$pkgdir/usr/lib/scottland/session-env.d/07-hyprland-env.sh"
   install -Dm644 "$o/session-env.d/10-hyprland-compat.sh" "$pkgdir/usr/lib/scottland/session-env.d/10-hyprland-compat.sh"
   install -Dm755 "$o/libexec/scottland-luahost" "$pkgdir/usr/lib/scottland/libexec/scottland-luahost"
+  install -Dm755 "$o/libexec/omarchy-hyprland-workspace-layout-toggle" \
+    "$pkgdir/usr/lib/scottland/libexec/omarchy-hyprland-workspace-layout-toggle"
   install -Dm755 "$o/accent.d/10-omarchy-theme" "$pkgdir/usr/lib/scottland/accent.d/10-omarchy-theme"
   install -Dm755 "$o/focus.d/10-omarchy-notifications" "$pkgdir/usr/lib/scottland/focus.d/10-omarchy-notifications"
   install -Dm755 "$o/libexec/scottland-lua-call" "$pkgdir/usr/lib/scottland/libexec/scottland-lua-call"
+  install -Dm644 "$o/libexec/scottland_hyprland_monitor.py" "$pkgdir/usr/lib/scottland/libexec/scottland_hyprland_monitor.py"
   install -Dm755 "$o/libexec/scottland-omarchy-solar-theme" "$pkgdir/usr/lib/scottland/libexec/scottland-omarchy-solar-theme"
   install -Dm755 "$o/autostart.d/30-lua-host" "$pkgdir/usr/lib/scottland/autostart.d/30-lua-host"
   install -Dm755 "$o/autostart.d/35-solar-theme" "$pkgdir/usr/lib/scottland/autostart.d/35-solar-theme"
   install -Dm755 "$o/autostart.d/25-omarchy-override-report" "$pkgdir/usr/lib/scottland/autostart.d/25-omarchy-override-report"
   install -dm755 "$pkgdir/usr/lib/scottland/override-report.d"
   install -dm755 "$pkgdir/usr/share/scottland-omarchy/themes"
-  cp -a "$o/themes/." "$pkgdir/usr/share/scottland-omarchy/themes/"
+  # Keep theme links/modes/content; package ownership comes from fakeroot, not the checkout.
+  cp -a --no-preserve=ownership "$o/themes/." "$pkgdir/usr/share/scottland-omarchy/themes/"
   install -Dm755 "$o/reload.d/30-lua-host" "$pkgdir/usr/lib/scottland/reload.d/30-lua-host"
-  install -Dm755 "$o/autostart.d/40-handover" "$pkgdir/usr/lib/scottland/autostart.d/40-handover"
   install -Dm755 "$o/autostart.d/45-hyprland-start" "$pkgdir/usr/lib/scottland/autostart.d/45-hyprland-start"
-  install -Dm755 "$o/libexec/scottland-handover" "$pkgdir/usr/lib/scottland/libexec/scottland-handover"
   install -Dm755 "$o/config.d/50-omarchy-shortcuts" "$pkgdir/usr/lib/scottland/config.d/50-omarchy-shortcuts"
   install -Dm644 "$o/prompts/omarchy-overrides-agent.txt" "$pkgdir/usr/lib/scottland/prompts/omarchy-overrides-agent.txt"
+  install -Dm644 "$o/agents/skills/scottland-omarchy/SKILL.md" "$pkgdir/usr/share/scottland/agents/skills/scottland-omarchy/SKILL.md"
   install -Dm755 "$o/autostart.d/10-hyprshim" "$pkgdir/usr/lib/scottland/autostart.d/10-hyprshim"
   install -Dm755 "$o/reload.d/10-hyprshim" "$pkgdir/usr/lib/scottland/reload.d/10-hyprshim"
   install -Dm755 "$o/autostart.d/20-omarchy-shell" "$pkgdir/usr/lib/scottland/autostart.d/20-omarchy-shell"

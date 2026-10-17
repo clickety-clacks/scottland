@@ -5,4 +5,6 @@ for _ in $(seq 50); do
   [ -S "$sock" ] && break
   sleep 0.1
 done
+PATH="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec${PATH:+:$PATH}"
+export PATH
 exec omarchy-launch-shell

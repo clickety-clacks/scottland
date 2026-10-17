@@ -3,7 +3,7 @@
 # config (shipped base + generated fragments, e.g. imported shortcuts) and the repo's plugin
 # build, driven with Wayfire's stipc virtual input. It runs only hooks that stay inside the test
 # session: never 05-import-environment (would repoint the user's systemd services), 06-watch-
-# config (would rewrite the live session's config), 20-omarchy-shell or 40-handover.
+# config (would rewrite the live session's config) or 20-omarchy-shell.
 #
 #   tests/headless.sh start [--omarchy] [--widgets]   start; --omarchy adds the Hyprland shim and
 #                                         Lua host (--hyprland-start also runs the config's
@@ -40,6 +40,11 @@ runtime_scratch=$dir/runtime
 tmp_scratch=$dir/tmp
 owner=$dir/.scottland-headless-owner
 session_mode_record=$dir/.scottland-headless-mode
+start_failure_file=$dir/.headless-start-failure.txt
+start_stderr_copy=$dir/.headless-start-stderr.log
+start_diagnostics_dir=
+start_stage_file=
+start_stderr_file=
 inside=0
 if [[ ${1:-} == __scottland_headless_private_runtime ]]; then
   inside=1
@@ -207,21 +212,128 @@ if ((inside == 0)); then
   fi
   bwrap_args+=(--bind "$runtime_scratch" "$runtime" --bind "$tmp_scratch" /tmp
     --setenv XDG_RUNTIME_DIR "$runtime" --setenv TMPDIR "$tmp_scratch")
+  start_stderr_forwarded=0
+  start_diagnostics_ready=0
+  start_stderr_fd=
+  record_start_failure() {
+    local status=$1 stage=private-runtime candidate stderr_state=unavailable wayfire_state=absent
+    if [[ -n $start_stage_file && -f $start_stage_file && ! -L $start_stage_file ]]; then
+      candidate=$(sed -n '1p' "$start_stage_file" 2>/dev/null || true)
+      case $candidate in
+        validate-isolation|prepare-session|prepare-config|generate-config|launch-wayfire|wait-for-socket|validate-session|record-compositor|ready)
+          stage=$candidate
+          ;;
+      esac
+    fi
+    if [[ -n $start_stderr_file && -f $start_stderr_file && ! -L $start_stderr_file ]]; then
+      stderr_state=empty
+      [[ ! -s $start_stderr_file ]] || stderr_state=present
+    fi
+    if [[ -s $dir/wayfire.log && -f $dir/wayfire.log && ! -L $dir/wayfire.log ]]; then
+      wayfire_state=present
+    fi
+    [[ ! -e $start_failure_file && ! -L $start_failure_file && \
+       ! -e $start_stderr_copy && ! -L $start_stderr_copy ]] || return 1
+    printf 'stage=%s\nstatus=%s\nstderr=%s\nwayfire_log=%s\n' \
+      "$stage" "$status" "$stderr_state" "$wayfire_state" >"$start_failure_file" || return 1
+    chmod 600 -- "$start_failure_file" || return 1
+    if [[ -n $start_stderr_file ]]; then
+      cp -- "$start_stderr_file" "$start_stderr_copy" || return 1
+      chmod 600 -- "$start_stderr_copy" || return 1
+    fi
+    printf 'headless start failed at stage=%s (status=%s); owned diagnostics are retained with scratch\n' \
+      "$stage" "$status" >&2 || true
+    return 0
+  }
+  forward_start_stderr() {
+    ((start_stderr_forwarded == 0)) || return 0
+    if [[ -f $start_stderr_file && ! -L $start_stderr_file ]]; then
+      cat -- "$start_stderr_file" >&2 || true
+    fi
+    start_stderr_forwarded=1
+  }
+  cleanup_start_diagnostics() {
+    [[ -n $start_diagnostics_dir ]] || return 0
+    [[ -d $start_diagnostics_dir && ! -L $start_diagnostics_dir && \
+       $(stat -c '%u:%a' -- "$start_diagnostics_dir" 2>/dev/null || true) == "$uid:700" ]] || {
+      echo 'temporary startup diagnostics changed; preserving them' >&2 || true
+      return 1
+    }
+    rm -rf -- "$start_diagnostics_dir"
+  }
+  finish_start() {
+    status=$?
+    trap - EXIT INT TERM HUP
+    if ((status != 0)); then
+      forward_start_stderr
+      if [[ -d $dir && ! -L $dir ]] && verify_owner; then
+        if record_start_failure "$status"; then
+          cleanup_start_diagnostics || true
+        else
+          echo "startup diagnostics preserved at $start_diagnostics_dir" >&2 || true
+        fi
+        if ! "$repo/tests/headless.sh" stop --preserve-scratch; then
+          echo 'failed to stop partial headless session; preserving owned scratch for inspection' >&2 || true
+        fi
+      else
+        echo "startup diagnostics preserved at $start_diagnostics_dir" >&2 || true
+      fi
+    else
+      cleanup_start_diagnostics || true
+    fi
+    exit "$status"
+  }
+  if [[ $action == start ]]; then
+    # Keep captures outside session scratch until its freshness checks pass. On failure,
+    # copy them into owned scratch before the existing preserve-scratch cleanup.
+    start_diagnostics_dir=$(mktemp -d -m 700 -- "$build/.headless-start.XXXXXX" 2>/dev/null) || {
+      start_diagnostics_dir=
+      echo 'private headless startup diagnostics unavailable; continuing without capture' >&2 || true
+    }
+    if [[ -n $start_diagnostics_dir ]]; then
+      start_stage_file=$start_diagnostics_dir/stage
+      start_stderr_file=$start_diagnostics_dir/stderr.log
+    fi
+    trap finish_start EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    if [[ -n $start_diagnostics_dir ]] && \
+       (umask 077; set -o noclobber; : >"$start_stage_file" && : >"$start_stderr_file") && \
+       chmod 600 -- "$start_stage_file" "$start_stderr_file" && \
+       printf 'private-runtime\n' >"$start_stage_file"; then
+      start_diagnostics_ready=1
+    else
+      start_stage_file=
+      start_stderr_file=
+      echo 'private headless startup diagnostics unavailable; continuing without capture' >&2 || true
+    fi
+  fi
   # Explicitly bind /dev in the root-bind namespace so Bash can open /dev/null and the
   # compositor can see its render node. Reuse a live session's user namespace for later
   # invocations so run processes retain access to that session's /proc entries; runtime and
   # TMPDIR are still privately bound to this run's owned scratch.
-  if bwrap "${bwrap_args[@]}" -- \
-    "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@"; then
-    status=0
+  if [[ $action == start && $start_diagnostics_ready == 1 ]] && \
+     { exec {start_stderr_fd}>>"$start_stderr_file"; } 2>/dev/null; then
+    if SCOTTLAND_HEADLESS_DIAGNOSTICS_DIR="$start_diagnostics_dir" bwrap "${bwrap_args[@]}" -- \
+      "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@" \
+      2>&"$start_stderr_fd" {start_stderr_fd}>&-; then
+      status=0
+    else
+      status=$?
+    fi
+    exec {start_stderr_fd}>&- 2>/dev/null || true
+    forward_start_stderr
   else
-    status=$?
-  fi
-  if [[ $action == start && $status -ne 0 && -d $dir && ! -L $dir ]] && verify_owner; then
-    # The failed start has left its private namespace. Stop any partial session from the outer
-    # namespace and retain logs/owner state for the caller's EXIT trap to capture first.
-    if ! "$repo/tests/headless.sh" stop --preserve-scratch; then
-      echo 'failed to stop partial headless session; preserving owned scratch for inspection' >&2
+    if [[ $action == start && $start_diagnostics_ready == 1 ]]; then
+      start_stderr_file=
+      echo 'private headless startup stderr capture unavailable; continuing without capture' >&2 || true
+    fi
+    if bwrap "${bwrap_args[@]}" -- \
+      "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@"; then
+      status=0
+    else
+      status=$?
     fi
   fi
   if [[ $action == stop && $status -eq 0 && $preserve_scratch -eq 0 ]]; then
@@ -232,6 +344,35 @@ if ((inside == 0)); then
 fi
 verify_owner || exit 2
 export XDG_RUNTIME_DIR=$runtime TMPDIR=$tmp_scratch SCOTTLAND_HEADLESS_DIR=$dir
+startup_diagnostics=0
+start_diagnostics_dir=${SCOTTLAND_HEADLESS_DIAGNOSTICS_DIR:-}
+if [[ -n $start_diagnostics_dir ]]; then
+  start_stage_file=$start_diagnostics_dir/stage
+  start_stderr_file=$start_diagnostics_dir/stderr.log
+  case $start_diagnostics_dir in
+    "$build"/*)
+      if [[ -d $start_diagnostics_dir && ! -L $start_diagnostics_dir && \
+            $(stat -c '%u:%a' -- "$start_diagnostics_dir" 2>/dev/null) == "$uid:700" && \
+            -f $start_stage_file && ! -L $start_stage_file && \
+            -f $start_stderr_file && ! -L $start_stderr_file && \
+            $(stat -c '%u:%a' -- "$start_stage_file" 2>/dev/null) == "$uid:600" && \
+            $(stat -c '%u:%a' -- "$start_stderr_file" 2>/dev/null) == "$uid:600" ]]; then
+        startup_diagnostics=1
+      else
+        echo 'headless startup diagnostics unavailable; continuing without capture' >&2 || true
+        start_diagnostics_dir=
+        start_stage_file=
+        start_stderr_file=
+      fi
+      ;;
+    *)
+      echo 'headless startup diagnostics unavailable; continuing without capture' >&2 || true
+      start_diagnostics_dir=
+      start_stage_file=
+      start_stderr_file=
+      ;;
+  esac
+fi
 isolation=${SCOTTLAND_HEADLESS_ISOLATION:-0}
 if [[ $isolation == 1 ]]; then
   scratch=${SCOTTLAND_TEST_SCRATCH:?isolated headless mode requires a private scratch directory}
@@ -258,8 +399,9 @@ else
 fi
 export SCOTTLAND_SESSION_DIR=$session_dir
 # The checkout's own helpers (make test-hooks) when it has them, else the dev install, else the
-# package's.
-hooks=$repo/build/hooks
+# package's. SCOTTLAND_TEST_HOOKS: a test's own helper directory instead, e.g. a distro's test
+# adding its config.d generators to this checkout's helpers.
+hooks=${SCOTTLAND_TEST_HOOKS:-$repo/build/hooks}
 [[ -d $hooks/libexec ]] || hooks=${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev
 [[ -d $hooks/libexec ]] || hooks=/usr/lib/scottland
 exec_tool=$hooks/libexec/scottland-exec
@@ -283,6 +425,125 @@ expected = {
 }
 sys.exit(not all(env.get(key) == value for key, value in expected.items()))
 PY
+}
+session_process_group_state() {
+  python3 - "$1" "$dir" "$runtime" "$tmp_scratch" "$2" <<'PY'
+import pathlib, sys
+group, scratch, runtime, tmpdir, display = sys.argv[1:]
+expected = {
+    b'SCOTTLAND_HEADLESS_DIR': scratch.encode(),
+    b'TMPDIR': tmpdir.encode(),
+    b'XDG_RUNTIME_DIR': runtime.encode(),
+    b'XDG_STATE_HOME': (scratch + '/state').encode(),
+    b'WAYLAND_DISPLAY': display.encode(),
+}
+found = False
+for entry in pathlib.Path('/proc').iterdir():
+    if not entry.name.isdigit():
+        continue
+    try:
+        stat = (entry / 'stat').read_text()
+        fields = stat[stat.rfind(')') + 2:].split()
+        if int(fields[2]) != int(group) or fields[0] in ('Z', 'X'):
+            continue
+        found = True
+        values = dict(item.split(b'=', 1) for item in
+                      (entry / 'environ').read_bytes().split(b'\0') if b'=' in item)
+        if any(values.get(key) != value for key, value in expected.items()):
+            sys.exit(2)
+    except (OSError, ValueError, IndexError, PermissionError):
+        # A process disappearing during the snapshot is harmless; a surviving process
+        # with unreadable identity is not safe to signal or forget.
+        if entry.exists():
+            sys.exit(2)
+sys.exit(0 if found else 1)
+PY
+}
+record_start_stage() {
+  ((startup_diagnostics)) || return 0
+  printf '%s\n' "$1" 2>/dev/null >"$start_stage_file" || true
+}
+stop_color_scheme_watcher() {
+  local pid_file helper group result group_alive
+  pid_file="$session_dir/$name.color-scheme.pid"
+  [[ ! -e $pid_file && ! -L $pid_file ]] && return 0
+  [[ -f $pid_file && ! -L $pid_file ]] || {
+    echo 'color-scheme watcher record is not a regular file; preserving scratch' >&2
+    return 2
+  }
+  helper=$(sed -n 1p "$pid_file" 2>/dev/null || true)
+  [[ $helper =~ ^[0-9]+$ ]] || {
+    echo 'color-scheme watcher record has an invalid PID; preserving scratch' >&2
+    return 2
+  }
+  if kill -0 "$helper" 2>/dev/null; then
+    if ! session_process_is_ours "$helper" "$name" || \
+       ! grep -qa -e scottland-display -e scottland-color-scheme "/proc/$helper/cmdline" 2>/dev/null; then
+      echo 'color-scheme watcher identity changed; preserving its pid record and scratch' >&2
+      return 2
+    fi
+    group=$(ps -o pgid= -p "$helper" | tr -d ' ')
+    if [[ $group == "$helper" ]]; then
+      if session_process_group_state "$helper" "$name"; then :
+      else
+        result=$?
+        [[ $result == 1 ]] || {
+          echo 'color-scheme watcher group identity is ambiguous; preserving scratch' >&2
+          return 2
+        }
+      fi
+      kill -- "-$helper" 2>/dev/null || true
+      group_alive=1
+      for _ in $(seq 30); do
+        if session_process_group_state "$helper" "$name"; then
+          group_alive=1
+          sleep 0.1
+        else
+          result=$?
+          if [[ $result == 1 ]]; then group_alive=0; break; fi
+          echo 'color-scheme watcher group identity changed; preserving scratch' >&2
+          return 2
+        fi
+      done
+      if ((group_alive)); then
+        if session_process_group_state "$helper" "$name"; then :
+        else
+          result=$?
+          [[ $result == 1 ]] || {
+            echo 'color-scheme watcher group identity is ambiguous; preserving scratch' >&2
+            return 2
+          }
+        fi
+        kill -9 -- "-$helper" 2>/dev/null || true
+        for _ in $(seq 30); do
+          if session_process_group_state "$helper" "$name"; then
+            sleep 0.1
+          else
+            result=$?
+            if [[ $result == 1 ]]; then group_alive=0; break; fi
+            echo 'color-scheme watcher group identity changed after SIGKILL; preserving scratch' >&2
+            return 2
+          fi
+        done
+      fi
+      ((group_alive == 0)) || {
+        echo 'color-scheme watcher process group did not exit; preserving scratch' >&2
+        return 2
+      }
+    else
+      kill "$helper" 2>/dev/null || true
+      for _ in $(seq 30); do
+        session_process_is_ours "$helper" "$name" || break
+        sleep 0.1
+      done
+      if session_process_is_ours "$helper" "$name"; then kill -9 "$helper" 2>/dev/null || true; fi
+      session_process_is_ours "$helper" "$name" && {
+        echo 'color-scheme watcher did not exit; preserving scratch' >&2
+        return 2
+      }
+    fi
+  fi
+  rm -f -- "$pid_file"
 }
 read_session_signature() {
   python3 - "$1" <<'PY'
@@ -493,6 +754,7 @@ PY
 
 case ${1:-} in
   start)
+    record_start_stage validate-isolation
     if [[ $isolation == 1 ]]; then
       for option in "${@:2}"; do
         [[ $option != --omarchy ]] || {
@@ -542,6 +804,7 @@ case ${1:-} in
       printf 'plain-pending\n' >"$session_mode_record"
       chmod 600 -- "$session_mode_record"
     fi
+    record_start_stage prepare-session
     started=(01-record-environment)
     shim_expected=0
     test_goo=${SCOTTLAND_TEST_GOO:-}
@@ -582,13 +845,14 @@ GDB
     # SCOTTLAND_TEST_PRELOAD: a library preloaded into this Wayfire only (e.g. tests/transform-census.c).
     preload=()
     [[ -n ${SCOTTLAND_TEST_PRELOAD:-} ]] && preload=(env "LD_PRELOAD=$SCOTTLAND_TEST_PRELOAD")
+    record_start_stage prepare-config
     (
       # A clean environment, as a display manager gives a login (not this shell's: an agent's or a
       # terminal's environment carries another desktop's variables and hides session gaps), plus
       # the session's own variables.
       for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case $name in
-          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|SCOTTLAND_TEST_PATH|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_HEADLESS_ISOLATION|SCOTTLAND_TEST_SCRATCH|SCOTTLAND_SESSION_DIR|SCOTTLAND_HEADLESS_DIR|SCOTTLAND_HEADLESS_OWNER|SCOTTLAND_HEADLESS_OWNER_DIR|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|SCOTTLAND_TEST_PATH|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_HEADLESS_ISOLATION|SCOTTLAND_TEST_SCRATCH|SCOTTLAND_SESSION_DIR|SCOTTLAND_HEADLESS_DIR|SCOTTLAND_HEADLESS_OWNER|SCOTTLAND_HEADLESS_OWNER_DIR|SCOTTLAND_HEADLESS_DIAGNOSTICS_DIR|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
           *) unset "$name" 2>/dev/null || true ;;
         esac
       done
@@ -636,6 +900,7 @@ WRAPPER
         fi
       } >"$dir/config-edit.sed"
       export SCOTTLAND_CONFIG_OUTPUT=$dir/wayfire.ini SCOTTLAND_CONFIG_EDIT=$dir/config-edit.sed
+      record_start_stage generate-config
       "$hooks/libexec/scottland-build-config" >/dev/null
       if [[ $test_gles == 2 || $test_gles == unsupported || $test_gles == no-derivatives ]]; then
         export MESA_GLES_VERSION_OVERRIDE=2.0
@@ -646,11 +911,14 @@ WRAPPER
           MESA_EXTENSION_OVERRIDE+=" -GL_OES_standard_derivatives"
         fi
       fi
+      record_start_stage launch-wayfire
       WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=$test_outputs \
         WAYFIRE_PLUGIN_PATH="$repo/build" WAYFIRE_PLUGIN_XML_PATH="$repo/core/plugin/metadata:/usr/share/wayfire/metadata" \
+        python3 "$repo/tests/headless-owner.py" launch "$dir" -- \
         setsid ${private_bus:+dbus-run-session --} "${debugger[@]}" "${preload[@]}" wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
       echo $! >"$dir/pid"
     )
+    record_start_stage wait-for-socket
     for _ in $(seq 100); do
       name=$(sed -n 's/.*Using socket name \(wayland-[0-9]*\).*/\1/p' "$dir/wayfire.log")
       env_file=$session_dir/$name.env
@@ -658,6 +926,7 @@ WRAPPER
       sleep 0.1
     done
     [[ -n ${name:-} ]] || { echo "headless Wayfire didn't publish a socket name; see $dir/wayfire.log" >&2; exit 1; }
+    record_start_stage validate-session
     env_file=$session_dir/$name.env
     [[ -f $env_file && ! -L $env_file && -s $env_file ]] || {
       echo "headless session environment record is missing or redirected: $env_file; see $dir/wayfire.log" >&2
@@ -679,6 +948,7 @@ WRAPPER
     chmod 600 -- "$session_mode_record"
     # The debugger/private-bus wrapper can exit independently. Retain the actual
     # compositor identity so stop still reaps our inferior in that case.
+    record_start_stage record-compositor
     env_file=$session_dir/$name.env
     python3 - "$env_file" "$dir/compositor.pid" <<'PY'
 import pathlib, socket, struct, sys
@@ -692,6 +962,7 @@ pathlib.Path(sys.argv[2]).write_text(str(pid) + '\n')
 PY
     echo "$name" >"$dir/display"
     sleep 1
+    record_start_stage ready
     echo "headless Scottland on $name (hooks: ${started[*]})"
     ;;
   run)
@@ -703,6 +974,14 @@ PY
     exec "$exec_tool" --display "$(display)" -- python3 "$repo/tests/wfipc.py" "$@"
     ;;
   stop)
+    # A new launch records custody before the compositor can exec. Its guardian
+    # can reap the owned subtree even if neither env nor shim markers appeared.
+    # Never fall back to bare-PID cleanup after a guardian receipt/refusal.
+    if [[ -e $dir/launch-owner.json || -L $dir/launch-owner.json || -S $dir/owner.sock ]]; then
+      python3 "$repo/tests/headless-owner.py" stop "$dir" || exit 2
+      echo 'stopped recorded headless launch subtree; retaining scratch for outer cleanup'
+      exit 0
+    fi
     if [[ $isolation == 1 ]]; then
       if [[ ! -f $dir/display ]]; then
         [[ -e $dir || -L $dir ]] || exit 0
@@ -736,6 +1015,10 @@ PY
             echo 'headless session mode is invalid; preserving runtime and scratch' >&2; exit 2
             ;;
         esac
+        if [[ $session_mode == plain || $session_mode == shim ]]; then
+          name=$expected_display
+          stop_color_scheme_watcher || exit 2
+        fi
         if [[ -e $dir/pid || -L $dir/pid ]]; then
           [[ -f $dir/pid && ! -L $dir/pid && -f $dir/wayfire.ini && ! -L $dir/wayfire.ini ]] || {
             echo 'isolated startup ownership record changed; preserving its scratch directory' >&2; exit 2;
@@ -815,6 +1098,10 @@ PY
           exit 2
           ;;
       esac
+      if [[ $session_mode == plain || $session_mode == shim ]]; then
+        name=$expected_display
+        stop_color_scheme_watcher || exit 2
+      fi
       if [[ -f $dir/pid ]]; then
         pid=$(cat "$dir/pid")
         if [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
@@ -857,9 +1144,9 @@ PY
         exit 2
         ;;
     esac
-    # Stop the session's helpers by their pid files, then Wayfire (its clients follow).
-    # (Pid files hold the pid on their first line; the color-scheme watcher leads its own group,
-    # with its monitors.)
+    # Stop the Display watcher before Wayfire. Its private process group owns every monitor child.
+    stop_color_scheme_watcher || exit 2
+    # Stop the remaining session helpers by their pid files, then Wayfire.
     if [[ $isolation == 1 ]]; then
       pid_file="$session_dir/$name.widget-bus.pid"
       if [[ -f $pid_file && ! -L $pid_file ]]; then
@@ -879,10 +1166,10 @@ PY
         fi
       fi
     else
-    for pid_file in "$session_dir/$name.lua.pid" "$session_dir/$name.color-scheme.pid" "$session_dir/$name.widget-bus.pid"; do
+    for pid_file in "$session_dir/$name.lua.pid" "$session_dir/$name.widget-bus.pid"; do
       helper=$(sed -n 1p "$pid_file" 2>/dev/null || true)
       if [[ $helper =~ ^[0-9]+$ ]] && session_process_is_ours "$helper" "$name" && \
-         grep -qa -e scottland-color-scheme -e lua -e scottland-widget-bus "/proc/$helper/cmdline" 2>/dev/null; then
+         grep -qa -e scottland-color-scheme -e scottland-display -e lua -e scottland-widget-bus "/proc/$helper/cmdline" 2>/dev/null; then
         if [[ $(ps -o pgid= -p "$helper" | tr -d ' ') == "$helper" ]]; then kill -- "-$helper" 2>/dev/null; else kill "$helper" 2>/dev/null; fi
       fi
       rm -f "$pid_file"

@@ -50,7 +50,8 @@ if "--reload" in sys.argv:
         fresh = Path(directory) / "libscottland-exit-reload.so"
         shutil.copyfile("build/libscottland.so", fresh)
         plugins = call("wayfire/get-config-option", {"option": "core/plugins"})["value"]
-        mark = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
+        mark = Path(os.environ.get("SCOTTLAND_SESSION_DIR") or
+                    Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland") / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
         mark.touch()
         try:
             call("wayfire/set-config-options", {"core/plugins": plugins.replace("scottland", str(fresh))})
@@ -64,6 +65,7 @@ while True:
     entry = next(w for w in snapshot["widgets"] if w["widget_unit"] == unit)
     if entry["launcher_pid"] == 0:
         assert snapshot["version"] > initial["version"]
-        assert entry["widget_pid"] > 0 and entry["lifecycle"] == "docked"
+        assert entry["widget_pid"] > 0, f"launcher exited without an adopted widget window: {entry!r}"
+        assert entry["lifecycle"] == "docked", f"launcher exited before the widget docked: {entry!r}"
         break
 sock.close()

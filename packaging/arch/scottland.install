@@ -1,0 +1,11 @@
+post_install() {
+  /usr/lib/scottland/tools/base/scottland-source adopt
+}
+
+post_upgrade() {
+  /usr/lib/scottland/tools/base/scottland-source adopt
+}
+
+pre_remove() {
+  /usr/lib/scottland/tools/base/scottland-source remove
+}

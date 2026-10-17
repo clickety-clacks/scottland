@@ -11,7 +11,9 @@ bool session_locked();
 
 /** Session state for integrations, and hardware switch bindings.
  *
- *  IPC scottland/session-state -> {locked: bool}
+ *  IPC scottland/session-state -> {locked: bool, config-reloads: count}: config-reloads counts the
+ *    config loads Wayfire has applied (outputs included) since the plugin loaded, so a tool that
+ *    rewrote the config can wait until it took effect.
  *  [scottland] switch_device_<n> / switch_state_<n> / switch_locked_<n> / switch_command_<n>: run
  *    a command when a switch (the libinput device name, e.g. "Lid Switch") turns on, off, or
  *    either ("toggle"). Like any shortcut, a switch binding runs while the session is locked only

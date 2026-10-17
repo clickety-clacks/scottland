@@ -17,10 +17,11 @@ the solver chooses a new candidate by travel from the displayed position. The wh
 search does not choose window-avoidance moves. Far-apart-first sampling is limited to placing a
 hint inside its window.
 
-## Spread and solo
+## Spread, solo and gather
 
-**Triggers (P4).** Only explicit requests solo: holding the focused window's hint in Window mode
-or a three-finger hold on the focused window (WK35, committed outright, no undo, P5). Present, card
+**Triggers (P4).** Only explicit requests spread a layout: holding the focused window's hint in
+Window mode or a three-finger hold on the focused window solos it (WK35), and plain Space in
+Window mode gathers the periphery (WK43). These actions commit outright, with no undo (P5). Present, card
 clicks, zone cycling and ordinary drops never spread, and neither does pausing during a drag: the
 drag audition that offered a solo there is removed, with its pause setting (ruling 10-05: the
 three-finger hold does the job). Its hotspot setting, `solo_audition_hotspot` (50 pt), stays: moving
@@ -32,6 +33,25 @@ setting yet; its metadata and Settings help say so until they land.
 to its remembered center spot (WP2), else the middle of the screen, padded on screen (WP7), at full
 scale, in front. It gets no special status in window avoidance: like any window, if something
 later covers it, it peeks (WK13; Mike, 2026-10-05: peeking never moves its true location).
+
+**Gather (GA1–GA19).** Space in Window mode, without Ctrl, Shift or Super, gathers each output in
+turn. A quick Alt+Space remains the application's chord, focused-surface claims win, and the press
+ends a pending hint hold before gathering. Gather reads a fresh snapshot after each earlier solo or
+gather commits. On each side it orders periphery residents by their original inner distance, then
+nearness to the horizontal midline, then window id. Each takes the innermost legal spot at or inside
+its former inner distance that keeps normalized overlap with fixed obstacles and already placed
+windows at or below 10%; the shared bounded distance candidates include the center-zone border and
+obstacle edges. At that x it chooses the legal vertical spot nearest the midline, preferring its old
+vertical position and then the upper spot for close ties. If no such position exists, it minimizes
+total normalized overlap, then prefers the inner and midline positions. A window too wide for its
+periphery remains unchanged and blocks later placements. Center, rail, fullscreen, dragged and
+widget views are obstacles. Gather never changes focus, order, zone or window size, and no window
+crosses sides or the center border; a border overhang may move outward to the border. It uses the
+existing spread solver, work counter and 1,000,000-unit cap, sliced without a wall-clock cut. A
+screen result commits only when its full pass completes; a cap stop leaves that screen unchanged.
+Each screen is solved independently through the usual spread commit, so moved windows glide and
+update WP1 memory. Gather has no lasting state and a second press on an already tidy equal-height
+column moves nothing.
 
 **The solve** (`core/plugin/src/spread.{hpp,cpp}`, pure, no Wayfire). Windows whose center is in the
 center zone are *arrivals*; periphery windows are *residents*; widgets and rail windows are fixed.
@@ -89,14 +109,15 @@ measure under 40 µs of CPU; longer wall-clock slices seen on the x86 test machi
 
 | ID | Invariant | Status |
 |---|---|---|
-| SP1 | Only the focused window's hint hold and its three-finger hold; nothing else spreads (P4). | verified (headless on both test machines, real stipc input, 2026-10-04; re-run on the ARM test machine after the audition's removal, 2026-10-05) |
+| SP1 | The focused window's hint hold and three-finger hold solo it; plain Space in Window mode gathers every screen. These are explicit spread requests (P4); nothing else spreads. | solo verified (headless on both test machines, real stipc input, 2026-10-04; re-run on the ARM test machine after the audition's removal, 2026-10-05); gather acceptance pending |
 | SP2 | Arrivals land in the periphery (center outside the center zone and the rails, footprint inside the padded workarea), preferring the nearer side, hanging at most 16 pt into the center zone when they fit (ruling 10-04). | verified (unit fuzz, 600 scenes; headless) |
-| SP3 | A resident moves only if the solo target covers it or an arrival would otherwise land below its band (P6); it stays on its side (P1), never grows, never moves inward, ends clear when pushed, and returns when its spot is free again (P2). | verified (unit fuzz and fixtures; headless) |
+| SP3 | In solo, a resident moves only when required by P6 and never moves inward or grows; in gather, residents move inward toward the center-zone border on their own side, never past it, and may grow with the zone scale. | solo verified (unit fuzz and fixtures; headless); gather acceptance pending |
 | SP4 | The spacing pass moves only windows spread moved, each at most one halo, residents vertically only, arrivals within band, and never adds overlap (P7). | verified (unit fuzz) |
 | SP5 | The solve's work is charged (item by item, except the cap-bounded batches listed under "Bounded") and runs in measured 2 ms slices; the delivered result is always a complete validated checkpoint or no change; a completed solve and a fixed-work cut are deterministic, and sliced equals synchronous. The commit after a solve is one block outside the slice bound (about 0.4 ms of compositor CPU per moved window). | verified (unit suite; real-build slices and delivery CPU measured headless on the x86 test machine and the ARM test machine); real-GPU latency not yet measured |
 | SP6 | A keyboard or three-finger solo commits outright, no undo (P5); the solo window ends in the center at full scale, in front. | verified (headless on both test machines) |
 | SP7 | Pausing during a drag does nothing: held still in the center zone for any time, no other window is drawn anywhere but where it is, and dropping there moves no other window. A `solo_audition_delay` left in an older config is ignored (ruling 10-05: the drag audition is removed). | verified (the ARM test machine, headless, real stipc drags judged from pixels: 9 checks in 2 scenarios, shipped config and a stale 300 ms `solo_audition_delay`; the build before the removal fails 7 of them, 2026-10-05) |
 | SP8 | A reload with a solve in flight survives, applies nothing half-done and leaves no window displaced; a reload from the previous main build keeps every window, widget and peek. | verified (headless reload rehearsals on both test machines, 2026-10-04; re-run on the ARM test machine, from main into the build without the audition, 2026-10-05) |
+| SP9 | Gather is one deterministic, no-wall-cut pass per screen in the existing solver. It commits only a complete screen layout, observes the same work cap, and serializes with solo and other screens in press order. | source implemented; host acceptance pending |
 
 Not yet seen on a physical screen or with a physical touchpad (the shared test session was not
 reloaded).
@@ -249,11 +270,11 @@ actors with nonzero solver offsets receive a real move on drop.
 | ID | Invariant | Status |
 |---|---|---|
 | SM1 | A rail solve considers widgets from the dragged item's output and rail, excluding the dragged item (whose spot stays open). Any of them may move; they keep their order and never cross sides; total squared movement around the fixed item is least for the chosen split (exact per side by pool-adjacent-violators). | verified (unit suite incl. brute-force grid search, 2026-10-04) |
-| SM2 | P14: the dropped item never moves; the order around it follows where it was placed (a widget its center is on may go either side). Clearance is 1 px (existing overlaps between widgets are never deepened). Widgets overlap the item only when no allowed order fits: a truly full rail, or a clipped widget pinned at a rail end (at most half the item; for Mike to look at). | verified (plumbus/nacelle unit suite, review fuzz: no intrusion into the placed item, order kept, overlap only when no allowed order fits; real stipc input, 2026-10-04) |
-| SM3 | Shifts stay visual until drop, then commit; Esc and dragging out restore exact geometry and drawn positions. A drop before any completed pause, or more than 4 px from where the last pause solved, solves once more; otherwise it commits the held layout. | verified (Plumbus real stipc input, 2026-10-04) |
-| SM4 | Each solve checks its 256-actor bound before allocation, reuses captured order and scratch state, and returns only complete validated results. A drag solves only on pause/drop, never each pointer event; a non-drag widget arrival solves once after mapping. | verified (Plumbus; bounded unit suite and real stipc input, 2026-10-04) |
-| SM5 | A 4 px pointer wobble is part of the same pause. The 350 ms default dwell is live configurable from 100–1500 ms; movement after a solve holds that layout until the next completed pause. | verified (Plumbus real stipc input, 2026-10-04) |
-| SM6 | Every target change, including large shifts, release-time solves, geometry corrections and returns, eases in and out over 190–360 ms, longer only to stay under the shared 1000 px/s limit; retargets keep their speed and never overshoot; active reduced motion snaps. | verified (Plumbus frame sampling, planned and drawn frame-to-frame compositor speed, reduced-motion palette, 2026-10-04) |
-| SM7 | Direct rail drops, inertial coast arrivals and Window-mode key widgetization run the shared solver at the widget's actual landing spot. | verified (Plumbus real stipc input, 2026-10-04) |
-| SM8 | Window avoidance sees a rail ease's target, so it re-solves once per rail layout change, not per animation frame. | verified (Plumbus real stipc input against a no-move control, 2026-10-04) |
+| SM2 | P14: the dropped item never moves; the order around it follows where it was placed (a widget its center is on may go either side). Clearance is 1 px (existing overlaps between widgets are never deepened). Widgets overlap the item only when no allowed order fits: a truly full rail, or a clipped widget pinned at a rail end (at most half the item; for Mike to look at). | verified (AMD test host/ARM test host unit suite, review fuzz: no intrusion into the placed item, order kept, overlap only when no allowed order fits; real stipc input, 2026-10-04) |
+| SM3 | Shifts stay visual until drop, then commit; Esc and dragging out restore exact geometry and drawn positions. A drop before any completed pause, or more than 4 px from where the last pause solved, solves once more; otherwise it commits the held layout. | verified (AMD test host real stipc input, 2026-10-04) |
+| SM4 | Each solve checks its 256-actor bound before allocation, reuses captured order and scratch state, and returns only complete validated results. A drag solves only on pause/drop, never each pointer event; a non-drag widget arrival solves once after mapping. | verified (AMD test host; bounded unit suite and real stipc input, 2026-10-04) |
+| SM5 | A 4 px pointer wobble is part of the same pause. The 350 ms default dwell is live configurable from 100–1500 ms; movement after a solve holds that layout until the next completed pause. | verified (AMD test host real stipc input, 2026-10-04) |
+| SM6 | Every target change, including large shifts, release-time solves, geometry corrections and returns, eases in and out over 190–360 ms, longer only to stay under the shared 1000 px/s limit; retargets keep their speed and never overshoot; active reduced motion snaps. | verified (AMD test host frame sampling, planned and drawn frame-to-frame compositor speed, reduced-motion palette, 2026-10-04) |
+| SM7 | Direct rail drops, inertial coast arrivals and Window-mode key widgetization run the shared solver at the widget's actual landing spot. | verified (AMD test host real stipc input, 2026-10-04) |
+| SM8 | Window avoidance sees a rail ease's target, so it re-solves once per rail layout change, not per animation frame. | verified (AMD test host real stipc input against a no-move control, 2026-10-04) |
 | SM9 | The split keeps its value across small re-pauses (P11): a widget changes side by choice only after the item's center passes its center by its direction margin and the new split fits with that margin to spare; forced changes happen only when the old split stops fitting or the placement forbids it. Within a split every widget moves at most as far as the pointer did. After a drop the cards stay as shown: no second solve. | verified (review fuzz, 600,000 solves: 0 back-and-forth; 1 px sweep suite; real stipc re-pause and drop, 2026-10-04) |

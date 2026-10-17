@@ -8,9 +8,10 @@ time. Like the rest of core, the tools run on any distro and never know about Om
 ## Layout
 
     Cargo.toml        the workspace: shared version, edition and release profile
-    lib/              scottland-lib (`use scottland::...`): code every tool shares
-    bin/scottland/    the front command
-    bin/<tool>/       one crate per tool, building the binary scottland-<tool>
+    lib/                    scottland-lib (`use scottland::...`): shared Scottland paths and session code
+    bin/scottland/          the front command
+    bin/scottland-source/   source mechanism library and thin Scottland command
+    bin/<tool>/             one crate per subsystem tool, building scottland-<tool>
 
 The library holds what the scripts already agree on, so a Rust tool finds the same files a script
 does:
@@ -20,10 +21,25 @@ does:
 - `scottland::session`: the running sessions and the environments they recorded at startup, chosen
   the way `scottland-exec` chooses: a named display, else the caller's own session, else the only one.
 
-The front command only finds and runs tools, the way `git` runs `git-*`: `scottland` lists the tools
+`scottland-sender-window` reports every Scottland window that the sender's identity proves is
+showing or linked to it. It uses the resolver-v1 Python package copied verbatim from
+`core/tools/vendor/agent_window_resolver/` at the commit in `VENDORED.json`; the dev `tools`
+build installs it beside the binaries, while the package installs it beside the base binaries.
+Source-managed builds use the resolver from their matching source worktree. The sender's window proof uses the shared
+session library's blocking liveness probe.
+
+The front command finds and runs tools, the way `git` runs `git-*`: `scottland` lists the tools
 installed, `scottland display ...` runs `scottland-display ...`, and `scottland help display` runs
-`scottland-display --help`. It looks beside itself first, then on `PATH`. Each tool works the same
-when run directly.
+`scottland-display --help`. It also forwards `edit`, `rollback`, `update` and `status` to
+`scottland-source`. It looks beside itself first, then on `PATH`. Each tool works the same when run
+directly.
+
+`scottland-source` provides the product-neutral source mechanism library and the thin command that
+supplies the product name. It keeps the source history in a root-owned bare repository, builds the
+whole workspace in the user's clone, and asks for root only to prepare and activate a completed
+build. Product packages carry a base build and a full-history Git bundle; the mechanism adopts that
+release after installation and owns the active switch and command links. A future product can use
+the library as a pinned Cargo dependency and supply its own thin command.
 
 ## Adding a tool
 
@@ -42,18 +58,36 @@ fields from the workspace and depends on the library:
     [dependencies]
     scottland.workspace = true
 
-Nothing else needs editing: the Makefile and the Arch package build, install and link every crate
-under `bin/`. When a tool replaces a script, remove the script and its install lines in the same
-change; until then the tool, installed after the scripts, takes the script's place in `libexec`.
+The Makefile builds every crate under `bin/` for development. Product packages build the same
+workspace at one commit and place its binaries in the mechanism's base-build directory; runtime
+links follow the active build. When a tool replaces a script, remove the script and its install
+lines in the same change.
+
+## Weather app
+
+`bin/weather` installs `scottland-weather`, the launcher for the core Quickshell app in
+`core/apps/weather`. It reads the current Scottland location through the existing location setup,
+fetches current conditions, and retains the reading in the app. Each reading published to a
+widget includes `status` and an RFC 3339 UTC `fetchedAt`; current and stale readings also include
+their condition fields and the last successful `updated` time. Publication uses the existing
+WG11 data method over the WG9 widget service after WG12 reports the app widgetized. Dev and test
+hooks expose the app at `apps/weather`; the Arch package installs the app assets and
+`scottland-weather.desktop`. The Weather widget package remains separate in Flavorings.
+
+## System Stats app
+
+`bin/system-stats` installs `scottland-system-stats`, the launcher for the core Quickshell app in
+`core/system-stats`. It reads CPU, memory and load every two seconds; unavailable values and the
+`updated` reading time are `null`. The app publishes widget readings through the existing WG11
+method over the WG9 service when WG12 reports it widgetized. The Arch package installs
+`scottland-system-stats.desktop`; the System Stats widget package remains separate in Flavorings.
 
 ## Build, test, install
 
     make tools          # build every tool into build/tools/bin
     make tools-test     # the workspace's tests
     make dev-install    # also snapshots the tools and links them into the dev session and ~/.local/bin
-    make package        # the Arch package installs them in /usr/lib/scottland/libexec and /usr/bin
+    make package        # the Arch package includes the base build and full-history source bundle
 
 All of these need `cargo`. Builds go to `build/cargo`, so `make clean` removes them with the rest.
-
-How the tools' sources ship on a machine, and how they are edited and rebuilt there, is a separate
-design; nothing here assumes it.
+The sender-window tool also needs the distro's Python 3 runtime, already required by Scottland.

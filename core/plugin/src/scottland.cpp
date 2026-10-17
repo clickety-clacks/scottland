@@ -67,6 +67,7 @@ extern "C" {
 #include "declutter.hpp"
 #include "peek.hpp"
 #include "alt-mode.hpp"
+#include "window-filter.hpp"
 #include "pairing.hpp"
 #include "navigation.hpp"
 #include "inertia.hpp"
@@ -1186,14 +1187,66 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return place_at(output, x, output->get_relative_geometry().width);
     }
 
+    // Fullscreen views have no Scottland frame. Give only excluded fullscreen views a separate
+    // opacity transformer, so leaving the filter restores Wayfire's normal fullscreen rendering.
+    struct fullscreen_filter_visual_t
+    {
+        std::weak_ptr<wf::view_interface_t> view;
+        std::shared_ptr<scottland::view_2d_t> opacity;
+    };
+    std::map<uint64_t, fullscreen_filter_visual_t> fullscreen_filter_visuals;
+
+    void set_fullscreen_filter_hidden(wayfire_toplevel_view view, bool hidden)
+    {
+        auto found = fullscreen_filter_visuals.find(view->get_id());
+        if (found != fullscreen_filter_visuals.end())
+        {
+            if (auto old = found->second.view.lock())
+            {
+                if (old.get() == view.get() && hidden) return;
+                old->damage();
+                old->get_transformed_node()->rem_transformer("scottland-filter-fullscreen");
+                old->damage();
+            }
+            fullscreen_filter_visuals.erase(found);
+        }
+        if (!hidden) return;
+
+        auto opacity = std::make_shared<scottland::view_2d_t>(view);
+        opacity->alpha = 0.0;
+        view->damage();
+        view->get_transformed_node()->add_transformer(opacity, wf::TRANSFORMER_HIGHLEVEL,
+            "scottland-filter-fullscreen");
+        view->damage();
+        fullscreen_filter_visuals.emplace(view->get_id(), fullscreen_filter_visual_t{view->weak_from_this(), opacity});
+    }
+
+    bool matches_window_filter(wayfire_toplevel_view view)
+    {
+        if (!view) return false;
+        auto link = link_of_widget(view);
+        if (!link) link = link_of_window(view);
+        if (!link) return window_filter.matches(view->get_title(), view->get_app_id());
+        if (window_filter.matches(view->get_title(), view->get_app_id(), link->name)) return true;
+        auto partner = link_of_widget(view) ?
+            wf::toplevel_cast(view_by_id(link->window_id)) :
+            wf::toplevel_cast(link->widget.lock());
+        return partner && window_filter.matches(partner->get_title(), partner->get_app_id());
+    }
+
     void apply_opacity(wayfire_toplevel_view view, std::optional<double> center_x = {})
     {
-        if (!view || !view->is_mapped() || view->pending_fullscreen()) return;
+        if (!view) return;
+        bool excluded = view->is_mapped() && window_keys.active && !matches_window_filter(view);
+        set_fullscreen_filter_hidden(view, view->pending_fullscreen() && excluded);
+        if (!view->is_mapped() || view->pending_fullscreen()) return;
         auto frame = frame_of(view, false);
         if (!frame) return;
         bool focused = wf::get_core().seat->get_active_view() == view;
         double target;
-        if (untouched_since_pairing(view))
+        if (excluded)
+            target = 0.0;
+        else if (untouched_since_pairing(view))
             target = 1.0;  // pairing shows both fully opaque, once (WK36)
         else if (window_keys.active)
             target = focused ? double(window_mode_opacity_focused) : double(window_mode_opacity_unfocused);
@@ -1582,6 +1635,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 if (pending_drag_layout->empty()) pending_drag_layout.reset();
             }
             stop_widget_transition(toplevel);
+            set_fullscreen_filter_hidden(toplevel, false);
             model.windows.erase(toplevel->get_id());
             render_hidden(toplevel, false);  // return our lease even if Wayfire already unmapped it
             if (auto frame = frame_of(toplevel, false))
@@ -1752,12 +1806,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     };
     struct rail_drag_t
     {
-        scottland::rail::solver_t solver;
+        scottland::rail::focused_solver_t solver;
         scottland::drag_presentation_t presentation;
         wf::output_t *output = nullptr;
         uint64_t dragged = 0;
         bool left = false;
         double top = 0, bottom = 0;
+        // The focused card on this rail, if it isn't the one being dragged, stays fixed,
+        // so it divides the rail into independent make-room spans.
+        bool has_focused = false;
+        uint64_t focused_id = 0;
+        double focused_lo = 0, focused_hi = 0;
         scottland::rectf_t last_item, solved_item;  // latest landing; the one the last solve cleared
         wf::pointf_t pause_anchor{0, 0};
         uint32_t pause_deadline = 0;
@@ -3583,6 +3642,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         rail.dragged = 0;
         rail.left = false;
         rail.top = rail.bottom = 0;
+        rail.has_focused = false;
+        rail.focused_id = 0;
+        rail.focused_lo = rail.focused_hi = 0;
         rail.last_item = rail.solved_item = {};
         rail.pause_anchor = {};
         rail.pause_deadline = 0;
@@ -3603,6 +3665,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::vector<scottland::drag_actor_position_t> origins;
         intervals.reserve(model.widgets.size());
         origins.reserve(model.widgets.size());
+        auto active = wf::get_core().seat->get_active_view();
+        rail.has_focused = false;
         for (auto& [window_id, link] : model.widgets)
         {
             // Widgets hidden by Super+M keep their places (they come back); full screen's don't count.
@@ -3619,6 +3683,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 rect.y1 -= frame->drag_layout_y;
                 rect.y2 -= frame->drag_layout_y;
             }
+            // The focused card stays fixed and is held out of the movable set so the
+            // solver never offers it a shift, same as the dragged card itself.
+            if (active && active.get() == widget.get())
+            {
+                rail.has_focused = true;
+                rail.focused_id = widget->get_id();
+                rail.focused_lo = rect.y1;
+                rail.focused_hi = rect.y2;
+                continue;
+            }
             auto geometry = widget->get_geometry();
             intervals.push_back({widget->get_id(), rect.y1, rect.y2});
             origins.push_back({widget->get_id(), (double)geometry.x, (double)geometry.y});
@@ -3628,7 +3702,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto area = output->workarea->get_workarea();
         double top = area.y + WIDGET_INSET;
         double bottom = area.y + area.height - WIDGET_INSET;
-        if (bottom < top || !rail.solver.begin(intervals) ||
+        scottland::rail::interval_t fixed{rail.focused_id, rail.focused_lo, rail.focused_hi};
+        if (bottom < top || !rail.solver.begin(intervals, rail.has_focused ? &fixed : nullptr) ||
             !rail.presentation.begin(origins, scottland::rail::MAX_ACTORS)) return false;
 
         rail.output = output;
@@ -3647,6 +3722,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         rail.last_item = item;
         rail.has_item = true;
         rail.solved_item = item;
+        // Focus is a fixed divider. The solver considers only actors on the landing's side,
+        // so an overfull opposite side cannot erase useful shifts and no actor crosses focus.
+        // An item overlapping focus has no phantom landing.
         rail.solver.solve(item.y1, item.y2, rail.top, rail.bottom);
         auto& shifts = rail.solver.shifts();
         for (size_t i = 0; i < rail.presentation.size(); ++i)
@@ -4581,6 +4659,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         observe_view(wf::toplevel_cast(ev->view));
         publish_model();
+        if (window_keys.active && !window_filter.query.empty()) update_window_filter();
     };
 
     wf::signal::connection_t<wf::view_app_id_changed_signal> on_app_id =
@@ -4588,6 +4667,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         observe_view(wf::toplevel_cast(ev->view));
         publish_model();
+        if (window_keys.active && !window_filter.query.empty()) update_window_filter();
     };
 
     // What the widget's manifest says that Scottland acts on, told by the launcher once it has
@@ -4662,6 +4742,50 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         return true;
     }
+
+    /** IPC scottland/release-options {options}: hand the named scottland/ options back to the
+     *  config file. wayfire/set-config-options locks every option it sets, and a locked option
+     *  ignores the file until restart, so a value Settings previewed would outrank a later hand
+     *  edit. Clearing the lock leaves each value as it is; the next file reload applies the
+     *  file's value (S4, docs/rulings.md "file wins"). Options outside scottland/ are left alone. */
+    wf::ipc::method_callback release_options_method = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (!data.has_member("options") || !data["options"].is_array())
+        {
+            return wf::ipc::json_error("release-options needs options: an array of option names");
+        }
+
+        int released = 0;
+        for (size_t i = 0; i < data["options"].size(); ++i)
+        {
+            if (!data["options"][i].is_string())
+            {
+                return wf::ipc::json_error("each option must be a section/name string");
+            }
+
+            auto name = data["options"][i].as_string();
+            if (name.rfind("scottland/", 0) != 0)
+            {
+                continue;
+            }
+
+            auto option = wf::detail::load_raw_option(name);
+            if (option && option->is_locked())
+            {
+                // Locks are counted, one per set-config-options call; drain them all.
+                while (option->is_locked())
+                {
+                    option->set_locked(false);
+                }
+
+                ++released;
+            }
+        }
+
+        auto reply = wf::ipc::json_ok();
+        reply["released"] = released;
+        return reply;
+    };
 
     /** IPC scottland/present {window}: "I want to see this now" (L30). A widget's window opens
      *  as if its widget were clicked; a window in a side zone flies to the middle of its screen,
@@ -6973,10 +7097,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         [=] (wf::move_drag::drag_done_signal *ev)
     {
         // The dropped geometry is final; drag->view may still point at the view here.
-        // What you saw while dragging is what you get: right at a jump in scale (the drag keeps
-        // its size there until the other one agrees, see on_drag_motion) the drop can land where
-        // the zone says the other size. Then keep the size shown, and nudge the window sideways
-        // by the least distance that puts its center where that size belongs.
+        // At a scale jump, release keeps the drop position and lets the size settle to the
+        // drop zone's natural value instead of nudging the window to preserve the shown scale.
         auto main = ev->main_view;
         swipe_moving = false;  // whatever ended it (a button release can end a swipe drag)
         reconcile_rail_slides();  // a widget held in place by the grab may go now
@@ -7036,33 +7158,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (main && main->is_mapped() && main->get_output() && !main->pending_fullscreen() && !is_widget(main) &&
             !widget_shaped.value_or(false))
         {
-            auto geometry = main->get_geometry();
-            double screen = main->get_output()->get_relative_geometry().width;
-            double center = geometry.x + geometry.width / 2.0;
             if (shift_held())
             {
                 pin_scale(main, model.drag.target);  // dropped with Shift held (L31)
-            } else if (std::abs(place_at(main->get_output(), center, screen).scale - model.drag.target) > JUMP)
-            {
-                for (int d = 1; d <= 400; d++)
-                {
-                    int found = 0;
-                    for (int sign : {-1, 1})
-                    {
-                        if (std::abs(place_at(main->get_output(), center + sign * d, screen).scale - model.drag.target) <= 0.003)
-                        {
-                            found = sign;
-                            break;
-                        }
-                    }
-
-                    if (found)
-                    {
-                        move_window(main, geometry.x + found * d, geometry.y);
-                        break;
-                    }
-                }
             }
+            // Stay-still behavior keeps the window exactly where the user let go. If the drop
+            // position's natural scale differs from the scale shown while dragging, the size
+            // follows the drop position instead of nudging the window to match its shown size;
+            // `set_scale` below animates that change (L10).
         }
 
         for (auto& dragged : ev->all_views)
@@ -7289,7 +7392,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto transformer = view->get_transformed_node()->get_transformer<
                 wf::scene::view_2d_transformer_t>(TRANSFORMER);
             entry["applied_scale"] = transformer ? transformer->scale_x : 1.0;
-            entry["opacity"] = transformer ? transformer->get_alpha() : 1.0;
+            auto fullscreen_filter = fullscreen_filter_visuals.find(view->get_id());
+            entry["opacity"] = transformer ? transformer->get_alpha() :
+                (fullscreen_filter != fullscreen_filter_visuals.end() ?
+                    fullscreen_filter->second.opacity->get_alpha() : 1.0);
             // Where it's going, as the desktop model publishes it, not a step of an animation.
             auto state = model.windows.find(view->get_id());
             entry["target_scale"] = state != model.windows.end() ? state->second.scale : 1.0;
@@ -7444,6 +7550,60 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             inject_key(seat, keyboard, *key, mask, false);
         }
 
+        return wf::ipc::json_ok();
+    };
+
+    // Run a configured compositor binding through its repository. This bypasses surface key
+    // layers and does not synthesize input for the list-picker surface. For window actions, the
+    // caller supplies the app window captured before the picker opened.
+    wf::ipc::method_callback run_binding = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (!data.has_member("key") || !data["key"].is_string())
+        {
+            return wf::ipc::json_error("run-binding needs a string \"key\"");
+        }
+
+        auto seat = wf::get_core().get_current_seat();
+        auto keyboard = wlr_seat_get_keyboard(seat);
+        if (!keyboard || !keyboard->keymap)
+        {
+            return wf::ipc::json_error("no keyboard on the seat");
+        }
+
+        auto key = evdev_keycode(keyboard->keymap, data["key"].as_string());
+        if (!key)
+        {
+            wf::json_t reply;
+            reply["result"] = "not-runnable";
+            return reply;
+        }
+
+        uint64_t target = 0;
+        if (data.has_member("target"))
+        {
+            if (!data["target"].is_int64() || data["target"].as_int64() <= 0)
+            {
+                return wf::ipc::json_error("run-binding target must be a positive window id");
+            }
+            target = static_cast<uint64_t>(data["target"].as_int64());
+            auto found = model.windows.find(target);
+            std::shared_ptr<wf::view_interface_t> view;
+            if (found != model.windows.end()) view = found->second.view.lock();
+            if (found == model.windows.end() || !view || !view->is_mapped() || !found->second.focused)
+            {
+                return wf::ipc::json_error("this shortcut's target window is no longer focused");
+            }
+        }
+
+        std::string mods = data.has_member("mods") && data["mods"].is_string() ?
+            data["mods"].as_string() : "";
+        wf::keybinding_t binding{modifier_mask(keyboard->keymap, mods), *key};
+        if (!wf::get_core().bindings->handle_key(binding, 0))
+        {
+            wf::json_t reply;
+            reply["result"] = "not-runnable";
+            return reply;
+        }
         return wf::ipc::json_ok();
     };
 
@@ -7661,6 +7821,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.version = std::strtoull(version, nullptr, 10);
         }
         ipc_repo->register_method("scottland/send-key", send_key);
+        ipc_repo->register_method("scottland/run-binding", run_binding);
         ipc_repo->register_method("scottland/layout-state", layout_state);
         wf::get_core().connect(&on_axis);
         wf::get_core().connect(&on_initial_app_id);
@@ -7709,6 +7870,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/widget-action", widget_action);
         ipc_repo->register_method("scottland/widget-mode", widget_mode_ipc);
         ipc_repo->register_method("scottland/present", present_method);
+        ipc_repo->register_method("scottland/release-options", release_options_method);
         ipc_repo->register_method("scottland/widget-traits", widget_traits);
         ipc_repo->register_method("scottland/attention", attention_method);
         wf::get_core().tx_manager->connect(&on_new_transaction);
@@ -7818,6 +7980,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
+        ipc_repo->unregister_method("scottland/run-binding");
         ipc_repo->unregister_method("scottland/layout-state");
         on_minimize_edge.disconnect();
         on_minimize_device_removed.disconnect();
@@ -7881,6 +8044,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/widget-action");
         ipc_repo->unregister_method("scottland/widget-mode");
         ipc_repo->unregister_method("scottland/present");
+        ipc_repo->unregister_method("scottland/release-options");
         ipc_repo->unregister_method("scottland/widget-traits");
         ipc_repo->unregister_method("scottland/attention");
         wf::get_core().bindings->rem_binding(&on_minimize_key);
@@ -7968,6 +8132,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             view->get_transformed_node()->rem_transformer(TRANSFORMER);
         }
+        for (auto& [id, visual] : fullscreen_filter_visuals)
+            if (auto view = visual.view.lock())
+                view->get_transformed_node()->rem_transformer("scottland-filter-fullscreen");
+        fullscreen_filter_visuals.clear();
 
         scottland::gl_programs().release();
         scottland::windowing::release_hint_gl();

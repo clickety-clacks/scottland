@@ -5,7 +5,7 @@ RELEASES := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/releases
 # Portal selection for Scottland sessions (xdg-desktop-portal also reads $XDG_DATA_HOME).
 PORTALS := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/xdg-desktop-portal
 
-.PHONY: plugin tools tools-test dev-install link-dev test-hooks hooks dev-uninstall package clean
+.PHONY: plugin tools tools-test clipboard-test emoji-test dev-install link-dev test-hooks hooks dev-uninstall package clean
 
 # Optimized with debug info, asserts and frame pointers: unoptimized builds ran the plugin's CPU
 # paths 7-9x slower and froze the pointer (docs/compositor-hangs.md); cores and stacks stay readable.
@@ -23,9 +23,18 @@ tools:
 	@for crate in core/tools/bin/*/; do \
 	  $(CARGO) install --quiet --locked --path $$crate --root build/tools --target-dir build/cargo --force --no-track || exit 1; \
 	done
+	mkdir -p build/tools/lib
+	cp -a core/tools/vendor/agent_window_resolver build/tools/lib/
 
 tools-test:
 	$(CARGO) test --locked --manifest-path core/tools/Cargo.toml --target-dir build/cargo
+	python3 tests/sender-window-snapshot-ctl-test.py
+
+clipboard-test:
+	python3 tests/clipboard-list-test.py
+
+emoji-test:
+	python3 tests/emoji-test.py
 
 # The user's session runs a snapshot of a commit, never this checkout: merging, testing or editing
 # here doesn't touch it until the next dev-install (and reload). Refuses uncommitted work, so what
@@ -35,11 +44,33 @@ dev-install: plugin tools
 	  { echo "dev-install: commit first; the session runs exactly a commit" >&2; exit 1; }
 	@rev=$$(git rev-parse --short=12 HEAD); dest=$(RELEASES)/$$rev; \
 	rm -rf "$$dest.new" && mkdir -p "$$dest.new/build" && git archive HEAD | tar -x -C "$$dest.new" && \
-	cp build/libscottland.so build/scottland-output-power "$$dest.new/build/" && cp -r build/tools "$$dest.new/build/" && rm -rf "$$dest" && mv "$$dest.new" "$$dest" && \
+	cp build/libscottland.so build/scottland-output-power build/scottland-output-heads build/scottland-clipboardd "$$dest.new/build/" && cp -r build/tools "$$dest.new/build/" && rm -rf "$$dest" && mv "$$dest.new" "$$dest" && \
 	$(MAKE) --no-print-directory -C "$$dest" link-dev >/dev/null && echo "installed $$rev ($$dest)"
 
 # Points the user's session at this tree (dev-install runs it inside a snapshot).
 link-dev:
+	# Validate both legacy names before changing any session links.
+	@check_legacy_link() { \
+	  link="$$1"; current="$$2"; suffix="$$3"; \
+	  if [ -L "$$link" ]; then \
+	    target=$$(readlink -- "$$link") || return 1; \
+	    case "$$target" in \
+	      "$$current"|"$(RELEASES)"/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]/"$$suffix") return 0 ;; \
+	      *) echo "link-dev: refusing unrecognized legacy link target: $$link" >&2; return 1 ;; \
+	    esac; \
+	  elif [ -e "$$link" ]; then \
+	    echo "link-dev: refusing non-link occupant at legacy handover name: $$link" >&2; return 1; \
+	  fi; \
+	}; \
+	remove_legacy_link() { \
+	  link="$$1"; current="$$2"; suffix="$$3"; \
+	  check_legacy_link "$$link" "$$current" "$$suffix" || return 1; \
+	  if [ -L "$$link" ]; then rm -- "$$link"; fi; \
+	}; \
+	check_legacy_link "$(DEV)/autostart.d/40-handover" "$(CURDIR)/omarchy/autostart.d/40-handover" "omarchy/autostart.d/40-handover" || exit 1; \
+	check_legacy_link "$(DEV)/libexec/scottland-handover" "$(CURDIR)/omarchy/libexec/scottland-handover" "omarchy/libexec/scottland-handover" || exit 1; \
+	remove_legacy_link "$(DEV)/autostart.d/40-handover" "$(CURDIR)/omarchy/autostart.d/40-handover" "omarchy/autostart.d/40-handover" || exit 1; \
+	remove_legacy_link "$(DEV)/libexec/scottland-handover" "$(CURDIR)/omarchy/libexec/scottland-handover" "omarchy/libexec/scottland-handover" || exit 1
 	mkdir -p $(DEV)/plugins $(DEV)/metadata $(CONF) $(HOME)/.local/bin
 	ln -sf $(CURDIR)/build/libscottland.so $(DEV)/plugins/libscottland.so
 	ln -sf $(CURDIR)/core/plugin/metadata/scottland.xml $(DEV)/metadata/scottland.xml
@@ -50,6 +81,8 @@ link-dev:
 	mkdir -p $(DEV)/libexec $(DEV)/session-env.d $(DEV)/autostart.d $(DEV)/early-exit.d $(DEV)/config.d $(DEV)/reload.d $(DEV)/accent.d $(DEV)/focus.d $(DEV)/override-report.d $(DEV)/prompts
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(DEV)/libexec/scottland-hyprshim
 	ln -sf $(CURDIR)/build/scottland-output-power $(DEV)/libexec/scottland-output-power
+	ln -sf $(CURDIR)/build/scottland-output-heads $(DEV)/libexec/scottland-output-heads
+	ln -sf $(CURDIR)/build/scottland-clipboardd $(DEV)/libexec/scottland-clipboardd
 	ln -sf $(CURDIR)/core/session/scottland-build-config $(DEV)/libexec/scottland-build-config
 	ln -sf $(CURDIR)/core/session/scottland-autostart $(DEV)/libexec/scottland-autostart
 	ln -sf $(CURDIR)/core/session/start-scottland $(DEV)/libexec/start-scottland
@@ -58,8 +91,17 @@ link-dev:
 	ln -sf $(CURDIR)/core/session/scottland-reload $(HOME)/.local/bin/scottland-reload
 	ln -sf $(CURDIR)/core/libexec/scottland-exec $(HOME)/.local/bin/scottland-exec
 	ln -sf $(CURDIR)/core/libexec/scottland-ctl $(HOME)/.local/bin/scottland-ctl
+	ln -sf $(CURDIR)/core/libexec/scottland-list-picker $(HOME)/.local/bin/scottland-list-picker
+	ln -sf $(CURDIR)/core/libexec/scottland-clipboard $(HOME)/.local/bin/scottland-clipboard
+	ln -sf $(CURDIR)/core/libexec/scottland-emoji $(HOME)/.local/bin/scottland-emoji
+	ln -sf $(CURDIR)/core/libexec/scottland-keybindings $(HOME)/.local/bin/scottland-keybindings
 	ln -sfn $(CURDIR)/core/agents $(DEV)/agents
 	ln -sfn $(CURDIR)/core/widgets $(DEV)/widgets
+	ln -sfn $(CURDIR)/core/window-names.d $(DEV)/window-names.d
+	ln -sfn $(CURDIR)/core/list-picker $(DEV)/list-picker
+	ln -sfn $(CURDIR)/core/emoji $(DEV)/emoji
+	mkdir -p $(DEV)/apps
+	ln -sfn $(CURDIR)/core/apps/weather $(DEV)/apps/weather
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); done
 # The system tools, after the scripts: a tool that replaces a script takes its place.
 	for f in build/tools/bin/*; do \
@@ -89,6 +131,8 @@ hooks:
 	mkdir -p $(HOOKS_DIR)/libexec $(HOOKS_DIR)/session-env.d $(HOOKS_DIR)/autostart.d $(HOOKS_DIR)/early-exit.d $(HOOKS_DIR)/config.d $(HOOKS_DIR)/reload.d $(HOOKS_DIR)/accent.d $(HOOKS_DIR)/focus.d $(HOOKS_DIR)/override-report.d $(HOOKS_DIR)/prompts
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(HOOKS_DIR)/libexec/scottland-hyprshim
 	ln -sf $(CURDIR)/build/scottland-output-power $(HOOKS_DIR)/libexec/scottland-output-power
+	ln -sf $(CURDIR)/build/scottland-output-heads $(HOOKS_DIR)/libexec/scottland-output-heads
+	ln -sf $(CURDIR)/build/scottland-clipboardd $(HOOKS_DIR)/libexec/scottland-clipboardd
 	ln -sf $(CURDIR)/core/session/scottland-build-config $(HOOKS_DIR)/libexec/scottland-build-config
 	ln -sf $(CURDIR)/core/session/scottland-autostart $(HOOKS_DIR)/libexec/scottland-autostart
 	ln -sf $(CURDIR)/core/session/start-scottland $(HOOKS_DIR)/libexec/start-scottland
@@ -96,6 +140,11 @@ hooks:
 	ln -sf $(CURDIR)/core/session/scottland-settings $(HOOKS_DIR)/libexec/scottland-settings
 	ln -sfn $(CURDIR)/core/agents $(HOOKS_DIR)/agents
 	ln -sfn $(CURDIR)/core/widgets $(HOOKS_DIR)/widgets
+	ln -sfn $(CURDIR)/core/window-names.d $(HOOKS_DIR)/window-names.d
+	ln -sfn $(CURDIR)/core/list-picker $(HOOKS_DIR)/list-picker
+	ln -sfn $(CURDIR)/core/emoji $(HOOKS_DIR)/emoji
+	mkdir -p $(HOOKS_DIR)/apps
+	ln -sfn $(CURDIR)/core/apps/weather $(HOOKS_DIR)/apps/weather
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
 	for f in build/tools/bin/*; do [ -e "$$f" ] || continue; ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
 	ln -sfn $(CURDIR)/core/settings $(HOOKS_DIR)/settings
@@ -117,7 +166,8 @@ test-hooks: plugin tools
 dev-uninstall:
 	rm -rf $(DEV)
 	rm -f $(CONF)/scottland.ini $(HOME)/.local/bin/start-scottland $(HOME)/.local/bin/scottland-omarchy-setup \
-	  $(PORTALS)/scottland-portals.conf
+	  $(HOME)/.local/bin/scottland-list-picker $(HOME)/.local/bin/scottland-clipboard \
+	  $(HOME)/.local/bin/scottland-emoji $(HOME)/.local/bin/scottland-keybindings $(PORTALS)/scottland-portals.conf
 
 package:
 	cd packaging/arch && makepkg -sif

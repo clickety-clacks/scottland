@@ -11,7 +11,7 @@ import sys
 import time
 
 root = Path(__file__).resolve().parents[1]
-helper = root / "core/libexec/scottland-color-scheme"
+display_cli = Path(os.environ["SCOTTLAND_HOOKS"]) / "libexec/scottland-display"
 exec_helper = root / "core/libexec/scottland-exec"
 passed = failed = 0
 sock = socket.socket(socket.AF_UNIX)
@@ -80,8 +80,9 @@ try:
     set_scale(1.0)
     subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "cursor-theme", "default"],
                    check=True, capture_output=True, text=True)
-    watcher = subprocess.Popen([str(helper), "watch"], env=os.environ.copy(), start_new_session=True,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    watcher = subprocess.Popen([str(display_cli), "color-scheme", "watch"], env=os.environ.copy(),
+                               start_new_session=True, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.PIPE, text=True)
     check("A17 initial 24 px size is applied to the compositor", wait_until(lambda: option("input/cursor_size") == 24))
     check("A17 initial size is applied to GTK", wait_until(lambda: settings("cursor-size").split()[-1] == "24"))
     check("A17 initial size is recorded for new session launches", wait_until(lambda: recorded_size() == 24))

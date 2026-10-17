@@ -44,6 +44,12 @@ back into its window, a window at the side flies to the middle at 100%, and eith
 and focused. A window already in the center zone stays put. Use it when the user picks a window
 (from a launcher, a list of agents); a plain focus request moves nothing.
 
+## Session shortcut sheet
+
+`scottland-keybindings` opens the searchable list of shortcuts configured for the current session.
+Use `scottland-keybindings --print` to write the same chord-and-label lines to standard output.
+Core binds no default key; flavorings or the user may choose one.
+
 ## Temporary shortcut layers for a surface
 
 An app can claim its own shortcuts while its surface has keyboard focus. Everything it doesn't
@@ -76,6 +82,18 @@ Register after the surface maps; set replaces its previous keys atomically. Clea
 disconnect removes it. A short-lived IPC connection may close without removing the layer.
 Register again after remapping or a plugin reload. Compositor grabs retain their input.
 Full rules: Scottland's `docs/key-layers.md` (KL1–KL8).
+
+## Clipboard history
+
+`scottland-clipboard history` opens the session-only history and copies the selected entry. Add
+`--paste` to paste it into the app that was focused when the picker opened, or `--open` to open it
+in its default application. Pipe text to `scottland-clipboard copy-text`, or pass a path and MIME
+type to `scottland-clipboard copy-file`; both paste by default, and `--copy-only` skips pasting.
+Use `scottland-clipboard clear` to empty the session history. Core does not bind a default key.
+
+`scottland-emoji` opens the shipped, offline emoji list and inserts a selection into the app that
+was focused when the picker opened, restoring the previous clipboard. Use `--copy` to copy the
+selection without inserting it. Core does not bind a default key.
 
 ## Touchscreen scrolling for apps that ignore touch
 

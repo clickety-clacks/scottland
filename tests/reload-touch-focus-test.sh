@@ -1,6 +1,6 @@
 #!/bin/bash
 # A plugin reload after a touch drag, then mouse motion (tests/reload-touch-focus-test.py). Run only
-# on a test host (plumbus, nacelle), never on a daily desktop. The caller supplies its own headless
+# on an isolated test host, never on a daily desktop. The caller supplies its own headless
 # directory. Builds this checkout's plugin and test helpers first (make test-hooks).
 set -euo pipefail
 cd "$(dirname "$0")/.."

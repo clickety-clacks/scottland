@@ -4,3 +4,7 @@ for omarchy_env in /usr/share/uwsm/env.d/* "${XDG_CONFIG_HOME:-$HOME/.config}"/u
   [ -r "$omarchy_env" ] && . "$omarchy_env"
 done
 unset omarchy_env
+# Keep the existing theme timer authoritative until Sunlight is explicitly enabled.
+export SCOTTLAND_SOLAR_OPT_IN=1
+SCOTTLAND_IMPORT_ENV="${SCOTTLAND_IMPORT_ENV:+$SCOTTLAND_IMPORT_ENV }SCOTTLAND_SOLAR_OPT_IN"
+export SCOTTLAND_IMPORT_ENV

@@ -7,6 +7,24 @@ rules on something, add it here in the same change that updates the spec. Princi
 
 Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the session record.
 
+## Omarchy solar compatibility
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-10 | Omarchy sessions require Sunlight and network lookup opt-in for missing/unset settings, preserving standalone Core/Settings defaults and explicit choices; preserve the existing solar timer and user configuration until explicit opt-in, and guard the adapter against stale producer state. Keep this compatibility repair separate from broader Sunlight work. | O18; S21 opt-in defaults |
+
+## Sunlight transition scheduling
+
+| Date | Ruling | Where |
+|---|---|---|
+| 2026-10-12 | Sunlight schedules actual sunrise and sunset boundaries. A manual choice holds until the next boundary; first enable, re-enable and one current-period catch-up after sleep/reboot are the only immediate applications. Persist one transition record so an acknowledged boundary is not replayed, and keep the existing solar.ini control and stock Omarchy timer/configuration unchanged. | A15, S21, O18; `scottland-sunlight` package |
+
+## Omarchy theme memory
+
+| Date | Ruling | Where |
+|---|---|---|
+| 2026-10-09 | Remember the last user-selected theme independently for the light and dark solar periods. At the next real transition restore that period's choice, with matching Watercolor Dream fallback when unset; polls and restarts must not undo a manual choice. Observing a choice must not itself apply a theme or learn an automatic application as a manual choice. Preserve explicit Sunlight opt-in and existing timer/configuration. | O18; `docs/omarchy-theme-memory.md` |
+
 ## Principles
 
 | Date | Ruling | Where |
@@ -47,7 +65,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 2026-10-06 | There should be a settings slider for opacity of the background behind hint letters. | WK42, S23 |
 | 2026-10-06 | "why does 100% mean 21% that makes no sense"; "it should set both. having them different is a bug." The slider is the absolute opacity of the background behind hint letters (100% solid, 0% none), one value and one default for window and widget hints. | WK42, WK26, S23 |
 | 2026-10-07 | "no, it should go from 0 to 100%, this is simple." This corrects an accidental choice to add a contrast floor for widget hint letters, which is void. Hint background opacity is user adjustable across the full 0-100% range, one value for window and widget hints, default 21%. No contrast floor, halo, minimum or automatic adjustment; low values show whatever lies beneath. | WK42, S23 |
-| 2026-10-07 | "Record option 2: both separate settings go 0–100%" (dr_ed09236e). The Window mode hint color overlay (`window_mode_tint`) widens from 0–30% to 0–100%, default still 7%; it stays a separate setting from hint background opacity, which is unchanged. | WK38, S14 |
+| 2026-10-07 | "Record option 2: both separate settings go 0–100%". The Window mode hint color overlay (`window_mode_tint`) widens from 0–30% to 0–100%, default still 7%; it stays a separate setting from hint background opacity, which is unchanged. | WK38, S14 |
 
 ## Window mode keys
 
@@ -117,11 +135,18 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-03 | Watercolor wallpaper: local pickup and spread, in all of the goo (stronger where thick), persistent after motion settles. | GO24 |
 | 10-04 | Pre-computed breath frames: a ceiling (about 50) and widen spacing above it; never fall off a cliff to the expensive path silently. | GO26 |
 
+## Settings
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-07 | Direct file edits update the settings UI and running desktop, and settings UI changes update the file. | S4, S5, S6, S21 |
+
 ## Omarchy adapter, distro and flavorings
 
 | Date | Ruling | Where |
 |---|---|---|
 | 10-03 | Overrides of Omarchy are reported with reasons, grouped by reason, explained by the user's default coding agent in plain words, leading with the user's own custom shortcuts. | O20 |
+| 10-13 | Omarchy's Logout in Scottland must close apps and end Scottland's own session so a user can log in again, as Logout does in Omarchy; `uwsm stop` alone leaves Scottland running with an empty screen. | S9; docs/adapter-gaps.md AG39 |
 | 10-03 | Gooarchy flavorings (curated widgets and defaults) install with the distro and with the Omarchy adapter; they may override Omarchy only where that's better for Gooarchy, always reported. | O21, P9 |
 | 10-03 | The distro is Gooarchy, pronounced "goo-ah-shee". | distro-notes |
 | 10-03 | Chromium ships with the system title bar and borders. | distro-notes |
@@ -133,12 +158,28 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-05 | The adapter brings over Omarchy's touchpad scroll speeds: the global touchpad scroll_factor and the per-app scroll_touchpad rules from the user's effective config, updating live; core gets a generic per-app touchpad scroll speed (config-driven app-id matching, no named apps) and alone keeps its current default. Nothing else from the audit's third group. | L17, O28; docs/adapter-gaps.md AG22/AG07 |
 | 10-06 | Screen sharing for Omarchy-adapter users: the adapter's setup builds and installs Gooarchy's patched xdg-desktop-portal-wlr package, replacing Arch's, and reports the replacement. Note for later: once Gooarchy has a package repository, this must migrate to installing from it. | O29; docs/adapter-gaps.md AG02; Gooarchy docs/xdg-desktop-portal-wlr.md |
 | 10-06 | Don't send the xdg-desktop-portal-wlr fixes upstream: we maintain our own public fork (clickety-clacks/xdg-desktop-portal-wlr), the fixes as commits on a branch from the 0.8.4 tag, tagged releases. At the very top of its README, and in CONTRIBUTING.md: AI-written submissions are welcome, but too many AI-written submissions that fail our adversarial review may result in a ban on having submissions accepted. Gooarchy's package builds from the fork's release. Supersedes "get the fixes accepted upstream" and "only until upstream releases them" in the 10-05 screen-sharing ruling. | AG02; Gooarchy docs/xdg-desktop-portal-wlr.md |
+| 10-09 | Translate Omarchy’s existing screensaver window rule so only org.omarchy.screensaver opens fullscreen in Scottland; preserve ordinary windows, keep Omarchy unmodified, and document untranslated focus/cursor rules. Physical-screen acceptance follows merge. | Mike’s make-full-screen choice, AG19, adapter L2 |
+| 10-13 | Confirm AG19 question 4 after observing the Omarchy screensaver open windowed in Scottland 0.3: the mapped `org.omarchy.screensaver` must open fullscreen, while ordinary windows remain windowed. Keep Omarchy unmodified; leave focus and cursor rules untranslated. | Mike’s direct ruling, AG19 question 4, `tests/omarchy-shim-test.py`, adapter L2 |
 
 ## System tools (core/tools)
 
 | Date | Ruling | Where |
 |---|---|---|
 | 10-06 | Scottland's system tools are Rust: "group the scripts by subsystem and make a single binary for that subsystem", in one Cargo workspace with a shared library crate and a thin `scottland` front command for discovery. Like the rest of core they run on any distro and never know about Omarchy. | core/tools/README.md |
+| 10-06 | Remove keep mode: "wrt to keep mode i vote we just remove it. switching between the two just closes all the windows, keeps it clean". Switching between Scottland and Hyprland always closes the current desktop; no checkbox, no remembered choice, no service handover between running desktops. Adapter-gaps question 1 and the 1Password keep-mode crash are moot. | W2, W11 (W7–W9 removed); docs/adapter-gaps.md AG20/AG36 |
+| 10-06 | "please keep a warning in the switcher that it WILL close all windows": the switch dialog warns, in place of the checkbox, that switching will close all windows in the current desktop. | W2 |
+
+## Picker and clipboard empty-history presentation
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-14 | After `scottland-clipboard clear` acknowledges clearing session history, it opens the existing generic picker with `--show-empty` and prompt `Clipboard history`. Zero rows show a nonselectable `No entries` view; ordinary empty picker input still cancels; nonempty picker behavior is unchanged. Normal dismissal means clear succeeded. Clear failure does not open the view; if presentation fails after clear, report that history is cleared and the view failed, without restoring it. No sentinel, second picker, or new dependency. | docs/clipboard.md CH11; docs/list-picker.md LP6 |
+
+## Session environment
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-08 | Boot, relog and reload use the live session values in the shared manager. Import each configured, set variable once. Log import or portal failures without retrying; login still starts the session watcher and ordinary hooks, and reload continues its plugin/config work. At login, restart only active or transitioning portal units that predate the successful import; do not restart failed portal units. On reload, import the live values without restarting already-running services. | E1, `core/autostart.d/05-import-environment` |
 
 ## Knocks (concept in discussion; docs/knocks.md)
 
@@ -164,7 +205,8 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-05 | Watercolor goo is one dye, not segregated kinds. Focus and attention color dye all of a window's goo, not a band at its wall. Dye density, swirl and spread are settings. The goo picks up the color of whatever is under it (wallpaper or window content) and mixes it into the dye already there, like mixing watercolors; picked-up color spreads and swirls like any dye, smearing the material beneath. Supersedes the wall-band and wallpaper-only parts of GO15/GO24. | GO28 |
 | 10-05 | Dye release is the rate at which dye enters the goo. The setting called dye strength is dye density, and is named that. | GO23, GO28 |
 | 10-05 | Remove the drag audition (pausing during a drag to solo) altogether, with its timeout setting in Settings: the three-finger hold does the job. (Supersedes the two 10-05 re-arm entries.) | SP7 |
-| 10-05 | Peeking is temporary and never moves a window's true location, so it never violates "stays put". Soloed, paired, audition-dropped and focused windows get no special anchoring in the peek engine: any window that is covered peeks like any other. **Pending for focused windows:** this conflicts with WK13's 10-02 rule that the focused window never moves for avoidance, and Mike has not yet said which wins; until he does, the focused window keeps its anchoring and only the solo, pair and audition parts are in effect. | WK13, WK36, spread |
+| 10-05 | Peeking is temporary and never moves a window's true location, so it never violates "stays put". Soloed, paired, audition-dropped and focused windows get no special anchoring in the peek engine: any window that is covered peeks like any other. **Resolved 10-07 (see below):** the focused window is the exception, not the rule. WK13's 10-02 anchoring stands; only the solo, pair and audition parts of this entry are in effect. | WK13, WK36, spread |
+| 10-07 | Mike's stay-still ruling, verbatim: "the active window NEVER moves  automatically without the user explicitely doing it." This settles the 10-05 entry above in WK13's favor: the focused window's 10-02 anchoring was never limited to avoidance, so it keeps that anchoring against peeking too, with no exception for solo, pair or audition. WK13 restated to the broader rule: the active window never moves automatically, for any reason, without the user doing it. | WK13 |
 | 10-05 | Entering Window mode, a hint appears only once it has settled: never drawn, removed, then drawn again while placement and window avoidance run. | WK41 |
 | 10-05 | Window mode works with all windows across all screens. You can pair with a window on another screen: the window whose hint you are manipulating moves to the screen where its partner is. | WK, WK36 |
 | 10-05 | A solo or pair from a hold is an audition. Starting to drag cancels it, as does Esc. During a pair audition the pointer may not be over where the held window is drawn; that's fine, since nothing really moved. When the cursor moves again, the held window returns to its position under the cursor and drags as normal. | WK35, WK36, WK39 |
@@ -179,3 +221,5 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-05 | Goo: the balance between focus/attention color and picked-up color is a slider. The "Wallpaper soak" setting is labeled "Wallpaper pickup". | GO28 |
 | 10-05 | Dye density scales all dye in the goo, picked-up color included, not only focus and attention color. | GO23, GO28 |
 | 10-05 | Super+arrows reach widgets too: rail widgets are navigation targets like any window, judged by where they appear. No skip rules beyond what moving to the neighbor in that direction needs (not minimized-but-visible things, not widgets, not the periphery). | WK40 |
+
+| 10-14 | Switching dark/light mode restores the wallpaper last used in that mode alongside its remembered theme. Preserve manual choices and theme-only state; unavailable images fall back without blanking or retry loops. No new daemon, UI, config or timer migration. Device validation follows reviewed source landing. | O18, omarchy-theme-memory |

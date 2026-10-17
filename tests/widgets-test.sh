@@ -23,6 +23,31 @@ for v in json.load(sys.stdin)['views']:
 }
 widget_id() { ipc scottland/widgets | python3 -c "import json,sys; w=json.load(sys.stdin)['widgets']; print(w[0]['id'] if w else '')"; }
 bus() { tests/headless.sh run busctl --user "$@"; }
+session_read() { tests/headless.sh run sh -c 'cat "$SCOTTLAND_SESSION_DIR/$1"' sh "$1"; }
+session_absent() { tests/headless.sh run sh -c 'test ! -e "$SCOTTLAND_SESSION_DIR/$1"' sh "$1"; }
+session_write() { tests/headless.sh run sh -c 'cat >"$SCOTTLAND_SESSION_DIR/$1"' sh "$1"; }
+session_touch() { tests/headless.sh run sh -c 'touch "$SCOTTLAND_SESSION_DIR/$1"' sh "$1"; }
+session_remove() { tests/headless.sh run sh -c 'rm -f -- "$SCOTTLAND_SESSION_DIR/$1"' sh "$1"; }
+palette_complete() {
+  session_read "$display.palette.json" | python3 -c '
+import json,re,sys
+p=json.load(sys.stdin)
+sys.exit(0 if p["scheme"] in ("light", "dark") and all(
+    re.fullmatch("#[0-9a-fA-F]{6}", p[k])
+    for k in ("background", "foreground", "muted", "accent", "alert")) else 1)'
+}
+scope_contains_child() {
+  [[ $unit == *.scope && $manager_socket == available && $scope_group == /* ]] || return 1
+  [[ $(wc -w <<<"$procs") -ge 2 ]]
+}
+scoped_children_ended() {
+  scope_contains_child || return 1  # an empty PID list cannot prove cleanup
+  for pid in $procs; do
+    [[ $pid =~ ^[0-9]+$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null && return 1
+  done
+  ! tests/headless.sh run systemctl --user is-active --quiet "$unit"
+}
 super_drag() {  # super_drag x1 y1 x2 y2
   h stipc/move_cursor "{\"x\":$1,\"y\":$2}"; sleep 0.2
   h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'
@@ -101,7 +126,6 @@ cleanup() {
 }
 trap cleanup EXIT
 display=$(cat "$headless_dir/display")
-state_dir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/widgets/$display
 signals=$artifacts/widget-signals.log
 tests/headless.sh run gdbus monitor --session --dest org.scottland.Widgets >"$signals" 2>&1 &
 monitor_pid=$!
@@ -151,14 +175,14 @@ check "WG9 its Title property is the window title" \
 
 # WG10: a badge announced the standard way (Unity launcher API, per .desktop id).
 unit=$(ipc scottland/widgets | python3 -c "import json,sys; print(json.load(sys.stdin)['widgets'][0]['widget_unit'])")
-desktop=$(python3 -c "import json; print(json.load(open('$state_dir/$unit.json')).get('desktop',''))")
+desktop=$(session_read "widgets/$display/$unit.json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('desktop',''))")
 bus emit /com/canonical/unity/launcherentry/1 com.canonical.Unity.LauncherEntry Update "sa{sv}" \
   "application://${desktop:-foot}.desktop" 2 count x 7 count-visible b true
 sleep 0.8
 check "WG10 a launcher badge reaches the widget (Badge property)" \
   [ "$(bus get-property org.scottland.Widgets "/org/scottland/widget/$id" org.scottland.Widget Badge)" = "x 7" ]
 check "WG10 ...and its state file (what the card shows)" \
-  [ "$(python3 -c "import json; print(json.load(open('$state_dir/$unit.json'))['badge'])")" = 7 ]
+  [ "$(session_read "widgets/$display/$unit.json" | python3 -c "import json,sys; print(json.load(sys.stdin)['badge'])")" = 7 ]
 bus emit /com/canonical/unity/launcherentry/1 com.canonical.Unity.LauncherEntry Update "sa{sv}" \
   "application://${desktop:-foot}.desktop" 1 progress d 0.5
 sleep 0.5
@@ -215,7 +239,7 @@ f=v['frame']; sys.exit(0 if abs(f['x']+f['width']/2 - $restore_x) < 30 and abs(f
 check "WG5 ...and the widget is gone (dismissed, not closed)" \
   [ "$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = 0 ]
 check "WG12 StateChanged told the app it's back (not widgetized)" grep -q "StateChanged (uint32 $app_pid, false" "$signals"
-check "WG9 the widget's state files are gone" bash -c "! ls '$state_dir'/$unit.json 2>/dev/null | grep -q ."
+check "WG9 the widget's state files are gone" session_absent "widgets/$display/$unit.json"
 
 # WG5: closing the widget closes the app's window.
 read -r ax ay aw ah <<<"$(view_field widget-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
@@ -247,8 +271,15 @@ read -r ax ay aw ah <<<"$(view_field widget-app4 "round(f['x']), round(f['y']), 
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 sleep 1
 unit=$(ipc scottland/widgets | python3 -c "import json,sys; w=json.load(sys.stdin)['widgets']; print(w[0]['widget_unit'] if w else '')")
-procs=$(cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/app.slice/$unit/cgroup.procs" 2>/dev/null | tr '\n' ' ')
-check "WG5 (timeout) the widget runs in its own scope, with its child" [ "$(echo $procs | wc -w)" -ge 2 ]
+manager_socket=$(tests/headless.sh run sh -c 'if [ -S "$XDG_RUNTIME_DIR/systemd/private" ]; then echo available; else echo absent; fi')
+scope_group=$(tests/headless.sh run systemctl --user show --property=ControlGroup --value "$unit" 2>/dev/null)
+procs=
+if [[ $scope_group == /* ]]; then
+  procs=$(tests/headless.sh run cat "/sys/fs/cgroup$scope_group/cgroup.procs" 2>/dev/null | tr '\n' ' ')
+fi
+printf 'unit=%s\nprivate_manager=%s\ncontrol_group=%s\ninitial_pids=%s\n' \
+  "$unit" "$manager_socket" "$scope_group" "$procs" >"$artifacts/scope-readback.txt"
+check "WG5 (timeout) the widget runs in its own scope, with its child" scope_contains_child
 check "WG11 a widget with no window yet has no window process (widget_pid 0)" \
   [ "$(ipc scottland/widgets | python3 -c "import json,sys; print(json.load(sys.stdin)['widgets'][0]['widget_pid'])")" = 0 ]
 check "WG5/WG22 (timeout) the app stays visible until a card can take its image" \
@@ -257,7 +288,7 @@ sleep 11
 check "WG5 (timeout) the app's window is restored after 8 s" \
   [ "$(view_field widget-app4 "not v['hidden'] and not v['widgetized']")" = True ]
 check "WG5 (timeout) every process of the widget was ended (it ignored SIGTERM; its child too)" \
-  bash -c "for p in $procs; do kill -0 \$p 2>/dev/null && exit 1; done; ! systemctl --user is-active --quiet '$unit'"
+  scoped_children_ended
 h window-rules/close-view "{\"id\": $(view_field widget-app4 "v['id']")}"
 sleep 1
 
@@ -274,21 +305,42 @@ super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 check "DM2 launcher exit is published as a newer full snapshot" \
   tests/headless.sh run python3 tests/model-process-test.py
 sleep 3.5
+daemon_model=$(ipc scottland/widgets)
+daemon_views=$(views)
+printf '%s\n' "$daemon_model" >"$artifacts/daemon-widgets.json"
+printf '%s\n' "$daemon_views" >"$artifacts/daemon-layout.json"
 check "WG2 a widget that forks its window off and exits is adopted (placed, at 100%)" \
-  python3 -c "
-import json,subprocess,sys
-w=[v for v in json.loads(subprocess.run(['tests/headless.sh','ipc','scottland/layout-state'],capture_output=True,text=True).stdout)['views'] if v['widget']]
-f=w[0]['frame'] if w else {}
-sys.exit(0 if len(w)==1 and round(w[0]['applied_scale'],2)==1.0 and f['x'] + f['width'] >= $screen_w - 40 else 1)"
+  python3 -c '
+import json,sys
+model=json.loads(sys.argv[1])
+layout=json.loads(sys.argv[2])
+links=[w for w in model["widgets"] if w["app_id"]=="scottland-test-daemon"]
+widgets=[v for v in layout["views"] if links and v["id"]==links[0]["widget_view"] and v["widget"]]
+ok=len(links)==1 and len(widgets)==1
+if ok:
+    frame=widgets[0]["frame"]
+    ok=round(widgets[0]["applied_scale"],2)==1.0 and frame["x"]+frame["width"]>=int(sys.argv[3])-40
+if not ok:
+    print(f"daemon links={links!r}; widget views={widgets!r}", file=sys.stderr)
+sys.exit(0 if ok else 1)' "$daemon_model" "$daemon_views" "$screen_w"
 check "WG8 its argument arrived literally (\$ not expanded)" \
-  python3 -c "
-import json,subprocess,sys
-w=[v for v in json.loads(subprocess.run(['tests/headless.sh','ipc','scottland/layout-state'],capture_output=True,text=True).stdout)['views'] if v['widget']]
-sys.exit(0 if w and w[0]['title']==sys.argv[1] else 1)" "$weird"
-h window-rules/close-view "{\"id\": $(views | python3 -c "import json,sys; print([v['id'] for v in json.load(sys.stdin)['views'] if v['widget']][0])")}"
-sleep 2
-check "WG5 ...and closing it closes the app" \
-  [ "$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v.get('app_id')=='scottland-test-daemon'))")" = 0 ]
+  python3 -c '
+import json,sys
+model=json.loads(sys.argv[1]); layout=json.loads(sys.argv[2]); expected=sys.argv[3]
+links=[w for w in model["widgets"] if w["app_id"]=="scottland-test-daemon"]
+widgets=[v for v in layout["views"] if links and v["id"]==links[0]["widget_view"] and v["widget"]]
+if len(widgets)!=1 or widgets[0]["title"]!=expected:
+    print(f"expected title={expected!r}; daemon links={links!r}; widget views={widgets!r}", file=sys.stderr)
+    sys.exit(1)' "$daemon_model" "$daemon_views" "$weird"
+daemon_widget_view=$(python3 -c 'import json,sys; w=[w for w in json.load(sys.stdin)["widgets"] if w["app_id"]=="scottland-test-daemon"]; print(w[0]["widget_view"] if len(w)==1 else "")' <<<"$daemon_model")
+if [[ $daemon_widget_view =~ ^[0-9]+$ ]]; then
+  h window-rules/close-view "{\"id\": $daemon_widget_view}"
+  sleep 2
+  check "WG5 ...and closing it closes the app" \
+    [ "$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v.get('app_id')=='scottland-test-daemon'))")" = 0 ]
+else
+  fail "WG5 ...and closing it closes the app (not exercised: no adopted widget view ID)"
+fi
 
 # WG9/WG11: a real widget sends its app a message; live title; Restore() over D-Bus.
 (tests/headless.sh run foot --app-id scottland-test-sender -T sender-app -W 40x10 sh -c 'sleep 6; printf "\033]2;sender-renamed\007"; exec sleep 3600' >/dev/null 2>&1 &)
@@ -343,23 +395,23 @@ sleep 1
 
 # A reload after an update replaces a widget service running older code (and keeps a current one).
 hooks_dir=$(tests/headless.sh run sh -c 'echo $SCOTTLAND_HOOKS')
-bus_pid_file=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.widget-bus.pid
-old_bus=$(sed -n 1p "$bus_pid_file")
+bus_pid_file=$display.widget-bus.pid
+old_bus=$(session_read "$bus_pid_file" | sed -n 1p)
 tests/headless.sh run "$hooks_dir/reload.d/08-widget-bus"; sleep 1
-check "reload keeps a widget service that runs the installed code" [ "$(sed -n 1p "$bus_pid_file")" = "$old_bus" ]
-printf '%s\n%s\n' "$old_bus" "fingerprint-of-older-code" >"$bus_pid_file"  # as if it predated an update
+check "reload keeps a widget service that runs the installed code" [ "$(session_read "$bus_pid_file" | sed -n 1p)" = "$old_bus" ]
+printf '%s\n%s\n' "$old_bus" "fingerprint-of-older-code" | session_write "$bus_pid_file"  # as if it predated an update
 tests/headless.sh run "$hooks_dir/reload.d/08-widget-bus"; sleep 2
-new_bus=$(sed -n 1p "$bus_pid_file")
+new_bus=$(session_read "$bus_pid_file" | sed -n 1p)
+printf 'pid_file=%s\nold_bus=%s\nnew_bus=%s\n' "$bus_pid_file" "$old_bus" "$new_bus" >"$artifacts/widget-bus-reload-readback.txt"
 check "reload replaces a widget service older than the installed code" \
   bash -c "[ '$new_bus' != '$old_bus' ] && ! kill -0 '$old_bus' 2>/dev/null && kill -0 '$new_bus' && tests/headless.sh run busctl --user status org.scottland.Widgets >/dev/null"
 
 # WG10: the session's palette file (what the card's colors follow).
-palette=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.palette.json
-tests/headless.sh run "$hooks_dir/libexec/scottland-color-scheme" ensure; sleep 2
-watcher=$(sed -n 1p "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.color-scheme.pid")
+tests/headless.sh run "$hooks_dir/libexec/scottland-display" color-scheme watch >/dev/null 2>&1 &
+sleep 2
+watcher=$(session_read "$display.color-scheme.pid" | sed -n 1p)
 check "WG10 the session's palette file has every color" \
-  python3 -c "import json,re,sys; p=json.load(open('$palette')); sys.exit(0 if p['scheme'] in ('light','dark') and all(re.fullmatch('#[0-9a-fA-F]{6}', p[k]) for k in ('background','foreground','muted','accent','alert')) else 1)"
-rm -f "$palette"
+  palette_complete
 
 # WG5: an app that hides its window while widgetized takes its widget away; shown again, the
 # window is an ordinary, visible window.
@@ -913,27 +965,50 @@ read -r ax ay aw ah <<<"$(view_field carry-app "round(f['x']), round(f['y']), ro
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 sleep 2.5
 carry_before=$(ipc scottland/widgets | python3 -c "import json,sys; print([w['widget_view'] for w in json.load(sys.stdin)['widgets'] if w['title']=='carry-app'])")
-mark=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.reloading
-touch "$mark"
+mark=$display.reloading
+session_touch "$mark"
 fresh=$headless_dir/libscottland-test-$(date +%s%N).so
 cp build/libscottland.so "$fresh"
 plugins=$(ipc wayfire/get-config-option '{"option":"core/plugins"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['value'])")
 h wayfire/set-config-options "$(python3 -c "import json,sys; print(json.dumps({'core/plugins': ' '.join(sys.argv[2] if p == 'scottland' or '/libscottland-' in p else p for p in sys.argv[1].split())}))" "$plugins" "$fresh")"
 sleep 2
-rm -f "$mark"
+session_remove "$mark"
 check "WG5 (marked reload) the widget stays, linked, its window still hidden" \
   [ "$(ipc scottland/widgets | python3 -c "import json,sys; print([w['widget_view'] for w in json.load(sys.stdin)['widgets'] if w['title']=='carry-app'])")/$(view_field carry-app "v['hidden'] and v['widgetized']")" = "$carry_before/True" ]
 h window-rules/close-view "{\"id\": $(view_field carry-app "v['id']")}"
 sleep 2
 
 # WG5: the app's window closing takes the widget with it.
+app_exit_deadline_ns=$(($(date +%s%N) + 4500000000))
 (tests/headless.sh run foot -T widget-app2 -W 40x10 sh -c 'sleep 5; exit 0' >/dev/null 2>&1 &)
 sleep 1.5
+app_exit_id=$(view_field widget-app2 "v['id']")
 read -r ax ay aw ah <<<"$(view_field widget-app2 "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
-sleep 5
-check "WG5 the app's window closing closes its widget" \
-  [ "$(views | python3 -c "import json,sys; print(len(json.load(sys.stdin)['views']))")" = 0 ]
+app_exit_widget_id=
+if [[ $app_exit_id =~ ^[0-9]+$ ]]; then
+  for i in {1..40}; do  # stop before the app's original five-second exit
+    app_exit_snapshot=$(ipc scottland/widgets)
+    app_exit_widget_id=$(python3 -c 'import json,sys; target=int(sys.argv[1]); w=[w for w in json.load(sys.stdin)["widgets"] if w["window"]==target and w["lifecycle"]=="docked" and w["widget_view"]>=0]; print(w[0]["widget_view"] if len(w)==1 else "")' "$app_exit_id" <<<"$app_exit_snapshot")
+    [[ $app_exit_widget_id =~ ^[0-9]+$ ]] && break
+    (( $(date +%s%N) < app_exit_deadline_ns )) || break
+    sleep 0.1
+  done
+  printf '%s\n' "$app_exit_snapshot" >"$artifacts/app-exit-widget-before.json"
+fi
+if [[ $app_exit_widget_id =~ ^[0-9]+$ ]]; then
+  app_exit_survivors=
+  for i in {1..80}; do
+    app_exit_survivors=$(views | python3 -c 'import json,sys; linked={int(sys.argv[1]),int(sys.argv[2])}; print(json.dumps([v for v in json.load(sys.stdin)["views"] if v["id"] in linked]))' "$app_exit_id" "$app_exit_widget_id")
+    [[ $app_exit_survivors == '[]' ]] && break
+    sleep 0.1
+  done
+  [[ $app_exit_survivors == '[]' ]] || printf 'linked views survived app exit: %s\n' "$app_exit_survivors" >&2
+  check "WG5 the app's window closing closes its widget" \
+    [ "$app_exit_survivors" = '[]' ]
+else
+  fail "WG5 the app's window closing closes its widget (not exercised: no linked widget view ID)"
+fi
 
 # WG5 without systemd scopes (fallback): a widget ignoring SIGTERM still has its first process
 # ended (SIGKILL after 2 s).

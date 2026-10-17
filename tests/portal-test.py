@@ -23,7 +23,7 @@ import os
 import shutil
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from omarchy_fixture import REPO, Checks, Fixture, Session, pixel, read_png, screenshot  # noqa: E402
@@ -74,6 +74,23 @@ def read_json(path):
         return json.loads(path.read_text())
     except (OSError, ValueError):
         return None
+
+
+def session_tmp_file(session, uri):
+    """The regular file a file:///tmp/... URI names, in this session's own /tmp, or None.
+
+    Session commands see the run's scratch as /tmp (tests/headless.sh), so the file is read, and
+    removed, there and nowhere else: another URI, a .. step, a symlink or a path that resolves
+    outside that scratch is refused, never looked up on the machine."""
+    seen = PurePosixPath(uri.removeprefix("file://"))
+    if not uri.startswith("file:///tmp/") or ".." in seen.parts:
+        return None
+    session_tmp = (session.dir / "tmp").resolve()
+    candidate = session_tmp / seen.relative_to("/tmp")
+    if candidate.is_symlink() or not candidate.is_file():
+        return None
+    resolved = candidate.resolve()
+    return resolved if resolved.is_relative_to(session_tmp) and resolved != session_tmp else None
 
 
 def owned(session, name):
@@ -144,11 +161,13 @@ with Session(fixture, "hl-portal") as session:
         uri = result.get("results", {}).get("uri", "")
         check("Screenshot portal answers with an image", result.get("response") == 0 and uri, result)
         if uri:
-            width, height, rgb = read_png(uri.removeprefix("file://"))
-            offset = (sample[1] * width + sample[0]) * 3
-            check("the screenshot shows the window's color where Wayfire placed it",
-                  tuple(rgb[offset:offset + 3]) == COLOR, tuple(rgb[offset:offset + 3]))
-            Path(uri.removeprefix("file://")).unlink(missing_ok=True)
+            image = session_tmp_file(session, uri)
+            if check("the screenshot is a file in the session's own /tmp", image, uri):
+                width, height, rgb = read_png(image)
+                offset = (sample[1] * width + sample[0]) * 3
+                check("the screenshot shows the window's color where Wayfire placed it",
+                      tuple(rgb[offset:offset + 3]) == COLOR, tuple(rgb[offset:offset + 3]))
+                image.unlink()
 
         # Screen sharing: share a monitor, picked in the backend's chooser with a pointer click.
         out, frame = build / "portal-screencast.json", build / "portal-frame.rgb"

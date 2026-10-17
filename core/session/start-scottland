@@ -34,8 +34,10 @@ main() {
     [ -r "$env_hook" ] && . "$env_hook"
   done
 
-  # A new session starts from the installed (or dev) plugin, not a previous session's reload copy.
+  # A new session starts from the installed (or dev) plugin, not a previous session's reload copy,
+  # and with the configured displays, not a previous session's output settings (scottland-output).
   rm -rf "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/plugins"
+  rm -f "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/session-outputs.json"
 
   state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
   mkdir -p "$state"
@@ -48,15 +50,59 @@ main() {
   export SCOTTLAND_SESSION_PID
 
   started=$(date +%s)
-  # Keep the last session's evidence when a frozen compositor needs a new login.
+  # Keep the last three sessions, capped at 1 MiB each. Preserve the existing
+  # .previous name for the most recent log and bound a legacy oversized log too.
   if [ -f "$state/wayfire.log" ]; then
-    mv -f "$state/wayfire.log" "$state/wayfire.log.previous" || exit 1
+    rm -f "$state/wayfire.log.previous.3" ||
+      printf 'Scottland: could not remove the oldest Wayfire log\n' >&2
+    for generation in 2 1 0; do
+      case "$generation" in
+        0) source_log="$state/wayfire.log"; destination_log="$state/wayfire.log.previous" ;;
+        1) source_log="$state/wayfire.log.previous"; destination_log="$state/wayfire.log.previous.2" ;;
+        2) source_log="$state/wayfire.log.previous.2"; destination_log="$state/wayfire.log.previous.3" ;;
+      esac
+      if [ -f "$source_log" ]; then
+        bounded_log=
+        if bounded_log=$(mktemp "$state/.wayfire.log.XXXXXX") &&
+           tail -c 1048576 "$source_log" >"$bounded_log" &&
+           mv -f "$bounded_log" "$destination_log"; then
+          rm -f "$source_log" ||
+            printf 'Scottland: could not remove a copied Wayfire log: %s\n' "$source_log" >&2
+        else
+          printf 'Scottland: could not bound a Wayfire log; trying a plain rename: %s\n' "$source_log" >&2
+          if [ -n "$bounded_log" ]; then
+            rm -f "$bounded_log" ||
+              printf 'Scottland: could not remove a temporary Wayfire log: %s\n' "$bounded_log" >&2
+          fi
+          mv -f "$source_log" "$destination_log" ||
+            printf 'Scottland: could not preserve a Wayfire log: %s\n' "$source_log" >&2
+        fi
+      fi
+    done
   fi
   # SIGQUIT (or SIGABRT after the core plugin loads) must reach systemd-coredump.
   # A hard limit imposed by the login manager cannot be raised here.
   ulimit -c unlimited || echo 'Scottland: cannot enable core dumps; check the login core limit' >&2
-  wayfire -c "$config" "$@" >"$state/wayfire.log" 2>&1
-  status=$?
+  if [ -e "$state/wayfire.log" ]; then
+    # A failed rotation left the old log here. Do not erase it to start a new one.
+    printf 'Scottland: keeping the unpreserved Wayfire log; using inherited output\n' >&2
+    wayfire -c "$config" "$@"
+    status=$?
+  else
+    # The group flag distinguishes a failed log redirection from Wayfire's own
+    # nonzero exit, so a logging failure never invokes Wayfire twice.
+    wayfire_started=0
+    if { wayfire_started=1; wayfire -c "$config" "$@"; } >"$state/wayfire.log" 2>&1; then
+      status=0
+    else
+      status=$?
+      if [ "$wayfire_started" -eq 0 ]; then
+        printf 'Scottland: could not open the Wayfire log; using inherited output\n' >&2
+        wayfire -c "$config" "$@"
+        status=$?
+      fi
+    fi
+  fi
 
   # If this session brought up the user's graphical-session services, take them down with it.
   if systemctl --user is-active --quiet scottland-session.target; then

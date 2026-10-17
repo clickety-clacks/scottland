@@ -1,0 +1,13 @@
+[package]
+name = "scottland-display"
+description = "Display controls for Scottland"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+scottland.workspace = true
+wayland-client = "=0.31.15"
+wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
