@@ -7873,7 +7873,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (ev->flags & (wf::scene::update_flag::CHILDREN_LIST | wf::scene::update_flag::ENABLED))
         {
-            update_note_visuals();
+            update_note_visuals(true);
             // Without avoidance there are no offsets to keep honest.
             if (window_keys.active || window_avoidance_always || hint_avoidance_always)
                 refresh_layout_avoidance();
