@@ -207,6 +207,7 @@
             if (changed)
             {
                 self->palette_read = {};
+                self->update_note_visuals();
                 if (self->window_keys.active || self->window_avoidance_always ||
                     self->hint_avoidance_always)
                     self->refresh_layout_avoidance();
@@ -1753,6 +1754,7 @@
         hint_step_animation = animation_moving;
         hint_step_offset = moving && !animation_moving;
         const bool widget_presentation_moving = window_keys.active && widget_transition_tick.is_connected();
+        update_note_visuals();
         return moving || bool(drag->view) || inertia_active() || deferred_solve ||
             exposure_solve_pending || widget_presentation_moving || awaiting_settle;
     }
@@ -1816,6 +1818,7 @@
         }
         apply_widget_mode();  // collapsed and hidden widgets go back (WG16), and away in full screen (WK12)
         refresh_layout_avoidance();
+        update_note_visuals();
     }
     void begin_window_keys(bool latch = false)
     {
@@ -1829,6 +1832,7 @@
         apply_widget_mode();  // every widget comes back expanded while asking (WG16, WK12)
         palette_read = {}; // always read the current theme on entry
         declutter_signature.clear(); refresh_layout_avoidance(true);
+        update_note_visuals();
     }
 
     static std::optional<char> window_hint_letter(wlr_keyboard *keyboard, uint32_t code)

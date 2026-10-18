@@ -656,8 +656,6 @@ try:
         raise ValueError()
     request = urllib.request.Request(endpoint, headers={'Accept': 'application/json'})
     with urllib.request.urlopen(request, timeout=3) as response:
-        if urllib.parse.urlsplit(response.geturl()).scheme != 'https':
-            raise ValueError()
         body = response.read()
     sys.stdout.buffer.write(body)
 except Exception:

@@ -8,8 +8,8 @@
     };
     std::map<uint64_t, std::shared_ptr<scottland::windowing::note_overlay_node_t>> note_dot_nodes;
     std::map<wf::output_t*, std::shared_ptr<scottland::windowing::note_overlay_node_t>> note_panel_nodes;
-    wf::wl_timer<true> note_tick;
     scottland::windowing::note_layout_t note_layout;
+    bool note_visuals_updating = false;
     struct note_panel_cache_entry_t
     {
         int64_t id = 0;
@@ -63,22 +63,71 @@
 
     void clear_note_dot(uint64_t window_id)
     {
+        const bool owns_update_guard = !note_visuals_updating;
+        note_visuals_updating = true;
         auto found = note_dot_nodes.find(window_id);
-        if (found == note_dot_nodes.end()) return;
-        if (found->second && found->second->parent())
-            wf::scene::remove_child(found->second);
-        note_dot_nodes.erase(found);
+        if (found != note_dot_nodes.end())
+        {
+            if (found->second && found->second->parent())
+                wf::scene::remove_child(found->second);
+            note_dot_nodes.erase(found);
+        }
+        if (owns_update_guard) note_visuals_updating = false;
     }
 
     void clear_note_overlays()
     {
-        note_tick.disconnect();
+        const bool owns_update_guard = !note_visuals_updating;
+        note_visuals_updating = true;
         for (auto& [window_id, node] : note_dot_nodes)
             if (node && node->parent()) wf::scene::remove_child(node);
         note_dot_nodes.clear();
         for (auto& [output, node] : note_panel_nodes)
             if (node && node->parent()) wf::scene::remove_child(node);
         note_panel_nodes.clear();
+        if (owns_update_guard) note_visuals_updating = false;
+    }
+
+    void sync_note_overlay_order(wf::scene::floating_inner_node_t *parent)
+    {
+        if (!parent) return;
+        // Keep notes in a stable front block instead of swapping them on each refresh.
+        std::set<const wf::scene::node_t*> note_nodes;
+        std::vector<wf::scene::node_ptr> ordered_notes;
+        auto append = [&] (const auto& nodes)
+        {
+            for (const auto& entry : nodes)
+            {
+                const auto& node = entry.second;
+                if (!node || node->parent() != parent) continue;
+                note_nodes.insert(node.get());
+                ordered_notes.push_back(node);
+            }
+        };
+        append(note_panel_nodes);
+        append(note_dot_nodes);
+
+        auto children = parent->get_children();
+        children.erase(std::remove_if(children.begin(), children.end(), [&] (const auto& child)
+        {
+            return note_nodes.count(child.get()) != 0;
+        }), children.end());
+        children.insert(children.begin(), ordered_notes.begin(), ordered_notes.end());
+
+        auto current = parent->get_children();
+        if (children == current) return;
+        parent->set_children_list(children);
+        wf::scene::update(parent, wf::scene::update_flag::CHILDREN_LIST);
+        auto damage = [&] (const auto& nodes)
+        {
+            for (const auto& entry : nodes)
+            {
+                const auto& node = entry.second;
+                if (node && node->parent() == parent) wf::scene::damage_node(node, node->get_bounding_box());
+            }
+        };
+        damage(note_panel_nodes);
+        damage(note_dot_nodes);
     }
 
     static wf::geometry_t note_clamp(wf::geometry_t rect, wf::geometry_t area)
@@ -249,13 +298,6 @@
             wf::scene::add_front(parent, node);
         }
 
-        if (widget)
-        {
-            auto children = parent->get_children();
-            if (children.empty() || children.front() != node)
-                wf::scene::readd_front(parent, node);
-        }
-
         if (!widget && root)
         {
             auto children = parent->get_children();
@@ -273,6 +315,9 @@
                     wf::scene::damage_node(node, node->get_bounding_box());
                 }
             }
+        } else if (widget)
+        {
+            sync_note_overlay_order(parent.get());
         }
     }
 
@@ -299,11 +344,8 @@
         {
             if (node->parent()) wf::scene::remove_child(node);
             wf::scene::add_front(parent, node);
-        } else
-        {
-            auto children = parent->get_children();
-            if (children.empty() || children.front() != node) wf::scene::readd_front(parent, node);
         }
+        sync_note_overlay_order(parent.get());
     }
 
     void append_note_panel_stack(std::vector<scottland::windowing::note_overlay_item_t>& items,
@@ -406,12 +448,12 @@
         }
     }
 
-    bool step_note_visuals()
+    void step_note_visuals()
     {
         if (model.notes.empty())
         {
             clear_note_overlays();
-            return false;
+            return;
         }
 
         refresh_hint_palette();
@@ -564,25 +606,21 @@
             } else ++it;
         }
 
-        return true;
-    }
-
-    void arm_note_visuals()
-    {
-        if (!model.notes.empty() && !note_tick.is_connected())
-            note_tick.set_timeout(16, [=] () { return step_note_visuals(); });
     }
 
     void update_note_visuals()
     {
+        if (model.notes.empty() && note_dot_nodes.empty() && note_panel_nodes.empty()) return;
+        if (note_visuals_updating) return;
+        note_visuals_updating = true;
         if (model.notes.empty())
         {
             clear_note_overlays();
-            return;
+        } else
+        {
+            step_note_visuals();
         }
-
-        step_note_visuals();
-        arm_note_visuals();
+        note_visuals_updating = false;
     }
 
     wf::ipc::method_callback notes_method = [=] (wf::json_t data) -> wf::json_t

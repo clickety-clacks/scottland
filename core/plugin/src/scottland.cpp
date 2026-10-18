@@ -986,7 +986,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> goo_dye_density{"scottland/goo_dye_density"};
     // Keep parsing the historical key so existing user config still opts in.
     wf::option_wrapper_t<bool> hint_avoidance_always{"scottland/hint_avoidance_always"};
-    wf::option_wrapper_t<std::string> agentd_hub_url{"scottland/agentd_hub_url"};
     wf::option_wrapper_t<std::string> color_scheme{"scottland/color_scheme"};
     wf::option_wrapper_t<wf::color_t> accent_color{"scottland/accent_color"};
     wf::option_wrapper_t<wf::color_t> attention_color{"scottland/attention_color"};
@@ -1461,6 +1460,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
 
+        update_note_visuals();
         return !transitions.empty();
     }
 
@@ -1678,6 +1678,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto link = link_of_widget(active);
             clear_attention(link ? link->window_id : active->get_id());
         }
+        update_note_visuals();
     };
     wf::signal::connection_t<wf::view_unmapped_signal> on_unmapped =
         [=] (wf::view_unmapped_signal *ev)
@@ -1878,7 +1879,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::optional<scottland::windowing::window_memory> placement;
         std::optional<paired_placement_t> paired_placement;
         std::optional<provenance_record_t> provenance;
-        std::optional<std::string> provenance_token;
         std::optional<scottland::windowing::point> pending_rail; // refine on widget adoption
         std::set<std::string> attention;
     };
@@ -2488,6 +2488,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         model.widget_mode = mode;
         model.widget_mode_held.reset();
         apply_widget_mode(true);
+        update_note_visuals();
     }
 
     /** The mode shown now: a held Super+M's, else the chosen one (Window mode expands on top). */
@@ -2788,7 +2789,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!state.provenance)
         {
             state.provenance = pending->second.record;
-            state.provenance_token = token;
             auto staged_notes = std::move(pending->second.staged_notes);
             if (!staged_notes.empty())
             {
@@ -2834,14 +2834,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         expire_provenance_tokens();
 
         std::set<pid_t> visited;
-        std::vector<std::pair<pid_t, process_identity_t>> path;
         pid_t pid = state->second.pid;
         std::string selected;
         while (pid > 1 && visited.insert(pid).second)
         {
             auto identity = read_process_identity(pid);
             if (!identity) return false;
-            path.emplace_back(pid, *identity);
             const provenance_pending_t *newest = nullptr;
             for (const auto& [token, pending] : pending_provenance)
             {
@@ -2856,15 +2854,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             pid = identity->parent;
         }
         if (selected.empty()) return false;
-
-        // Confirm that the ancestry used above still names the same live processes before binding.
-        // A child can be reparented while it maps, and a recycled PID must not inherit a record.
-        for (const auto& [path_pid, before] : path)
-        {
-            auto after = read_process_identity(path_pid);
-            if (!after || after->parent != before.parent || after->start_ticks != before.start_ticks)
-                return false;
-        }
         return bind_provenance(selected, view);
     }
 
@@ -3770,27 +3759,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     found->second.attention.insert(sources[j].as_string());
                 }
             }
-            if (entries.has_member("provenance_tokens") && entries["provenance_tokens"].is_array())
-            {
-                auto tokens = entries["provenance_tokens"];
-                auto now = monotonic_msec64();
-                for (size_t i = 0; i < tokens.size(); i++)
-                {
-                    auto token = tokens[i];
-                    if (!token.has_member("window") || !token["window"].is_int64() ||
-                        !token.has_member("token") || !token["token"].is_string() ||
-                        !token.has_member("expires_at") || !token["expires_at"].is_int64()) continue;
-                    auto id = (uint64_t)token["window"].as_int64();
-                    auto value = token["token"].as_string();
-                    auto expires_at = (uint64_t)token["expires_at"].as_int64();
-                    auto state = model.windows.find(id);
-                    if (value.empty() || expires_at <= now || state == model.windows.end() ||
-                        !state->second.provenance) continue;
-                    state->second.provenance_token = value;
-                    provenance_tokens_expire_at[value] = expires_at;
-                }
-                arm_provenance_expiration();
-            }
             entries = entries["links"];
         }
 
@@ -4122,6 +4090,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             } else ++it;
         }
 
+        update_note_visuals();
         return !rail_layout_motions.empty();
     }
 
@@ -6412,6 +6381,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         track_pointer();
+        update_note_visuals();
     };
     wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_motion_absolute_event>> on_motion_abs =
         [=] (wf::post_input_event_signal<wlr_pointer_motion_absolute_event> *ev)
@@ -6423,6 +6393,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         track_pointer();
+        update_note_visuals();
     };
     wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_button_event>> on_button =
         [=] (wf::post_input_event_signal<wlr_pointer_button_event> *ev)
@@ -6770,6 +6741,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!frame)
         {
             end_morph();
+            update_note_visuals();
             return false;
         }
 
@@ -6815,6 +6787,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!model.drag.morph->toward && (drag->view != dragged) && !model.drag.morph->shape.running() && !model.drag.morph->fade.running())
         {
             end_morph();  // a cancelled drag finished morphing back
+            update_note_visuals();
             return false;
         }
 
@@ -6877,6 +6850,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (drag->view == dragged && drag->current_output)
             update_rail_drag(dragged, drag->current_output);
         dragged->damage();  // through the drag's own transform, so it repaints with the pointer still
+        update_note_visuals();
         return true;
     }
 
@@ -7314,6 +7288,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             announce_widgets();
         }
 
+        update_note_visuals();
         return active;
     }
 
@@ -7603,6 +7578,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         if (settled) refresh_layout_avoidance();
+        update_note_visuals();
         return !glides.empty();
     }
 
@@ -7895,10 +7871,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::scene::root_node_update_signal> on_scene_structure =
         [=] (wf::scene::root_node_update_signal *ev)
     {
-        // Without avoidance there are no offsets to keep honest.
-        if (!window_keys.active && !window_avoidance_always && !hint_avoidance_always) return;
         if (ev->flags & (wf::scene::update_flag::CHILDREN_LIST | wf::scene::update_flag::ENABLED))
-            refresh_layout_avoidance();
+        {
+            update_note_visuals();
+            // Without avoidance there are no offsets to keep honest.
+            if (window_keys.active || window_avoidance_always || hint_avoidance_always)
+                refresh_layout_avoidance();
+        }
     };
 
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped = [=] (wf::view_mapped_signal *ev)
@@ -7917,6 +7896,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         apply(ev->view);
         hint_registration.run_once([=] () { refresh_layout_avoidance(); });
         idle_focus.run_once([=] () { update_focus(); });
+        update_note_visuals();
     };
 
     wf::signal::connection_t<wf::view_geometry_changed_signal> on_geometry =
@@ -7950,12 +7930,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         apply(ev->view);
         publish_model();
         refresh_layout_avoidance();
+        update_note_visuals();
     };
 
     wf::signal::connection_t<wf::view_set_output_signal> on_output = [=] (wf::view_set_output_signal *ev)
     {
         apply(ev->view);
         refresh_layout_avoidance();
+        update_note_visuals();
     };
 
     // Test sessions: write the next frame an output renders on its own to
@@ -8664,7 +8646,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 else model.goo_outputs.erase(output);
                 publish_model();
             },
-            [this](wf::output_t *) { apply_all(); });
+            [this](wf::output_t *) { apply_all(); update_note_visuals(); });
         refresh_layout_avoidance();
         update_note_visuals();
         LOGI("scottland: plugin loaded");
@@ -8677,24 +8659,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().bindings->rem_binding(&on_move);
         wf::get_core().bindings->rem_binding(&on_move_shift);
         bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
-        wf::json_t provenance_token_handover = wf::json_t::array();
-        std::set<std::string> preserved_provenance_tokens;
-        if (reloading)
-        {
-            auto now = monotonic_msec64();
-            for (const auto& [id, state] : model.windows)
-            {
-                if (!state.provenance || !state.provenance_token) continue;
-                auto expires = provenance_tokens_expire_at.find(*state.provenance_token);
-                if (expires == provenance_tokens_expire_at.end() || expires->second <= now) continue;
-                wf::json_t entry;
-                entry["window"] = (int64_t)id;
-                entry["token"] = *state.provenance_token;
-                entry["expires_at"] = (int64_t)expires->second;
-                provenance_token_handover.append(entry);
-                preserved_provenance_tokens.insert(*state.provenance_token);
-            }
-        }
         installing_model = reloading;  // teardown is also part of the atomic handover
         clear_note_overlays();
         widget_peek_tick.disconnect();
@@ -8783,10 +8747,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_new_transaction.disconnect();
         on_activate.disconnect();
         provenance_expiration.disconnect();
-        for (const auto& [token, expiry] : provenance_tokens_expire_at)
-        {
-            if (!preserved_provenance_tokens.count(token)) destroy_activation_token(token);
-        }
+        for (const auto& entry : provenance_tokens_expire_at)
+            destroy_activation_token(entry.first);
         pending_provenance.clear();
         provenance_tokens_expire_at.clear();
         pending_activation_surfaces.clear();
@@ -8833,7 +8795,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             snapshot["links"] = handover;
             snapshot["notes"] = notes_windows_snapshot();
             snapshot["next_note_id"] = model.next_note_id;
-            snapshot["provenance_tokens"] = provenance_token_handover;
             auto path = runtime_file(".widget-handover.json");
             std::ofstream out(path + ".tmp");
             out << snapshot.serialize();

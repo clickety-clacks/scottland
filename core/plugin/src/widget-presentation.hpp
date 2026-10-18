@@ -355,5 +355,6 @@ bool step_widget_transitions()
         frame->damage();
         view->get_transformed_node()->end_transform_update();
     }
+    update_note_visuals();
     return !widget_transitions.empty();
 }
