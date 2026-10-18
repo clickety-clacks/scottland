@@ -217,7 +217,7 @@ fn run_sender_id(sender_id: &str) -> Result<Value, String> {
                     ));
                 }
             };
-            if identity.machine == local_machine {
+            if machine_matches(&identity.machine, &local_machine) {
                 lookup_local_agentd(&identity)
             } else if !snapshot.hub_url_configured {
                 RegistryLookup::Answer(unknown_registry(
@@ -441,9 +441,7 @@ fn lookup_hub_agentd(identity: &AgentdIdentity, hub: &Value) -> RegistryLookup {
             source
                 .get("machine")
                 .and_then(Value::as_str)
-                .map_or(false, |machine| {
-                    canonical_machine(machine) == identity.machine
-                })
+                .map_or(false, |machine| machine_matches(machine, &identity.machine))
         })
         .collect();
     if matching_sources.len() != 1 {
@@ -488,7 +486,7 @@ fn lookup_hub_agentd(identity: &AgentdIdentity, hub: &Value) -> RegistryLookup {
                 "an Agentd Hub entry has no machine",
             ));
         };
-        if canonical_machine(machine) != identity.machine {
+        if !machine_matches(machine, &identity.machine) {
             continue;
         }
         let Some(instance_id) = agent.get("instanceId").and_then(Value::as_str) else {
@@ -941,7 +939,33 @@ fn canonical_local_machine() -> Result<String, String> {
 }
 
 fn canonical_machine(machine: &str) -> String {
-    machine.trim_end_matches('.').to_ascii_lowercase()
+    machine
+        .strip_suffix('.')
+        .unwrap_or(machine)
+        .to_ascii_lowercase()
+}
+
+fn machine_matches(left: &str, right: &str) -> bool {
+    let left = canonical_machine(left);
+    let right = canonical_machine(right);
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+    if left == right {
+        return true;
+    }
+
+    fn short_matches_full(short: &str, full: &str) -> bool {
+        if short.contains('.') {
+            return false;
+        }
+        let Some((first, suffix)) = full.split_once('.') else {
+            return false;
+        };
+        first == short && !suffix.is_empty() && suffix.split('.').all(|label| !label.is_empty())
+    }
+
+    short_matches_full(&left, &right) || short_matches_full(&right, &left)
 }
 
 fn canonical_ticks(value: &str) -> bool {
@@ -1748,6 +1772,11 @@ print("valid")
             parse_agentd_sender_id("agentd://Example-Host./inst-7/48211:9127734").unwrap();
         assert_eq!(identity.machine, "example-host");
         assert_eq!(canonical_machine("EXAMPLE-HOST."), "example-host");
+        assert_eq!(canonical_machine("EXAMPLE-HOST.."), "example-host.");
+        assert!(machine_matches("example-host", "EXAMPLE-HOST.lan."));
+        assert!(machine_matches("EXAMPLE-HOST.lan.", "example-host"));
+        assert!(!machine_matches("example-host", "example-host.."));
+        assert!(!machine_matches("example-host.lan", "example-host.other"));
     }
 
     fn hub_snapshot(health: &str, scan: &str) -> Value {
@@ -1791,8 +1820,8 @@ print("valid")
         let identity =
             parse_agentd_sender_id("agentd://example-host/inst-7/48211:9127734").unwrap();
         let mut hub = hub_snapshot("reporting", "complete");
-        hub["sources"][0]["machine"] = json!("Example-Host.");
-        hub["agents"][0]["machine"] = json!("EXAMPLE-HOST.");
+        hub["sources"][0]["machine"] = json!("Example-Host.lan.");
+        hub["agents"][0]["machine"] = json!("EXAMPLE-HOST.lan.");
         assert!(matches!(
             lookup_hub_agentd(&identity, &hub),
             RegistryLookup::Target(_)
