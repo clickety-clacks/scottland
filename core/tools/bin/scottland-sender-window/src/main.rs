@@ -205,7 +205,7 @@ fn run_sender_id(sender_id: &str) -> Result<Value, String> {
     let lookup = match parse_agentd_sender_id(sender_id) {
         None => RegistryLookup::Answer(json!({"status": "none", "windows": [], "reasons": []})),
         Some(identity) => {
-            let local_machine = match canonical_local_machine() {
+            let local_machine = match local_machine() {
                 Ok(machine) => machine,
                 Err(_) => {
                     return Ok(merge_declared_windows(
@@ -217,7 +217,7 @@ fn run_sender_id(sender_id: &str) -> Result<Value, String> {
                     ));
                 }
             };
-            if machine_matches(&identity.machine, &local_machine) {
+            if agentd_identity_matches_local_machine(&identity, &local_machine) {
                 lookup_local_agentd(&identity)
             } else if !snapshot.hub_url_configured {
                 RegistryLookup::Answer(unknown_registry(
@@ -441,7 +441,10 @@ fn lookup_hub_agentd(identity: &AgentdIdentity, hub: &Value) -> RegistryLookup {
             source
                 .get("machine")
                 .and_then(Value::as_str)
-                .map_or(false, |machine| machine_matches(machine, &identity.machine))
+                .map_or(false, |machine| {
+                    let machine = canonical_machine(machine);
+                    machine_matches_canonical(&machine, &identity.machine)
+                })
         })
         .collect();
     if matching_sources.len() != 1 {
@@ -486,7 +489,8 @@ fn lookup_hub_agentd(identity: &AgentdIdentity, hub: &Value) -> RegistryLookup {
                 "an Agentd Hub entry has no machine",
             ));
         };
-        if !machine_matches(machine, &identity.machine) {
+        let machine = canonical_machine(machine);
+        if !machine_matches_canonical(&machine, &identity.machine) {
             continue;
         }
         let Some(instance_id) = agent.get("instanceId").and_then(Value::as_str) else {
@@ -933,11 +937,6 @@ fn parse_agentd_sender_id(value: &str) -> Option<AgentdIdentity> {
     })
 }
 
-fn canonical_local_machine() -> Result<String, String> {
-    let machine = local_machine()?;
-    Ok(canonical_machine(&machine))
-}
-
 fn canonical_machine(machine: &str) -> String {
     machine
         .strip_suffix('.')
@@ -945,9 +944,12 @@ fn canonical_machine(machine: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn machine_matches(left: &str, right: &str) -> bool {
-    let left = canonical_machine(left);
-    let right = canonical_machine(right);
+fn agentd_identity_matches_local_machine(identity: &AgentdIdentity, local_machine: &str) -> bool {
+    let local_machine = canonical_machine(local_machine);
+    machine_matches_canonical(&identity.machine, &local_machine)
+}
+
+fn machine_matches_canonical(left: &str, right: &str) -> bool {
     if left.is_empty() || right.is_empty() {
         return false;
     }
@@ -1773,10 +1775,33 @@ print("valid")
         assert_eq!(identity.machine, "example-host");
         assert_eq!(canonical_machine("EXAMPLE-HOST."), "example-host");
         assert_eq!(canonical_machine("EXAMPLE-HOST.."), "example-host.");
-        assert!(machine_matches("example-host", "EXAMPLE-HOST.lan."));
-        assert!(machine_matches("EXAMPLE-HOST.lan.", "example-host"));
-        assert!(!machine_matches("example-host", "example-host.."));
-        assert!(!machine_matches("example-host.lan", "example-host.other"));
+        assert!(machine_matches_canonical(
+            &canonical_machine("example-host"),
+            &canonical_machine("EXAMPLE-HOST.lan.")
+        ));
+        assert!(machine_matches_canonical(
+            &canonical_machine("EXAMPLE-HOST.lan."),
+            &canonical_machine("example-host")
+        ));
+        assert!(!machine_matches_canonical(
+            &canonical_machine("example-host"),
+            &canonical_machine("example-host..")
+        ));
+        assert!(!machine_matches_canonical(
+            &canonical_machine("example-host.lan"),
+            &canonical_machine("example-host.other")
+        ));
+    }
+
+    #[test]
+    fn parsed_repeated_terminal_dot_does_not_select_local_machine() {
+        let identity =
+            parse_agentd_sender_id("agentd://example-host../inst-7/48211:9127734").unwrap();
+        assert_eq!(identity.machine, "example-host.");
+        assert!(!agentd_identity_matches_local_machine(
+            &identity,
+            "example-host"
+        ));
     }
 
     fn hub_snapshot(health: &str, scan: &str) -> Value {
@@ -1825,6 +1850,17 @@ print("valid")
         assert!(matches!(
             lookup_hub_agentd(&identity, &hub),
             RegistryLookup::Target(_)
+        ));
+    }
+
+    #[test]
+    fn hub_sender_lookup_does_not_double_normalize_parsed_machine() {
+        let identity =
+            parse_agentd_sender_id("agentd://example-host../inst-7/48211:9127734").unwrap();
+        assert_eq!(identity.machine, "example-host.");
+        assert!(matches!(
+            lookup_hub_agentd(&identity, &hub_snapshot("reporting", "complete")),
+            RegistryLookup::Answer(_)
         ));
     }
 
