@@ -1874,7 +1874,10 @@
             return;
         }
         if (down && filter_keys.count(code) && !window_filter.editing)
+        {
+            ev->mode = wf::input_event_processing_mode_t::IGNORE;
             return; // a key held while editing must not become a mode action after commit/cancel
+        }
         if (!down && swallowed_keys.erase(code))
         {
             if (auto letter = window_hint_letter(keyboard, code))
@@ -2027,11 +2030,6 @@
         else if (code == KEY_TAB)
             window_keys.tab(held_keys.count(KEY_LEFTSHIFT) || held_keys.count(KEY_RIGHTSHIFT));
         else if (code == KEY_F4) window_keys.close_selected();
-        else if (code == KEY_SPACE)
-        {
-            uint32_t blockers = modifier_mask(keyboard->keymap, "CTRL SHIFT SUPER");
-            if (!(keyboard->modifiers.depressed & blockers) && window_keys.gather) window_keys.gather();
-        }
         else
         {
             if (auto letter = window_hint_letter(keyboard, code))
@@ -2221,7 +2219,6 @@
         window_keys.pair = [=] (uint64_t held, uint64_t partner) {
             keyboard_selection = true; pair_windows(held, partner); };
         window_keys.solo = [=] (uint64_t id) { solo_window(id); };
-        window_keys.gather = [=] () { gather_all(); };
         window_keys.close = [=] (uint64_t id) { auto view = wf::toplevel_cast(view_by_id(id));
             if (auto link = link_of_window(view)) close_linked(*link); else if (view) view->close(); };
         wf::get_core().bindings->add_key(app_alt_space_probe, &app_alt_space_probe_callback);
