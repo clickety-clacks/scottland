@@ -142,7 +142,7 @@
             auto current = parent->get_children();
             if (children == current) continue;
             parent->set_children_list(children);
-            wf::scene::update(parent, wf::scene::update_flag::CHILDREN_LIST);
+            wf::scene::update(parent->shared_from_this(), wf::scene::update_flag::CHILDREN_LIST);
             for (const auto& node : ordered_notes)
                 if (node->parent() == parent) wf::scene::damage_node(node, node->get_bounding_box());
         }
