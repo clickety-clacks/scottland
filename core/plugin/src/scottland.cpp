@@ -1832,7 +1832,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         wf::json_t snapshot() const
         {
-            wf::json_t result = wf::json_t::object();
+            wf::json_t result;
             if (name) result["name"] = *name;
             if (sender) result["sender"] = *sender;
             if (launcher) result["launcher"] = *launcher;

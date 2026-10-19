@@ -9,7 +9,7 @@
     std::map<uint64_t, std::shared_ptr<scottland::windowing::note_overlay_node_t>> note_dot_nodes;
     std::set<uint64_t> note_widget_dot_windows;
     std::map<wf::output_t*, std::shared_ptr<scottland::windowing::note_overlay_node_t>> note_panel_nodes;
-    std::set<wf::scene::floating_inner_node_t*> note_overlay_order_dirty;
+    std::set<wf::scene::node_t*> note_overlay_order_dirty;
     scottland::windowing::note_layout_t note_layout;
     bool note_visuals_updating = false;
     struct note_panel_cache_entry_t
@@ -112,10 +112,12 @@
                 const auto& node = entry.second;
                 if (node)
                     if (auto parent = node->parent())
-                        if (all_parents || note_overlay_order_dirty.count(parent))
-                        {
-                            notes_by_parent[parent].push_back(node);
-                        }
+                        if (auto floating_parent =
+                            dynamic_cast<wf::scene::floating_inner_node_t*>(parent))
+                            if (all_parents || note_overlay_order_dirty.count(parent))
+                            {
+                                notes_by_parent[floating_parent].push_back(node);
+                            }
             }
         };
         // Panels and widget dots are overlays. Ordinary window dots stay immediately above
