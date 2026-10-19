@@ -48,12 +48,13 @@ try:
     h.alt(True); h.press_hint(S, hold=.75)
     running = wait(lambda: (lambda st: st['running'] and st['running_slices'] > 3 and st)(spread()), 3, 'solve in flight')
     check(running['running'], f'reload: a solve is in flight ({running["running_slices"]} slices so far)')
+    h.key('SPACE', True); h.key('SPACE', False)  # queue Gather behind the in-flight solo
     reload()
     h.key('LEFTALT', False); time.sleep(.5)
     check(alive(), 'reload with a solve in flight: the session survives and the new plugin answers')
     check(not spread()['running'], 'reload: the new plugin starts with no solve running')
     after = {i: geometry(i) for i in ids}
-    check(after == before, 'reload: the cancelled solve applied nothing (no half-applied layout)',
+    check(after == before, 'reload: the cancelled solve and queued Gather applied nothing (no half-applied layout)',
           str({i: (before[i], after[i]) for i in ids if before[i] != after[i]}))
     h.shot('reload-solve.png')
 

@@ -1,7 +1,7 @@
 # Knocks (concept, in discussion with Mike, 2026-10-04)
 
 Status: the larger knock model is still being formalized. The sender-window lookup in part 2 has a
-scoped implementation candidate; shared-runner build and real-terminal/tmux validation are
+scoped implementation candidate; build and real-terminal/tmux validation are
 pending. This supersedes the narrower "agentd as an attention source" framing; agentd, Yoohoo's
 bell menu, notifications, bells and requests for a user decision are all expected to become cases
 of this.

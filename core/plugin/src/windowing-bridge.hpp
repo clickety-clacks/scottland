@@ -475,15 +475,20 @@
             view->get_output()->get_relative_geometry().width) ?
             Z::center : z;
     }
-    wayfire_toplevel_view represented_view(uint64_t id)
+    wayfire_toplevel_view represented_view(wayfire_toplevel_view window)
     {
-        auto window = wf::toplevel_cast(view_by_id(id));
+        if (!window) return nullptr;
+        uint64_t id = window->get_id();
         if (auto link = link_of_window(window); link && link->docked())
         {
             if (widget_transitions.count(id) && entering_widget(id)) return window;
             return wf::toplevel_cast(link->widget.lock());
         }
         return window;
+    }
+    wayfire_toplevel_view represented_view(uint64_t id)
+    {
+        return represented_view(wf::toplevel_cast(view_by_id(id)));
     }
     scottland::windowing::window_memory& ensure_window_memory(uint64_t id)
     {
@@ -587,6 +592,8 @@
             entries.push_back({id, state.placement->hint_slot, memory_zone(view), link && link->docked()});
         }
         window_keys.hint_width = model.hint_width;
+        // While a query is active, callers asking for general desktop entries must not
+        // replace the filtered navigation/hint set with every window.
         if (filter_hints || !window_keys.active || window_filter.query.empty())
             window_keys.refresh(entries);
         model.hint_width = window_keys.hint_width;
@@ -1196,7 +1203,6 @@
         ++hint_step_count;
         refresh_hint_palette();
         auto entries = window_entries(true);
-        if (window_keys.active) window_keys.refresh(entries);
         std::set<uint64_t> represented;
         std::map<wf::output_t*, std::vector<uint64_t>> by_output;
         std::ostringstream signature;
@@ -1867,6 +1873,8 @@
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
             return;
         }
+        if (down && filter_keys.count(code) && !window_filter.editing)
+            return; // a key held while editing must not become a mode action after commit/cancel
         if (!down && swallowed_keys.erase(code))
         {
             if (auto letter = window_hint_letter(keyboard, code))
@@ -1915,7 +1923,8 @@
             {
                 alt_hold.disconnect();
                 if (!down && !window_keys.active && !alt_bypassed && !drag->view &&
-                    held_keys.empty() && key_event_time(ev->event) - alt_pressed_time < uint32_t(alt_hold_delay))
+                    held_keys.empty() && key_event_time(ev->event) - alt_pressed_time <
+                        uint32_t(alt_hold_delay))
                     begin_window_keys(true);
                 if (capture_chord && !window_filter.latched) end_window_keys();
                 if (center_switcher.active) end_center_switcher(true);
@@ -1930,7 +1939,8 @@
         {
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
             if (!down) return;
-            filter_keys.insert(code);
+            bool first = filter_keys.insert(code).second;
+            if (!first && (code == KEY_ESC || code == KEY_ENTER || code == KEY_KPENTER)) return;
             window_keys.interrupt();
             if (code == KEY_ESC) window_filter.cancel();
             else if (code == KEY_ENTER || code == KEY_KPENTER) window_filter.commit();
@@ -1992,14 +2002,26 @@
         else if (first || arrow_key(code)) window_keys.interrupt();
         if (arrow_key(code)) { press_arrow(code, keyboard, first); return; }
         if (!first) return;
-        if (code == KEY_ESC)
+        if (code == KEY_SPACE)
         {
-            cancel_keyboard_motion(); end_window_keys(); capture_chord = false;
-            alt_bypassed = true; // the release of this canceled Alt chord must not latch again
+            uint32_t blockers = modifier_mask(keyboard->keymap, "CTRL SHIFT SUPER");
+            if (!(keyboard->modifiers.depressed & blockers)) gather_screens();
+        }
+        else if (code == KEY_ESC)
+        {
+            cancel_keyboard_motion(); end_window_keys();
+            // Keep consuming this physical Alt chord after the mode closes.
+            // The Alt-release path clears capture_chord once the final Alt is up.
+            if (alt_keys.empty()) capture_chord = false;
+            alt_bypassed = true; // this canceled Alt chord must not start a new latch on release
         }
         else if (code == KEY_ENTER || code == KEY_KPENTER)
         {
             window_filter.open();
+            // The Enter that opened the editor is still physically down. Keep its
+            // autorepeat from immediately committing the new empty query.
+            filter_keys.insert(code);
+            swallowed_keys.erase(code);
             update_window_filter();
         }
         else if (code == KEY_TAB)
@@ -2015,7 +2037,7 @@
             if (auto letter = window_hint_letter(keyboard, code))
             {
                 window_keys.double_tap_delay = std::clamp(int(window_double_tap_delay), 1, 3000);
-                window_keys.refresh(window_entries(true));
+                window_entries(true);
                 window_keys.hold_delay = std::clamp(int(window_hold_delay), 1, 3000);
                 window_keys.letter(*letter, key_event_time(ev->event));
                 if (window_keys.hold_waiting()) arm_hint_hold();
@@ -2072,8 +2094,8 @@
         reply["hint_step_count"] = int64_t(hint_step_count);
         reply["hint_step_animation"] = hint_step_animation;
         reply["hint_step_offset"] = hint_step_offset;
+        window_entries(true);
         reply["selected"] = int64_t(window_keys.selected); reply["hints"] = wf::json_t::array();
-        window_keys.refresh(window_entries(true));
         for (auto e : window_keys.entries)
         {
             wf::json_t item; item["window"] = int64_t(e.id); item["hint"] = window_keys.label(e.slot);
@@ -2228,6 +2250,8 @@
         if (filter_preview) wf::scene::remove_child(filter_preview);
         filter_preview.reset(); filter_output = nullptr;
         clear_window_tint_layers();
+        apply_all_opacity();
+        clear_window_filter_fullscreen_visuals();
         ipc_repo->unregister_method("scottland/hints");
         ipc_repo->unregister_method("scottland/center-switcher");
         for (auto& [id, visual] : hint_visuals)

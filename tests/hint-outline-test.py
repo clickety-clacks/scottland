@@ -1040,7 +1040,7 @@ try:
     # scottland-ctl takes both separate settings across 0-100%; Wayfire bounds a stored value by
     # the option's metadata range, so a tint above the old 30% maximum must read back unclamped.
     ctl = [str(repo / "core/libexec/scottland-ctl"), "set"]
-    for name, values, default in (("window_mode_tint", (0, 45, 100), 7), ("hint_background_opacity", (0, 100), 21)):
+    for name, values, default in (("window_mode_tint", (0, 45, 100), 17.5), ("hint_background_opacity", (0, 100), 80)):
         for value in values:
             subprocess.run(ctl + [name, str(value)], check=True, timeout=10, stdout=log, stderr=log)
             check(f"scottland-ctl sets {name} to {value}%", option_reaches(name, value, tolerance=.01))
