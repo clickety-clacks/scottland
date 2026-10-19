@@ -23,6 +23,20 @@ def run(*args):
     return subprocess.check_output(['tests/headless.sh', 'run', *args], text=True).strip()
 
 
+def write_session_palette(value):
+    # The test driver runs outside the canonical wrapper's private runtime
+    # namespace. Write the palette from a wrapper-owned process so the
+    # compositor sees the same session file that the test configures.
+    run('python3', '-c', '''
+import os, sys
+from pathlib import Path
+palette = Path(os.environ['SCOTTLAND_SESSION_DIR']) / (os.environ['WAYLAND_DISPLAY'] + '.palette.json')
+tmp = palette.with_suffix('.wk26.tmp')
+tmp.write_text(sys.argv[1])
+tmp.replace(palette)
+''', json.dumps(value))
+
+
 def check(ok, message):
     global passed, failed
     print(('PASS  ' if ok else 'FAIL  ') + message, flush=True)
@@ -169,14 +183,9 @@ def wait_hint_settled(window_id):
 
 
 try:
-    # Ask the headless session for its palette path; isolated sessions keep it outside
-    # XDG_RUNTIME_DIR/scottland, and the compositor reads this same session-specific path.
-    palette = Path(run('python3', '-c', "import os; print(os.path.join(os.environ['SCOTTLAND_SESSION_DIR'], os.environ['WAYLAND_DISPLAY']+'.palette.json'))"))
     # Session socket names can be reused; seed this session's full palette explicitly.
-    tmp = palette.with_suffix('.wk26.tmp')
-    tmp.write_text(json.dumps({'scheme':'light', 'background':'#f4f5f7',
-        'foreground':'#232a35', 'accent':'#3b6ea8'}))
-    tmp.replace(palette)
+    write_session_palette({'scheme':'light', 'background':'#f4f5f7',
+        'foreground':'#232a35', 'accent':'#3b6ea8'})
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'place/mode': 'pointer',
         'scottland/color_scheme': 'light', 'scottland/accent_color':'#3b6ea8ff'})
     left = spawn('Left card', 'foot', 10, 230)
@@ -266,10 +275,8 @@ try:
     # Live text scale while Alt stays down: no restart, and corners remain clear.
     hold()
     for scale in (1.5, 3):
-        tmp = palette.with_suffix('.wk26.tmp')
-        tmp.write_text(json.dumps({'scheme':'dark', 'text_scale':scale,
-            'background':'#1f232c', 'foreground':'#d8deea', 'accent':'#81a1c1'}))
-        tmp.replace(palette)
+        write_session_palette({'scheme':'dark', 'text_scale':scale,
+            'background':'#1f232c', 'foreground':'#d8deea', 'accent':'#81a1c1'})
         time.sleep(1.5)
         capture('stacked-text-'+str(scale), scale)
     release()
