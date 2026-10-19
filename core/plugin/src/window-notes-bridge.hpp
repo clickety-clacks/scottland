@@ -7,6 +7,7 @@
         bool widget = false;
     };
     std::map<uint64_t, std::shared_ptr<scottland::windowing::note_overlay_node_t>> note_dot_nodes;
+    std::set<uint64_t> note_widget_dot_windows;
     std::map<wf::output_t*, std::shared_ptr<scottland::windowing::note_overlay_node_t>> note_panel_nodes;
     std::set<wf::scene::floating_inner_node_t*> note_overlay_order_dirty;
     scottland::windowing::note_layout_t note_layout;
@@ -66,12 +67,13 @@
     {
         const bool owns_update_guard = !note_visuals_updating;
         note_visuals_updating = true;
+        const bool was_widget = note_widget_dot_windows.erase(window_id) != 0;
         auto found = note_dot_nodes.find(window_id);
         if (found != note_dot_nodes.end())
         {
             if (found->second && found->second->parent())
             {
-                if (!owns_update_guard)
+                if (!owns_update_guard && was_widget)
                     note_overlay_order_dirty.insert(found->second->parent());
                 wf::scene::remove_child(found->second);
             }
@@ -87,6 +89,7 @@
         for (auto& [window_id, node] : note_dot_nodes)
             if (node && node->parent()) wf::scene::remove_child(node);
         note_dot_nodes.clear();
+        note_widget_dot_windows.clear();
         for (auto& [output, node] : note_panel_nodes)
             if (node && node->parent()) wf::scene::remove_child(node);
         note_panel_nodes.clear();
@@ -101,10 +104,11 @@
         // after an external scene-order change. Pointer-driven hover refreshes keep ordering
         // incrementally and do not scan every note node.
         std::map<wf::scene::floating_inner_node_t*, std::vector<wf::scene::node_ptr>> notes_by_parent;
-        auto append = [&] (const auto& nodes)
+        auto append = [&] (const auto& nodes, const auto& include)
         {
             for (const auto& entry : nodes)
             {
+                if (!include(entry.first)) continue;
                 const auto& node = entry.second;
                 if (node)
                     if (auto parent = node->parent())
@@ -114,8 +118,13 @@
                         }
             }
         };
-        append(note_panel_nodes);
-        append(note_dot_nodes);
+        // Panels and widget dots are overlays. Ordinary window dots stay immediately above
+        // their own root, where foreground windows can correctly occlude them (NT-9).
+        append(note_panel_nodes, [] (const auto&) { return true; });
+        append(note_dot_nodes, [&] (uint64_t window_id)
+        {
+            return note_widget_dot_windows.count(window_id) != 0;
+        });
 
         for (auto& [parent, ordered_notes] : notes_by_parent)
         {
@@ -265,6 +274,8 @@
         }
 
         auto widget = link_of_widget(view);
+        const bool is_widget = bool(widget);
+        const bool was_widget = note_widget_dot_windows.count(window_id) != 0;
         auto positioned = items;
         if (!widget && view_output != output)
         {
@@ -282,6 +293,8 @@
         auto& node = note_dot_nodes[window_id];
         if (!node) node = std::make_shared<scottland::windowing::note_overlay_node_t>();
         node->update(positioned, hints_palette, output->get_scale());
+        if (is_widget) note_widget_dot_windows.insert(window_id);
+        else note_widget_dot_windows.erase(window_id);
 
         std::shared_ptr<wf::scene::floating_inner_node_t> parent;
         auto root = view->get_root_node();
@@ -305,11 +318,11 @@
             auto previous_parent = node->parent();
             if (node->parent()) wf::scene::remove_child(node);
             wf::scene::add_front(parent, node);
-            if (widget)
-            {
-                if (previous_parent) note_overlay_order_dirty.insert(previous_parent);
-                note_overlay_order_dirty.insert(parent.get());
-            }
+            if (was_widget && previous_parent) note_overlay_order_dirty.insert(previous_parent);
+            if (is_widget) note_overlay_order_dirty.insert(parent.get());
+        } else if (was_widget != is_widget)
+        {
+            note_overlay_order_dirty.insert(parent.get());
         }
 
         if (!widget && root)
@@ -598,9 +611,11 @@
             {
                 if (it->second && it->second->parent())
                 {
-                    note_overlay_order_dirty.insert(it->second->parent());
+                    if (note_widget_dot_windows.count(it->first))
+                        note_overlay_order_dirty.insert(it->second->parent());
                     wf::scene::remove_child(it->second);
                 }
+                note_widget_dot_windows.erase(it->first);
                 it = note_dot_nodes.erase(it);
             } else ++it;
         }
