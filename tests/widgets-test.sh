@@ -109,7 +109,8 @@ cleanup() {
 }
 trap cleanup EXIT
 display=$(cat "$headless_dir/display")
-state_dir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/widgets/$display
+session_dir=$(hrun sh -c 'printf "%s" "$SCOTTLAND_SESSION_DIR"')
+state_dir=$session_dir/widgets/$display
 signals=$artifacts/widget-signals.log
 tests/headless.sh run gdbus monitor --session --dest org.scottland.Widgets >"$signals" 2>&1 &
 monitor_pid=$!
@@ -351,7 +352,7 @@ sleep 1
 
 # A reload after an update replaces a widget service running older code (and keeps a current one).
 hooks_dir=$(tests/headless.sh run sh -c 'echo $SCOTTLAND_HOOKS')
-bus_pid_file=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.widget-bus.pid
+bus_pid_file=$session_dir/$display.widget-bus.pid
 old_bus=$(headless_first_line "$bus_pid_file")
 tests/headless.sh run "$hooks_dir/reload.d/08-widget-bus"; sleep 1
 check "reload keeps a widget service that runs the installed code" [ "$(headless_first_line "$bus_pid_file")" = "$old_bus" ]
@@ -362,9 +363,9 @@ check "reload replaces a widget service older than the installed code" \
   bash -c "[ '$new_bus' != '$old_bus' ] && ! kill -0 '$old_bus' 2>/dev/null && kill -0 '$new_bus' && tests/headless.sh run busctl --user status org.scottland.Widgets >/dev/null"
 
 # WG10: the session's palette file (what the card's colors follow).
-palette=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.palette.json
+palette=$session_dir/$display.palette.json
 tests/headless.sh run "$hooks_dir/libexec/scottland-color-scheme" ensure; sleep 2
-watcher=$(headless_first_line "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.color-scheme.pid")
+watcher=$(headless_first_line "$session_dir/$display.color-scheme.pid")
 check "WG10 the session's palette file has every color" \
   hrun python3 -c 'import json,re,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["scheme"] in ("light","dark") and all(re.fullmatch("#[0-9a-fA-F]{6}", p[k]) for k in ("background","foreground","muted","accent","alert")) else 1)' "$palette"
 hrun rm -f -- "$palette"
@@ -921,7 +922,7 @@ read -r ax ay aw ah <<<"$(view_field carry-app "round(f['x']), round(f['y']), ro
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 sleep 2.5
 carry_before=$(ipc scottland/widgets | python3 -c "import json,sys; print([w['widget_view'] for w in json.load(sys.stdin)['widgets'] if w['title']=='carry-app'])")
-mark=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.reloading
+mark=$session_dir/$display.reloading
 hrun touch -- "$mark"
 fresh=$headless_dir/libscottland-test-$(date +%s%N).so
 cp build/libscottland.so "$fresh"

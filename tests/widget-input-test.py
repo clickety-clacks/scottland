@@ -760,7 +760,8 @@ def modes():
         shutil.copyfile("build/libscottland.so", fresh)
         plugins = ipc.call("wayfire/get-config-option", {"option": "core/plugins"})["value"]
         changed = " ".join(str(fresh) if p == "scottland" or "/libscottland-" in p else p for p in plugins.split())
-        mark = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
+        mark = Path(os.environ.get("SCOTTLAND_SESSION_DIR") or
+                    str(Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland")) / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
         def reload_to(value):
             mark.touch()
             try:

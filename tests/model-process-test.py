@@ -50,7 +50,8 @@ if "--reload" in sys.argv:
         fresh = Path(directory) / "libscottland-exit-reload.so"
         shutil.copyfile("build/libscottland.so", fresh)
         plugins = call("wayfire/get-config-option", {"option": "core/plugins"})["value"]
-        mark = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
+        mark = Path(os.environ.get("SCOTTLAND_SESSION_DIR") or
+                    str(Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland")) / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
         mark.touch()
         try:
             call("wayfire/set-config-options", {"core/plugins": plugins.replace("scottland", str(fresh))})
