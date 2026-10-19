@@ -162,6 +162,11 @@
             <_long>Compatibility alias for window_avoidance_always. New configuration should use that key.</_long>
             <default>false</default>
         </option>
+        <option name="agentd_hub_url" type="string">
+            <_short>Agentd Hub URL</_short>
+            <_long>Optional HTTPS base URL for Agentd lookup.</_long>
+            <default></default>
+        </option>
 
         <option name="alt_hold_delay" type="int">
             <_short>Window mode Alt-alone hold (ms)</_short>
