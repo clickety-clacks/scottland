@@ -1741,7 +1741,7 @@ print("valid")
 
     #[test]
     fn sender_ids_reject_missing_namespaces_and_unicode_whitespace() {
-        assert!(valid_sender_id("tightbeam://example-host/session/s_123"));
+        assert!(valid_sender_id("agentd://example-host/inst-7/48211:9127734"));
         assert!(valid_sender_id(
             "urn:uuid:00000000-0000-4000-8000-000000000000"
         ));

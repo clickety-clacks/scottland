@@ -16,6 +16,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod transparency;
+
 const HELP: &str = "\
 usage: scottland-ctl [COMMAND] [ARGS...]
 
@@ -25,6 +27,8 @@ Settings and window commands:
   stdin                                    apply setting updates from stdin
   windows                                  list open Scottland windows
   present WINDOW_ID                        bring a window or its widget to the center
+  transparency toggle                      toggle the focused window's transparency
+  transparency status [WINDOW_ID]          report a window's transparency override
   option WAYFIRE/OPTION                    print a live Wayfire option
   terminal-cwd [PID]                       print the focused terminal's working directory
   sender-window-snapshot                    print an unfiltered sender-window snapshot as JSON
@@ -339,6 +343,7 @@ pub fn run(args: &[String]) -> Result<u8> {
         }
         "notes" => notes_command(args),
         "launch" => launch_command(args),
+        "transparency" => transparency::run(args),
         "sender-window-snapshot" if args.is_empty() => sender_window_snapshot(),
         "sender-window-provenance-snapshot" if args.is_empty() => {
             sender_window_provenance_snapshot()

@@ -140,7 +140,7 @@ mod tests {
             &json!({
                 "provenance": {
                     "name": "deploy",
-                    "sender": "tightbeam://host/session/s_123",
+                    "sender": "agentd://example-host/inst-7/48211:9127734",
                     "launched_at": 1791440000000_i64
                 }
             }),
