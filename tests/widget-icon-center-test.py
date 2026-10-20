@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import time
+from headless_palette import require_private_palette
 
 spec = importlib.util.spec_from_file_location("widget_input", Path(__file__).with_name("widget-input-test.py"))
 t = importlib.util.module_from_spec(spec)
@@ -25,7 +26,7 @@ out.mkdir(parents=True, exist_ok=True)
 # SCOTTLAND_SESSION_DIR to a private session/ directory instead of XDG_RUNTIME_DIR/scottland.
 session_dir = Path(os.environ.get("SCOTTLAND_SESSION_DIR") or os.path.join(
     os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland"))
-palette = session_dir / (os.environ["WAYLAND_DISPLAY"] + ".palette.json")
+palette = require_private_palette(session_dir / (os.environ["WAYLAND_DISPLAY"] + ".palette.json"))
 SCHEMES = {
     "dark": {"background": "#2e3440", "foreground": "#d8dee9", "muted": "#97a3ab", "accent": "#81a1c1", "alert": "#bf616a"},
     "light": {"background": "#eceff4", "foreground": "#2e3440", "muted": "#4c566a", "accent": "#5e81ac", "alert": "#bf616a"},

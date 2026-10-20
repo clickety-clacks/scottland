@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from headless_palette import require_private_palette
 
 artifacts = Path(sys.argv[1]).resolve()
 clients = []
@@ -184,9 +185,9 @@ try:
     colors = {'scheme': 'dark', 'background': '#1f232c', 'foreground': '#d8deea',
               'accent': '#81a1c1', 'text_scale': 1, 'reduced_motion': False}
     palette.write_text(json.dumps(colors))
-    palette_path = Path(subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-        "import os;print(os.path.join(os.environ['XDG_RUNTIME_DIR'],'scottland',os.environ['WAYLAND_DISPLAY']+'.palette.json'))"],
-        text=True).strip())
+    palette_path = require_private_palette(Path(subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
+        "import os;print(os.path.join(os.environ['SCOTTLAND_SESSION_DIR'],os.environ['WAYLAND_DISPLAY']+'.palette.json'))"],
+        text=True).strip()))
     palette_path.write_text(json.dumps(colors))
     ids = {}
     # Side sits alone; Back is large and centered; Front covers Back's center.

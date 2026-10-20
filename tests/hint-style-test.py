@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from headless_palette import require_private_palette
 import gi
 gi.require_version('GdkPixbuf', '2.0')
 from gi.repository import GdkPixbuf
@@ -132,8 +133,8 @@ def mix(a, b, amount):
 def rgb(hex_color):
     return tuple(int(hex_color[i:i+2], 16)/255 for i in (1, 3, 5))
 
-palette_path = Path(run('python3', '-c',
-    "import os;print(os.path.join(os.environ['XDG_RUNTIME_DIR'],'scottland',os.environ['WAYLAND_DISPLAY']+'.palette.json'))"))
+palette_path = require_private_palette(Path(run('python3', '-c',
+    "import os;print(os.path.join(os.environ['SCOTTLAND_SESSION_DIR'],os.environ['WAYLAND_DISPLAY']+'.palette.json'))")))
 palettes = {
     'dark': {'scheme': 'dark', 'background': '#1f232c', 'foreground': '#d8deea', 'accent': '#81a1c1'},
     'light': {'scheme': 'light', 'background': '#f4f5f7', 'foreground': '#232a35', 'accent': '#3b6ea8'},

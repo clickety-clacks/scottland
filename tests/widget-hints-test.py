@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from headless_palette import require_private_palette
 
 artifacts = Path(sys.argv[1])
 clients = []
@@ -171,7 +172,7 @@ def wait_hint_settled(window_id):
 try:
     # Ask the headless session for its palette path; isolated sessions keep it outside
     # XDG_RUNTIME_DIR/scottland, and the compositor reads this same session-specific path.
-    palette = Path(run('python3', '-c', "import os; print(os.path.join(os.environ['SCOTTLAND_SESSION_DIR'], os.environ['WAYLAND_DISPLAY']+'.palette.json'))"))
+    palette = require_private_palette(Path(run('python3', '-c', "import os; print(os.path.join(os.environ['SCOTTLAND_SESSION_DIR'], os.environ['WAYLAND_DISPLAY']+'.palette.json'))")))
     # Session socket names can be reused; seed this session's full palette explicitly.
     tmp = palette.with_suffix('.wk26.tmp')
     tmp.write_text(json.dumps({'scheme':'light', 'background':'#f4f5f7',

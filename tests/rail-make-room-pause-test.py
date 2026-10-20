@@ -12,6 +12,7 @@ from pathlib import Path
 import subprocess
 import threading
 import time
+from headless_palette import require_private_palette
 
 spec = importlib.util.spec_from_file_location("widget_input", Path(__file__).with_name("widget-input-test.py"))
 t = importlib.util.module_from_spec(spec)
@@ -23,7 +24,7 @@ artifacts = Path(__file__).resolve().parent.parent / "build" / "rail-make-room-p
 artifacts.mkdir(parents=True, exist_ok=True)
 passed = failed = 0
 metrics = {"display": os.environ.get("WAYLAND_DISPLAY")}
-palette_path = Path(os.environ["SCOTTLAND_SESSION_DIR"]) / (os.environ["WAYLAND_DISPLAY"] + ".palette.json")
+palette_path = require_private_palette(Path(os.environ["SCOTTLAND_SESSION_DIR"]) / (os.environ["WAYLAND_DISPLAY"] + ".palette.json"))
 palette_before = palette_path.read_bytes() if palette_path.exists() else None
 
 

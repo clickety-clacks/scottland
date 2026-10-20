@@ -16,15 +16,16 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from headless_palette import require_private_palette
 
 artifacts = Path(sys.argv[1]).resolve()
 clients = {}
 passed = failed = 0
 socket_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
     "import os;print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
-palette_path = Path(subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-    "import os;print(os.path.join(os.environ['XDG_RUNTIME_DIR'],'scottland',os.environ['WAYLAND_DISPLAY']+'.palette.json'))"],
-    text=True).strip())
+palette_path = require_private_palette(Path(subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
+    "import os;print(os.path.join(os.environ['SCOTTLAND_SESSION_DIR'],os.environ['WAYLAND_DISPLAY']+'.palette.json'))"],
+    text=True).strip()))
 solve_max_ms = 0.0
 slice_units_max = 0
 pass_slices_max = 0

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import threading
+from headless_palette import require_private_palette
 import gi
 gi.require_version('GdkPixbuf', '2.0')
 from gi.repository import GdkPixbuf
@@ -91,7 +92,7 @@ def capture_pop(label, entering):
     strip.savev(str(art/(label+'-strip.png')), 'png', [], [])
     return motion
 
-palette_path = Path(os.environ['XDG_RUNTIME_DIR'])/'scottland'/(os.environ['WAYLAND_DISPLAY']+'.palette.json')
+palette_path = require_private_palette(Path(os.environ['SCOTTLAND_SESSION_DIR'])/(os.environ['WAYLAND_DISPLAY']+'.palette.json'))
 palette = {'scheme':'dark','background':'#1f232c','foreground':'#d8deea','accent':'#81a1c1'}
 def theme(reduced=False):
     temporary = art/'palette.json'
