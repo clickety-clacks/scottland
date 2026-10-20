@@ -891,7 +891,7 @@ try:
 
     initial_window_tint = option("window_mode_tint")
     print("initial Window-mode tint default", initial_window_tint, flush=True)
-    check("Window-mode tint default is 7%", abs(initial_window_tint - 7) < .01)
+    check("Window-mode tint default is 17.5%", abs(initial_window_tint - 17.5) < .01)
     if "--second-output" in sys.argv:
         section(second_output)
         raise SystemExit

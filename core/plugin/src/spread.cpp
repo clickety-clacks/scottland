@@ -195,7 +195,14 @@ class solver_t
         {
             try
             {
-                if (!prepare_gather(result)) { result.work = work.used; return result; }
+                if (!prepare_gather(result))
+                {
+                    // A solver-known unavailable screen is a complete no-op. A compositor
+                    // admission stop still means its snapshot was incomplete.
+                    result.complete = S.unavailable_reason.empty();
+                    result.work = work.used;
+                    return result;
+                }
                 layout_t gathered = original;
                 gather_schedule(gathered);
                 complete = true;
