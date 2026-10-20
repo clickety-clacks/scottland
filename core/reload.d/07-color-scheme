@@ -1,4 +1,11 @@
 #!/bin/sh
 # A reload re-registers the plugin's settings: re-apply the desktop's light or dark style, and
 # start following it if this session predates the watcher.
-exec scottland-display color-scheme ensure
+hooks=${SCOTTLAND_HOOKS:-/usr/lib/scottland}
+# The package follows its active build; development and headless trees link tools in libexec.
+if [ -d "$hooks/tools/base" ]; then
+  display="$hooks/tools/current/bin/scottland-display"
+else
+  display="$hooks/libexec/scottland-display"
+fi
+exec "$display" color-scheme ensure
