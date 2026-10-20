@@ -11,5 +11,5 @@ cleanup() {
 }
 trap cleanup EXIT
 tests/headless.sh stop >/dev/null 2>&1
-tests/headless.sh start --widgets
-python3 tests/windowing-test.py "$artifacts"
+SCOTTLAND_TEST_OUTPUTS=1 tests/headless.sh start --widgets
+tests/headless.sh run python3 tests/windowing-test.py "$artifacts"

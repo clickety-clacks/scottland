@@ -4,6 +4,7 @@ Run inside a caller-owned headless session (tests/hint-outline-test.sh). Screens
 state land in build/hint-outline-evidence; no live config, session or service is used.
 """
 import json
+import math
 import os
 from pathlib import Path
 import stat
@@ -253,7 +254,10 @@ class Shot:
         self.data, self.stride, self.channels = self.img.get_pixels(), self.img.get_rowstride(), self.img.get_n_channels()
 
     def device(self, x, y):
-        offset = round(y) * self.stride + round(x) * self.channels
+        x, y = round(x), round(y)
+        if not (0 <= x < self.img.get_width() and 0 <= y < self.img.get_height()):
+            raise ValueError(f"pixel ({x}, {y}) is outside {self.img.get_width()}x{self.img.get_height()} capture")
+        offset = y * self.stride + x * self.channels
         return tuple(self.data[offset:offset + 3])
 
     def pixel(self, x, y):
@@ -322,6 +326,25 @@ def contains(rect, point):
     return rect[0] <= x < rect[0] + rect[2] and rect[1] <= y < rect[1] + rect[3]
 
 
+def contains_with_margin(rect, point, margin):
+    x, y = point
+    return (rect[0] + margin <= x < rect[0] + rect[2] - margin and
+            rect[1] + margin <= y < rect[1] + rect[3] - margin)
+
+
+def rect_distance(rect, point):
+    x, y = point
+    dx = max(rect[0] - x, 0, x - (rect[0] + rect[2]))
+    dy = max(rect[1] - y, 0, y - (rect[1] + rect[3]))
+    return math.hypot(dx, dy)
+
+
+def rect_interior_clearance(rect, point):
+    x, y = point
+    return min(x - rect[0], rect[0] + rect[2] - x,
+               y - rect[1], rect[1] + rect[3] - y)
+
+
 def color_bytes(color):
     return tuple(round(float(channel) * 255) for channel in color)
 
@@ -348,6 +371,17 @@ def set_tint(value):
     time.sleep(.12)
 
 
+def option_enabled(name):
+    value = ipc("wayfire/get-config-option", {"option": "scottland/" + name})["value"]
+    return value is True or str(value).lower() in ("true", "1", "yes")
+
+
+def set_goo(enabled):
+    ipc("wayfire/set-config-options", {"scottland/goo": bool(enabled)})
+    wait(lambda: option_enabled("goo") == enabled, 3)
+    time.sleep(.12)
+
+
 def find_point(target_id, require_ids=(), avoid_ids=()):
     state = hints()
     frame_by_id = frame_map(state)
@@ -357,7 +391,10 @@ def find_point(target_id, require_ids=(), avoid_ids=()):
             point = (target[0] + target[2] * fx, target[1] + target[3] * fy)
             if not off_badges(state, *point, margin=10):
                 continue
-            if any(identifier not in frame_by_id or not contains(frame_by_id[identifier], point)
+            if not contains_with_margin(target, point, 24):
+                continue
+            if any(identifier not in frame_by_id or
+                   not contains_with_margin(frame_by_id[identifier], point, 24)
                    for identifier in require_ids):
                 continue
             if any(identifier in frame_by_id and contains(frame_by_id[identifier], point)
@@ -376,8 +413,8 @@ def find_overlap_point(left_id, right_id, left_rect_override=None):
         min(left[1] + left[3], right[1] + right[3])
     if x2 <= x1 or y2 <= y1:
         raise RuntimeError(f"tint extents do not overlap: {left_id}={left} {right_id}={right}")
-    for fy in (.5, .25, .75):
-        for fx in (.5, .25, .75):
+    for fy in (.5, .25, .75, .1, .9):
+        for fx in (.5, .25, .75, .1, .9):
             point = (x1 + (x2 - x1) * fx, y1 + (y2 - y1) * fy)
             if off_badges(state, *point, margin=8):
                 return point
@@ -388,7 +425,9 @@ def find_overlap_point(left_id, right_id, left_rect_override=None):
 def outside_point(capture_size, origin=(0, 0)):
     state = hints()
     frames = frame_map(state)
-    for identifier, frame in frames.items():
+    # A fallback halo grows to about 21 px. Keep this check near the window edge,
+    # but outside every fallback band and every other drawn window.
+    for frame in frames.values():
         candidates = []
         for distance in (48, 64, 80, 96, 128):
             for t in (.2, .35, .5, .65, .8):
@@ -402,9 +441,32 @@ def outside_point(capture_size, origin=(0, 0)):
             sx, sy = point[0] + origin[0], point[1] + origin[1]
             in_capture = 0 <= sx < capture_size[0] and 0 <= sy < capture_size[1]
             if (in_capture and off_badges(state, *point, margin=20) and
-                    not any(contains(other, point) for other in frames.values())):
+                    all(rect_distance(other, point) >= 32 for other in frames.values())):
                 return point
     return None
+
+
+def cover_pixels(window_rect, card_rect, state):
+    exposed, covered = [], []
+    for fy_step in range(1, 20):
+        fy = fy_step / 20
+        for fx_step in range(1, 20):
+            fx = fx_step / 20
+            point = (window_rect[0] + window_rect[2] * fx,
+                     window_rect[1] + window_rect[3] * fy)
+            if (not contains_with_margin(window_rect, point, 8) or
+                    not off_badges(state, *point, margin=20)):
+                continue
+            card_distance = rect_distance(card_rect, point)
+            if card_distance >= 8:
+                score = min(rect_interior_clearance(window_rect, point), card_distance)
+                exposed.append((score, point))
+            if contains_with_margin(card_rect, point, 8):
+                score = min(rect_interior_clearance(window_rect, point),
+                            rect_interior_clearance(card_rect, point))
+                covered.append((score, point))
+    return (max(exposed)[1] if exposed else None,
+            max(covered)[1] if covered else None)
 
 
 def tint_stack_check(name, point, order, strength=7, scale=1, origin=(0, 0), no_stroke=True,
@@ -439,20 +501,32 @@ def tint_stack_check(name, point, order, strength=7, scale=1, origin=(0, 0), no_
             point_out = outside_point((before.img.get_width() / scale,
                                       before.img.get_height() / scale), origin)
             if point_out is not None:
-                set_tint(0)
-                outside_base = Shot(name + "-outside-base", scale)
-                set_tint(100)
-                outside_full = Shot(name + "-outside-full", scale)
-                outside_screen = (point_out[0] + origin[0], point_out[1] + origin[1])
-                outside_before = outside_base.pixel(*outside_screen)
-                outside_after = outside_full.pixel(*outside_screen)
-                outside_ok = near(outside_before, outside_after, 3)
-                outside_detail = {"point": point_out, "base": outside_before, "tinted": outside_after}
-                if not outside_ok:
-                    outside_detail["frames"] = frames
-                    outside_detail["badges"] = badges(state)
-                check(name + ": no tint stroke outside drawn extents",
-                      outside_ok, outside_detail)
+                goo_was_enabled = option_enabled("goo")
+                try:
+                    # The separate tint layer is independent of Goo. Disable only its animated
+                    # field for this near-edge pair so movement in the Goo cannot mask a stroke.
+                    if goo_was_enabled:
+                        set_goo(False)
+                    set_tint(0)
+                    outside_base = Shot(name + "-outside-base", scale)
+                    set_tint(100)
+                    outside_full = Shot(name + "-outside-full", scale)
+                    outside_screen = (point_out[0] + origin[0], point_out[1] + origin[1])
+                    outside_before = outside_base.pixel(*outside_screen)
+                    outside_after = outside_full.pixel(*outside_screen)
+                    outside_ok = near(outside_before, outside_after, 3)
+                    outside_detail = {"point": point_out, "base": outside_before, "tinted": outside_after}
+                    if not outside_ok:
+                        outside_detail["frames"] = frames
+                        outside_detail["badges"] = badges(state)
+                    check(name + ": no tint stroke outside drawn extents",
+                          outside_ok, outside_detail)
+                finally:
+                    if goo_was_enabled:
+                        set_goo(True)
+            else:
+                check(name + ": no tint stroke sample outside drawn extents", False,
+                      "no point is clear of the window frames and badges")
         return point, before, after
     finally:
         set_tint(old)
@@ -567,10 +641,12 @@ def motion_tint_sample(name, identifier, edge):
         raise RuntimeError(f"no retained tint color while sampling motion for {identifier}")
     image = Shot(name)
     if edge == "right":
-        y = rect[1] + rect[3] * .5
+        # Keep sampling the straight side while keyboard motion carries the window
+        # below the screen center under the shipped key impulse.
+        y = rect[1] + min(48, rect[3] * .25)
         inside, outside = (rect[0] + rect[2] - 1.2, y), (rect[0] + rect[2] + 1.2, y)
     else:
-        y = rect[1] + rect[3] * .5
+        y = rect[1] + min(48, rect[3] * .25)
         inside, outside = (rect[0] + 1.2, y), (rect[0] - 1.2, y)
     inside_pixel, outside_pixel = image.pixel(*inside), image.pixel(*outside)
     check(f"{name}: tint edge follows the drawn frame within one pixel",
@@ -712,11 +788,15 @@ def widget_cover():
     under_palette.write_text(json.dumps(dict(scheme="dark", background="#d05090",
                                              foreground="#ffffff", accent="#81a1c1")))
     set_tint(0)
-    small = open_window("Under", (950, round(wf_["y"]) - 110, 300, 220), under_palette)
+    # Keep the under-window centered on the same overlap while giving its sampled
+    # pixels room around the hint badge at the merged zone scale.
+    under_x, under_width, under_height = 900, 400, 220
+    small = open_window("Under", (under_x, round(wf_["y"]) - 110, under_width, under_height), under_palette)
     shown = views()[small]["frame"]
     ipc("window-rules/configure-view", dict(id=small, geometry=dict(
-        x=950, y=round(wf_["y"] - 100 + shown["height"] / 2 - 110), width=300, height=220)))
-    wait(lambda: abs(views()[small]["frame"]["y"] - (wf_["y"] - 100)) < 2)
+        x=under_x, y=round(wf_["y"] - 60 + shown["height"] / 2 - under_height / 2),
+        width=under_width, height=under_height)))
+    wait(lambda: abs(views()[small]["frame"]["y"] - (wf_["y"] - 60)) < 2)
     ipc("window-rules/focus-view", dict(id=front))
     time.sleep(.6)
 
@@ -731,16 +811,12 @@ def widget_cover():
         widget_hint_id = widget_id
         card_rect = drawn(widget_id)
         under_rect = drawn(small)
+        exposed, covered = cover_pixels(under_rect, card_rect, state)
         print("widget tint overlap geometry", {"card": card_rect, "window": under_rect,
               "window_badge": state.get(small, {}).get("badge"),
               "widget_badge": state.get(widget_id, {}).get("badge")}, flush=True)
         image = Shot("09-widget-cover-" + phase)
-        ux, uy, uw, uh = under_rect
-        under_card = lambda x, y: contains(card_rect, (x, y))
-        exposed = (ux + uw * .85, uy + uh * .65)
-        covered = (ux + uw * .65, uy + uh * .9)
-        exposed_is_sampleable = (not under_card(*exposed) and off_badges(state, *exposed, 20))
-        covered_is_sampleable = (under_card(*covered) and off_badges(state, *covered, 20))
+        exposed_is_sampleable, covered_is_sampleable = exposed is not None, covered is not None
         exposed_pixel = image.pixel(*exposed) if exposed_is_sampleable else None
         covered_pixel = image.pixel(*covered) if covered_is_sampleable else None
         check("widget as cover " + phase + ": card hides client pixels while exposed pixels remain",
@@ -755,7 +831,9 @@ def widget_cover():
     measure("partial")
     shown = views()[small]["frame"]
     ipc("window-rules/configure-view", dict(id=small, geometry=dict(
-        x=950, y=round(wf_["y"] - 85 + shown["height"] / 2 - 110), width=300, height=220)))
+        x=under_x, y=round(wf_["y"] - 30 + shown["height"] / 2 - under_height / 2),
+        width=under_width, height=under_height)))
+    wait(lambda: abs(views()[small]["frame"]["y"] - (wf_["y"] - 30)) < 2)
     ipc("window-rules/focus-view", dict(id=small))
     time.sleep(.7)
     measure("mostly")
@@ -891,7 +969,7 @@ try:
 
     initial_window_tint = option("window_mode_tint")
     print("initial Window-mode tint default", initial_window_tint, flush=True)
-    check("Window-mode tint default is 7%", abs(initial_window_tint - 7) < .01)
+    check("Window-mode tint default is 17.5%", abs(initial_window_tint - 17.5) < .01)
     if "--second-output" in sys.argv:
         section(second_output)
         raise SystemExit
@@ -1040,7 +1118,7 @@ try:
     # scottland-ctl takes both separate settings across 0-100%; Wayfire bounds a stored value by
     # the option's metadata range, so a tint above the old 30% maximum must read back unclamped.
     ctl = [str(repo / "core/libexec/scottland-ctl"), "set"]
-    for name, values, default in (("window_mode_tint", (0, 45, 100), 7), ("hint_background_opacity", (0, 100), 21)):
+    for name, values, default in (("window_mode_tint", (0, 45, 100), 17.5), ("hint_background_opacity", (0, 100), 80)):
         for value in values:
             subprocess.run(ctl + [name, str(value)], check=True, timeout=10, stdout=log, stderr=log)
             check(f"scottland-ctl sets {name} to {value}%", option_reaches(name, value, tolerance=.01))
