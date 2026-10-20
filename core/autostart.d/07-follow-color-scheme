@@ -1,3 +1,10 @@
 #!/bin/sh
 # Draw window handles in the desktop's light or dark style, following changes live.
-exec scottland-display color-scheme watch
+hooks=${SCOTTLAND_HOOKS:-/usr/lib/scottland}
+# The package follows its active build; development and headless trees link tools in libexec.
+if [ -d "$hooks/tools/base" ]; then
+  display="$hooks/tools/current/bin/scottland-display"
+else
+  display="$hooks/libexec/scottland-display"
+fi
+exec "$display" color-scheme watch
