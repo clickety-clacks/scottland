@@ -148,17 +148,6 @@ see [its redraw-cost validation](../docs/goo.md#go10-settled-goo-over-redrawing-
 | TR7 | `scottland ctl transparency toggle` sends one explicit toggle for the focused mapped window. `scottland ctl transparency status [window-id]` is read-only and reports the focused window or requested mapped window and its `none`, `opaque` or `translucent` override through the existing `scottland-ctl` binary and `scottland/transparency` IPC method. | source present; CLI behavior and runtime verification pending |
 | TR8 | Missing session, missing focused window, invalid or unmapped requested window, or unavailable transparency method fails nonzero with one concise error; a rejected toggle changes no window state. | source present; CLI behavior and runtime verification pending |
 
-## Terminal theme push
-
-| ID | Invariant | Status |
-|---|---|---|
-| TP1 | Open Ghostty terminals whose configs follow Gooarchy's current-theme location show its newly selected theme after either link changes, without a new window or login. | Implemented in the existing per-session watcher; isolated helper and actual-inotify behavior tests pass on ARM test host (commit `bc193fd8`); real shipped-Ghostty color evidence remains pending. |
-| TP2 | After a push, an open following terminal continues to switch between the selected theme's light and dark variants when desktop Mode changes. | Uses the existing paired-theme config and changes neither link; real shipped-Ghostty mode-switch evidence remains pending. |
-| TP3 | Core reads the theme only through Gooarchy's current-theme location and writes no theme link or user config. | Source behavior and isolated fixtures cover the single location and unchanged theme/config files; real installed-session evidence remains pending. |
-| TP4 | A terminal with a fixed theme config keeps the same colors after a push. | The push only requests a same-session Ghostty config reload and writes no config; real fixed-config color evidence remains pending. |
-| TP5 | An absent current-theme location causes no push or report; if it appears later, the watcher follows it. | Implemented and covered by the isolated actual-inotify fixture on ARM test host (commit `bc193fd8`). |
-| TP6 | `scottland-display terminal-theme push` pushes once under the same rules and exits 0, including when there is nothing to push. | The one-shot command is specified; shared dispatcher integration waits for the Display API. No parallel command or watcher is permitted. |
-
 ## Layout configurator (`scottland-settings`)
 
 The settings app (Layout, Goo, Window mode, Translucency, Widgets and Sunlight tabs, zone overlay and hints): see [docs/settings.md](../docs/settings.md) (S1–S23, including independent hint-background opacity).
@@ -236,20 +225,20 @@ Candidate source; eight focused helper behavior scenarios pass; compositor build
 
 ## Terminal theme push
 
-At c9ec726e the existing helper install and watcher lifecycle are present, but the watcher does
-not follow Gooarchy's current-theme links and the helper has no session-filtered Ghostty reload
-action. F1 owns the installed one-shot helper and its theme/session filtering. Display owns the
-single final watcher lifecycle, handles link and late-location transitions, and calls that
-helper action. Integrated current-0.4 verification remains pending.
+The `scottland-display` session watcher observes Gooarchy's `current-theme` location for changes
+to its light and dark links, and detects when that location appears after the watcher starts. On a
+theme change, it reapplies the desktop palette and asks the one-shot helper to signal eligible
+Ghostty clients in the same session. It writes neither theme links nor terminal configuration.
+Integrated behavior verification for this merged path remains pending.
 
 | ID | Invariant | Status |
 |---|---|---|
-| TP1 | Open Ghostty terminals whose configs follow Gooarchy's current-theme location show its newly selected theme after either link changes, without a new window or login. | Pending integrated current-0.4 source and behavior checks; link-event handling belongs to Display's watcher. |
-| TP2 | After a push, an open following terminal continues to switch between the selected theme's light and dark variants when desktop Mode changes. | Pending integrated current-0.4 behavior checks. |
-| TP3 | Core reads the theme only through Gooarchy's current-theme location and writes no theme link or user config. | The F1 helper reads that location and writes no theme link/config; integrated current-0.4 checks remain pending. |
-| TP4 | A terminal with a fixed theme config keeps the same colors after a push. | Pending installed-session evidence; the helper signals Ghostty and does not write config. |
-| TP5 | An absent current-theme location causes no push or report; if it appears later, the watcher follows it. | Pending integrated current-0.4 behavior checks; late-location detection belongs to Display's watcher. |
-| TP6 | The internal `scottland-color-scheme terminal-theme-push` action signals Ghostty processes matching the current Wayland display and, when present, runtime directory if Gooarchy's `current-theme` directory contains a light or dark link. Missing theme location/links, display, or eligible Ghostty is a successful no-op; a failed attempted signal reports an error and returns nonzero. The action does not write theme links or terminal config and does not start another watcher. | F1 helper source candidate; focused verification through the permitted NVIDIA test host/remote build host route is pending. The public `scottland-display` action remains Display-owned. |
+| TP1 | Open Ghostty terminals whose configs follow Gooarchy's current-theme location show its newly selected theme after either link changes, without a new window or login. | Display watcher and helper source are present; integrated merged-path behavior verification remains pending. |
+| TP2 | After a push, an open following terminal continues to switch between the selected theme's light and dark variants when desktop Mode changes. | The paired-theme config changes neither theme link; integrated shipped-Ghostty mode-switch evidence remains pending. |
+| TP3 | Core reads the theme only through Gooarchy's current-theme location and writes no theme link or user config. | Source inspection confirms this boundary; integrated behavior verification remains pending. |
+| TP4 | A terminal with a fixed theme config keeps the same colors after a push. | The helper requests a same-session Ghostty config reload and writes no config; real fixed-config color evidence remains pending. |
+| TP5 | An absent current-theme location causes no push or report; if it appears later, the watcher follows it. | The Display watcher detects later appearance; integrated merged-path behavior verification remains pending. |
+| TP6 | `scottland-display terminal-theme push` signals Ghostty clients whose Wayland display matches the current session and whose runtime directory also matches when set, if the `current-theme` directory contains a light or dark link. A missing location or link, display, or eligible Ghostty client is a successful no-op; a failed attempted signal reports an error and returns nonzero. The command writes no theme links or terminal configuration and does not start another watcher. | Command and helper source are present; integrated merged-path command verification remains pending. |
 
 ## Display controls
 
