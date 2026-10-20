@@ -644,7 +644,7 @@ ShellRoot {
     original = Object.assign({}, original, { goo: Object.assign({}, original.goo, goo),
       motion: Object.assign({}, original.motion, motion), opacity: Object.assign({}, original.opacity, opacity),
       widgets: Object.assign({}, original.widgets, widgets) })
-    if ("goo_falloff" in goo) gooPoints = parseCurve(goo.goo_falloff, 0) || exponentialPoints
+    if ("goo_falloff" in goo) gooPoints = parseCurve(goo.goo_falloff, 0) || defaultGooPoints
     // Each change below pushes every value, so the running session follows the file too.
     if (Object.keys(goo).length) gooValues = Object.assign({}, gooValues, goo)
     if (Object.keys(motion).length) motionValues = Object.assign({}, motionValues, motion)
