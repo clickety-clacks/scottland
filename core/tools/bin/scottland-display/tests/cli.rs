@@ -539,11 +539,28 @@ fn cursor_size_command_returns_the_helper_value_without_settings_side_effects() 
 }
 
 #[test]
-fn sourced_session_environment_exports_the_cursor_size_command_result() {
+fn sourced_session_environment_exports_the_cursor_size_from_its_session_tool() {
     let scratch = Scratch::new();
     let script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../session-env.d/10-cursor-size.sh");
     assert!(script.is_file());
+
+    // The hook must use the Display binary belonging to this session's hooks
+    // tree, even when another binary with the same name is available on PATH.
+    std::os::unix::fs::symlink(BINARY, scratch.hooks.join("libexec/scottland-display"))
+        .expect("link Display into the session hooks tree");
+    let path_decoy = scratch.bin.join("scottland-display");
+    fs::remove_file(&path_decoy).unwrap();
+    let path_calls = scratch.root.join("path-display-calls");
+    fs::write(
+        &path_decoy,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$PATH_DISPLAY_CALLS\"\nprintf '99\\n'\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&path_decoy).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&path_decoy, permissions).unwrap();
+
     let mut paths = vec![scratch.bin.clone()];
     paths.extend(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),
@@ -559,11 +576,13 @@ fn sourced_session_environment_exports_the_cursor_size_command_result() {
         .env("PATH", path)
         .env("SCOTTLAND_HOOKS", &scratch.hooks)
         .env("HELPER_CALLS", &scratch.helper_calls)
+        .env("PATH_DISPLAY_CALLS", &path_calls)
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(stdout(&output), "24\n");
     assert_eq!(scratch.helper_calls(), ["cursor-size"]);
+    assert!(!path_calls.exists(), "hook invoked Display through PATH");
 }
 
 #[test]
