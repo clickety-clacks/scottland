@@ -14,6 +14,8 @@
 #                                         all thread stacks into wayfire.log, then resumes
 #                                         --stock omits Scottland for a protocol control
 #                                         SCOTTLAND_TEST_PRELOAD=LIB preloads LIB into Wayfire only
+#                                         SCOTTLAND_TEST_WRAP=EXE wraps only the Omarchy monitor
+#                                         fixture's run-owned --omarchy Wayfire launch
 #   tests/headless.sh run CMD [ARGS...]   run CMD inside it (scottland-exec: its own environment)
 #   tests/headless.sh ipc METHOD [JSON]   call its Wayfire IPC (e.g. stipc/feed_key)
 #   tests/headless.sh stop [--preserve-scratch]
@@ -50,6 +52,156 @@ if [[ ${1:-} == __scottland_headless_private_runtime ]]; then
   inside=1
   shift
 fi
+private_wrap_present=0
+private_wrap_path=
+private_wrap_identity=
+if ((inside)) && [[ ${1:-} == __scottland_headless_test_wrap ]]; then
+  shift
+  [[ $# -ge 2 ]] || { echo 'private compositor wrapper record is incomplete' >&2; exit 2; }
+  private_wrap_path=$1
+  private_wrap_identity=$2
+  shift 2
+  private_wrap_present=1
+fi
+isolation=${SCOTTLAND_HEADLESS_ISOLATION:-0}
+# Capture before the clean-environment purge, then remove it. It is never exported, added to PATH,
+# or accepted from the private-runtime environment; the outer process transports only a validated
+# path and identity as private argv.
+test_wrap=${SCOTTLAND_TEST_WRAP:-}
+unset SCOTTLAND_TEST_WRAP
+compositor_command=(wayfire)
+private_runtime_args=(__scottland_headless_private_runtime)
+wrapper_received_path=
+wrapper_received_identity=
+
+wrapper_start_requested() {
+  [[ ${1:-} == start ]] || return 1
+  shift
+  for option in "$@"; do
+    [[ $option == --omarchy ]] && return 0
+  done
+  return 1
+}
+
+safe_owned_directory() {
+  local path=$1 mode canonical
+  [[ -d $path && ! -L $path ]] || return 1
+  canonical=$(realpath -e -- "$path") || return 1
+  [[ $canonical == "$path" && $(stat -c %u -- "$path") == "$uid" ]] || return 1
+  mode=$(stat -c %a -- "$path") || return 1
+  (( (8#$mode & 0022) == 0 && (8#$mode & 07000) == 0 ))
+}
+
+safe_build_subtree() {
+  local root=$1 relative current component
+  [[ $root == "$build_root"/* && $root != "$build_root" ]] || return 1
+  relative=${root#"$build_root"/}
+  current=$build_root
+  local -a components=()
+  IFS=/ read -r -a components <<<"$relative"
+  for component in "${components[@]}"; do
+    [[ -n $component ]] || return 1
+    current="$current/$component"
+    safe_owned_directory "$current" || return 1
+  done
+}
+
+wrapper_identity() {
+  local path=$1 stat_record digest
+  stat_record=$(stat -c '%d:%i:%h:%u:%a:%s:%y:%z' -- "$path") || return 1
+  digest=$(sha256sum -- "$path") || return 1
+  printf '%s:%s\n' "$stat_record" "${digest%% *}"
+}
+
+validate_test_wrapper() {
+  local path=$1 expected_identity=${2:-} build_root fixture_root scratch_root canonical mode current_identity
+  [[ $path == /* ]] || { echo 'SCOTTLAND_TEST_WRAP must be absolute' >&2; return 1; }
+  build_root=$(realpath -e -- "$repo/build") || {
+    echo 'SCOTTLAND_TEST_WRAP requires an existing checkout build/ directory' >&2; return 1;
+  }
+  [[ $build_root == "$repo/build" ]] && safe_owned_directory "$repo" && \
+    safe_owned_directory "$build_root" || {
+    echo 'SCOTTLAND_TEST_WRAP requires canonical, run-owned, safe checkout/build parents' >&2
+    return 1
+  }
+
+  fixture_root="$build_root/omarchy-monitors-fixture"
+  scratch_root=${SCOTTLAND_TEST_SCRATCH:-}
+  if [[ $path == "$fixture_root/wrap-compositor" ]]; then
+    safe_owned_directory "$fixture_root" || {
+      echo 'SCOTTLAND_TEST_WRAP fixture parent must be a canonical, run-owned safe directory' >&2
+      return 1
+    }
+  elif [[ -n $scratch_root && $path == "$scratch_root/wrap-compositor" ]]; then
+    [[ $scratch_root == /* ]] || {
+      echo 'SCOTTLAND_TEST_SCRATCH must be absolute for a compositor wrapper' >&2; return 1;
+    }
+    canonical=$(realpath -e -- "$scratch_root") || {
+      echo 'SCOTTLAND_TEST_SCRATCH does not exist' >&2; return 1;
+    }
+    [[ $canonical == "$scratch_root" && $canonical == "$build_root"/* && $canonical != "$build_root" ]] && \
+      safe_build_subtree "$canonical" || {
+      echo 'SCOTTLAND_TEST_SCRATCH must be a canonical, run-owned safe child of build/' >&2
+      return 1
+    }
+    mode=$(stat -c %a -- "$canonical") || return 1
+    (( 8#$mode == 0700 )) || {
+      echo 'SCOTTLAND_TEST_SCRATCH must be mode 700 for a compositor wrapper' >&2; return 1;
+    }
+  else
+    echo 'SCOTTLAND_TEST_WRAP is allowed only as wrap-compositor in the run-owned build fixture or scratch' >&2
+    return 1
+  fi
+
+  canonical=$(realpath -e -- "$path") || {
+    echo 'SCOTTLAND_TEST_WRAP target does not exist' >&2; return 1;
+  }
+  [[ $canonical == "$path" && ! -L $path && -f $path && -x $path && \
+     $(stat -c %h -- "$path") == 1 && \
+     $(stat -c %u -- "$path") == "$uid" ]] || {
+    echo 'SCOTTLAND_TEST_WRAP must be a canonical, run-owned regular executable, not a symlink' >&2
+    return 1
+  }
+  mode=$(stat -c %a -- "$path") || return 1
+  (( (8#$mode & 0022) == 0 && (8#$mode & 07000) == 0 && (8#$mode & 0111) != 0 )) || {
+    echo 'SCOTTLAND_TEST_WRAP has unsafe permissions' >&2; return 1;
+  }
+  current_identity=$(wrapper_identity "$path") || return 1
+  if [[ -n $expected_identity && $current_identity != "$expected_identity" ]]; then
+    echo 'SCOTTLAND_TEST_WRAP changed after outer validation' >&2
+    return 1
+  fi
+  wrapper_received_path=$canonical
+  wrapper_received_identity=$current_identity
+}
+
+if ((inside)) && [[ -n $test_wrap ]]; then
+  echo 'SCOTTLAND_TEST_WRAP is accepted only at the outer headless entry' >&2
+  exit 2
+fi
+if [[ -n $test_wrap || $private_wrap_present == 1 ]]; then
+  [[ $isolation != 1 ]] || {
+    echo 'SCOTTLAND_TEST_WRAP is allowed only for normal start --omarchy' >&2
+    exit 2
+  }
+  wrapper_start_requested "$@" || {
+    echo 'SCOTTLAND_TEST_WRAP is allowed only for normal start --omarchy' >&2
+    exit 2
+  }
+  [[ -z ${SCOTTLAND_TEST_PRELOAD:-} ]] || {
+    echo 'SCOTTLAND_TEST_WRAP cannot be combined with SCOTTLAND_TEST_PRELOAD' >&2
+    exit 2
+  }
+  if ((inside)); then
+    [[ $private_wrap_present == 1 ]] || { echo 'private compositor wrapper record is missing' >&2; exit 2; }
+    validate_test_wrapper "$private_wrap_path" "$private_wrap_identity" || exit 2
+  else
+    validate_test_wrapper "$test_wrap" || exit 2
+    private_runtime_args+=(__scottland_headless_test_wrap "$wrapper_received_path" "$wrapper_received_identity")
+  fi
+  compositor_command=("$wrapper_received_path" wayfire)
+fi
+private_runtime_args+=("$@")
 case "$dir/" in
   "$build"/*) ;;
   *) echo 'SCOTTLAND_HEADLESS_DIR must be a child of this checkout build/' >&2; exit 2 ;;
@@ -316,7 +468,7 @@ if ((inside == 0)); then
   if [[ $action == start && $start_diagnostics_ready == 1 ]] && \
      { exec {start_stderr_fd}>>"$start_stderr_file"; } 2>/dev/null; then
     if SCOTTLAND_HEADLESS_DIAGNOSTICS_DIR="$start_diagnostics_dir" bwrap "${bwrap_args[@]}" -- \
-      "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@" \
+      "$repo/tests/headless.sh" "${private_runtime_args[@]}" \
       2>&"$start_stderr_fd" {start_stderr_fd}>&-; then
       status=0
     else
@@ -330,7 +482,7 @@ if ((inside == 0)); then
       echo 'private headless startup stderr capture unavailable; continuing without capture' >&2 || true
     fi
     if bwrap "${bwrap_args[@]}" -- \
-      "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@"; then
+      "$repo/tests/headless.sh" "${private_runtime_args[@]}"; then
       status=0
     else
       status=$?
@@ -756,11 +908,8 @@ case ${1:-} in
   start)
     record_start_stage validate-isolation
     if [[ $isolation == 1 ]]; then
-      for option in "${@:2}"; do
-        [[ $option != --omarchy ]] || {
-          echo 'isolated runner mode does not start the Omarchy/Hyprland shim' >&2; exit 2;
-        }
-      done
+      # --omarchy still runs inside this run's private runtime and bus; shim teardown below
+      # requires the recorded environment, signature, lock and process identity.
       [[ ! -e $dir/pid && ! -L $dir/pid && ! -e $dir/display && ! -L $dir/display && \
          ! -e $session_dir && ! -L $session_dir ]] || {
         echo 'isolated headless directory is not fresh; refusing to reuse or remove it' >&2; exit 2;
@@ -886,10 +1035,21 @@ WRAPPER
       # The test's own edits to the built config, as a sed script that every rebuild inside this
       # session applies too (a shim `hyprctl reload`), so a rebuild never writes the machine's
       # live config and never drops the test plugin or hook list.
-      hook_list=${started[*]}
+      # Record this compositor's environment before starting other autostart hooks. Widget
+      # services and clients use the record to address this exact session.
+      headless_autostart=$dir/headless-autostart
+      {
+        printf '%s\n' '#!/bin/sh' 'set -eu' 'hooks=${SCOTTLAND_HOOKS:?}'
+        printf '%s\n' '"$hooks/autostart.d/01-record-environment"'
+        for hook in "${started[@]:1}"; do
+          printf '"$hooks/autostart.d/%s" &\n' "$hook"
+        done
+        printf '%s\n' 'wait'
+      } >"$headless_autostart"
+      chmod 700 -- "$headless_autostart"
       {
         printf '%s\n' 's/^plugins = \\$/plugins = stipc \\/'
-        printf '%s\n' "s#^scottland_hooks = .*#scottland_hooks = sh -c 'for h in $hook_list; do \"\$SCOTTLAND_HOOKS/autostart.d/\$h\" \\& done; wait'#"
+        printf '%s\n' "s#^scottland_hooks = .*#scottland_hooks = sh -c 'exec \"\$SCOTTLAND_HEADLESS_DIR/headless-autostart\"'#"
         # A protocol control: same clients/config/stock Wayfire, without Scottland's
         # scene transforms or input handlers. Autostart still records its environment.
         if ((stock)); then printf '%s\n' '/^  scottland \\$/d'; fi
@@ -912,10 +1072,15 @@ WRAPPER
         fi
       fi
       record_start_stage launch-wayfire
+      if [[ -n $wrapper_received_path ]]; then
+        validate_test_wrapper "$wrapper_received_path" "$wrapper_received_identity" || exit 2
+        compositor_command=("$wrapper_received_path" wayfire)
+      fi
       WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=$test_outputs \
         WAYFIRE_PLUGIN_PATH="$repo/build" WAYFIRE_PLUGIN_XML_PATH="$repo/core/plugin/metadata:/usr/share/wayfire/metadata" \
         python3 "$repo/tests/headless-owner.py" launch "$dir" -- \
-        setsid ${private_bus:+dbus-run-session --} "${debugger[@]}" "${preload[@]}" wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
+        setsid ${private_bus:+dbus-run-session --} "${debugger[@]}" "${preload[@]}" \
+        "${compositor_command[@]}" -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
       echo $! >"$dir/pid"
     )
     record_start_stage wait-for-socket
@@ -995,10 +1160,7 @@ PY
         expected_display=$(sed -n '2p' "$session_mode_record")
         expected_signature=$(sed -n '3p' "$session_mode_record")
         case $session_mode in
-          plain-pending) ;;
-          shim-pending)
-            echo 'headless shim identity is incomplete; preserving runtime and scratch' >&2; exit 2
-            ;;
+          plain-pending|shim-pending) ;;
           plain)
             [[ $expected_display =~ ^wayland-[0-9]+$ ]] || {
               echo 'headless partial session display is invalid; preserving runtime and scratch' >&2; exit 2;
@@ -1071,14 +1233,7 @@ PY
       expected_display=$(sed -n '2p' "$session_mode_record")
       expected_signature=$(sed -n '3p' "$session_mode_record")
       case $session_mode in
-        plain-pending)
-          echo 'headless session mode was not fully recorded; preserving runtime and scratch' >&2
-          exit 2
-          ;;
-        shim-pending)
-          echo 'headless shim identity was not fully recorded; preserving runtime and scratch' >&2
-          exit 2
-          ;;
+        plain-pending|shim-pending) ;;
         plain)
           [[ $expected_display =~ ^wayland-[0-9]+$ ]] || {
             echo 'headless partial session display is invalid; preserving runtime and scratch' >&2
