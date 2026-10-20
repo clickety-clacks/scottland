@@ -436,7 +436,7 @@ class solver_t
         box b = rect(i, p);
         double border = side == 0 ? mid - S.center_half : mid + S.center_half;
         if (side == 0 ? b.x1 > border + 1.0 : b.x0 < border - 1.0) return false;
-        return gather_distance(i, side, p) <= before + EPS;
+        return gather_distance(i, side, p) <= before + 1.0;
     }
 
     bool gather_calm_side(int side)
@@ -657,7 +657,7 @@ class solver_t
         double fallback_overlap = INF, fallback_distance = INF;
         for (double d : levels)
         {
-            if (d > old_distance + EPS) break;
+            if (d > old_distance + 1.0) break;
             work.charge();
             xs.clear();
             gather_x_candidates(i, side, d, xs);
