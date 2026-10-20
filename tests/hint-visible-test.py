@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from headless_palette import require_private_palette
+from headless_palette import write_session_file
 import gi
 gi.require_version('GdkPixbuf', '2.0')
 from gi.repository import GdkPixbuf
@@ -171,12 +171,12 @@ try:
     palette.write_text(json.dumps(colors))
     # A reused Wayland display name can retain a previous suite's palette (e.g. 3×
     # text). Pin only this headless session's palette; never change desktop preferences.
-    palette_path = require_private_palette(Path(subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
+    palette_path = Path(subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
         "import os;print(os.path.join(os.environ['SCOTTLAND_SESSION_DIR'],os.environ['WAYLAND_DISPLAY']+'.palette.json'))"],
-        text=True).strip()))
+        text=True).strip())
     temporary = artifacts/'compositor-palette.json'
     temporary.write_text(json.dumps(colors))
-    palette_path.write_text(temporary.read_text())
+    write_session_file(palette_path, temporary.read_text())
     ids = []
     specs = [('Back', 980, 620), ('Middle', 780, 520), ('Front', 540, 380)]
     if sys.argv[2:] == ['--baseline-medium']:

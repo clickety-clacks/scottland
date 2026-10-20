@@ -16,16 +16,16 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from headless_palette import require_private_palette
+from headless_palette import write_session_file
 
 artifacts = Path(sys.argv[1]).resolve()
 clients = {}
 passed = failed = 0
 socket_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
     "import os;print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
-palette_path = require_private_palette(Path(subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
+palette_path = Path(subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
     "import os;print(os.path.join(os.environ['SCOTTLAND_SESSION_DIR'],os.environ['WAYLAND_DISPLAY']+'.palette.json'))"],
-    text=True).strip()))
+    text=True).strip())
 solve_max_ms = 0.0
 slice_units_max = 0
 pass_slices_max = 0
@@ -102,7 +102,7 @@ def settled(timeout=10):
 def set_palette(text_scale):
     colors = {'scheme': 'dark', 'background': '#1f232c', 'foreground': '#d8deea',
               'accent': '#81a1c1', 'text_scale': text_scale, 'reduced_motion': False}
-    palette_path.write_text(json.dumps(colors))
+    write_session_file(palette_path, json.dumps(colors))
     time.sleep(.6)
 
 

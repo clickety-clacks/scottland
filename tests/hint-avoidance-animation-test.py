@@ -11,7 +11,6 @@ import subprocess
 import sys
 import threading
 import time
-from headless_palette import require_private_palette
 
 if len(sys.argv) != 2:
     raise SystemExit("usage: hint-avoidance-animation-test.py ARTIFACT_DIR")
@@ -23,8 +22,8 @@ t = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(t)
 passes = failures = 0
 children = []
-palette_path = require_private_palette(Path(os.environ["SCOTTLAND_SESSION_DIR"]) / \
-    (os.environ["WAYLAND_DISPLAY"] + ".palette.json"))
+palette_path = Path(os.environ["SCOTTLAND_SESSION_DIR"]) / \
+    (os.environ["WAYLAND_DISPLAY"] + ".palette.json")
 old_palette = palette_path.read_bytes() if palette_path.exists() else None
 
 

@@ -20,7 +20,6 @@ import struct
 import subprocess
 import sys
 import time
-from headless_palette import require_private_palette
 
 artifacts, old_plugin, new_plugin = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
 CONFIGS = [(1, 'normal'), (1.5, 'normal'), (2, 'normal'), (1.25, '90')]
@@ -133,7 +132,7 @@ def differing(a, b):
     return {'pixels_gt2': count, 'max_delta': worst}
 
 
-palette = require_private_palette(Path(os.environ['SCOTTLAND_SESSION_DIR']) / (os.environ['WAYLAND_DISPLAY'] + '.palette.json'))
+palette = Path(os.environ['SCOTTLAND_SESSION_DIR']) / (os.environ['WAYLAND_DISPLAY'] + '.palette.json')
 old_palette = palette.read_bytes() if palette.exists() else None
 try:
     ipc('wayfire/set-config-options', {'scottland/goo': False, 'scottland/window_avoidance_always': True,

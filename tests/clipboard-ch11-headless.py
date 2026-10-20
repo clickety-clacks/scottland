@@ -10,7 +10,6 @@ import struct
 import subprocess
 import sys
 import time
-from headless_palette import require_private_palette
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -217,8 +216,8 @@ def capture(output, name=None):
 
 
 def palette_background():
-    path = require_private_palette(Path(os.environ["SCOTTLAND_SESSION_DIR"]) /
-            f"{Path(os.environ['WAYLAND_DISPLAY']).name}.palette.json")
+    path = Path(os.environ["SCOTTLAND_SESSION_DIR"]) / \
+            f"{Path(os.environ['WAYLAND_DISPLAY']).name}.palette.json"
     if path.is_file():
         return color(json.loads(path.read_text(encoding="utf-8")).get("background", "#1c1d22"))
     return color("#1c1d22")

@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from headless_palette import require_private_palette
+from headless_palette import replace_session_file, write_session_file
 
 artifacts = Path(sys.argv[1])
 clients = []
@@ -170,14 +170,13 @@ def wait_hint_settled(window_id):
 
 
 try:
-    # Ask the headless session for its palette path; isolated sessions keep it outside
-    # XDG_RUNTIME_DIR/scottland, and the compositor reads this same session-specific path.
-    palette = require_private_palette(Path(run('python3', '-c', "import os; print(os.path.join(os.environ['SCOTTLAND_SESSION_DIR'], os.environ['WAYLAND_DISPLAY']+'.palette.json'))")))
+    # Ask the headless session for its palette path and seed it through that session namespace.
+    palette = Path(run('python3', '-c', "import os; print(os.path.join(os.environ['SCOTTLAND_SESSION_DIR'], os.environ['WAYLAND_DISPLAY']+'.palette.json'))"))
     # Session socket names can be reused; seed this session's full palette explicitly.
     tmp = palette.with_suffix('.wk26.tmp')
-    tmp.write_text(json.dumps({'scheme':'light', 'background':'#f4f5f7',
+    write_session_file(tmp, json.dumps({'scheme':'light', 'background':'#f4f5f7',
         'foreground':'#232a35', 'accent':'#3b6ea8'}))
-    tmp.replace(palette)
+    replace_session_file(tmp, palette)
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'place/mode': 'pointer',
         'scottland/color_scheme': 'light', 'scottland/accent_color':'#3b6ea8ff'})
     left = spawn('Left card', 'foot', 10, 230)
@@ -268,9 +267,9 @@ try:
     hold()
     for scale in (1.5, 3):
         tmp = palette.with_suffix('.wk26.tmp')
-        tmp.write_text(json.dumps({'scheme':'dark', 'text_scale':scale,
+        write_session_file(tmp, json.dumps({'scheme':'dark', 'text_scale':scale,
             'background':'#1f232c', 'foreground':'#d8deea', 'accent':'#81a1c1'}))
-        tmp.replace(palette)
+        replace_session_file(tmp, palette)
         time.sleep(1.5)
         capture('stacked-text-'+str(scale), scale)
     release()

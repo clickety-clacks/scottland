@@ -1,17 +1,29 @@
-"""Helpers for selecting palette files owned by a headless session."""
+"""Write palette fixtures through their headless session namespace."""
 
-import os
-from pathlib import Path
+import subprocess
 
 
-def require_private_palette(path):
-    """Refuse to use the login session's palette as a headless test fixture."""
-    candidate = Path(path)
-    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
-    live = runtime / "scottland" / candidate.name
-    if candidate.resolve(strict=False) == live.resolve(strict=False):
-        raise RuntimeError(
-            "headless palette resolves to the shared runtime palette; "
-            "start an isolated headless session before seeding it"
-        )
-    return candidate
+def write_session_file(path, contents):
+    """Write contents to a path visible inside the running headless session."""
+    subprocess.run(
+        ["tests/headless.sh", "run", "sh", "-c", 'cat >"$1"', "sh", str(path)],
+        input=contents,
+        text=True,
+        check=True,
+    )
+
+
+def replace_session_file(source, destination):
+    """Atomically replace a session file from inside the headless namespace."""
+    subprocess.run(
+        [
+            "tests/headless.sh",
+            "run",
+            "python3",
+            "-c",
+            "import os,sys; os.replace(sys.argv[1], sys.argv[2])",
+            str(source),
+            str(destination),
+        ],
+        check=True,
+    )

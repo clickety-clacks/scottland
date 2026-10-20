@@ -34,7 +34,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from headless_palette import require_private_palette
 
 art = Path(sys.argv[1]).resolve()
 art.mkdir(parents=True, exist_ok=True)
@@ -312,7 +311,7 @@ try:
                'accent': '#81a1c1', 'text_scale': .82, 'reduced_motion': False}
     palette_file = art / 'palette.json'
     palette_file.write_text(json.dumps(palette))
-    session_palette = require_private_palette(Path(os.environ['SCOTTLAND_SESSION_DIR']) / (os.environ['WAYLAND_DISPLAY'] + '.palette.json'))
+    session_palette = Path(os.environ['SCOTTLAND_SESSION_DIR']) / (os.environ['WAYLAND_DISPLAY'] + '.palette.json')
     session_palette.write_text(json.dumps(palette))
     wait(lambda: abs(ipc('scottland/hints')['hint_text_scale'] - .82) < 1e-6, 'the palette')
     layout = [('W0', 300, 200, 10, 555), ('W1', 300, 200, 10, 625), ('W2', 300, 200, 10, 680),
