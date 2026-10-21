@@ -725,6 +725,97 @@
         if (!hint_flash_tick.is_connected())
             hint_flash_tick.set_timeout(16, [=] () { return step_hint_flashes(); });
     }
+    // WK39: the hold ring, for the one hold in progress. A hint hold draws it around that hint's
+    // badge; every pointer or touchpad hold draws it at the pointer, where the hand and the eyes
+    // are (the window's badge may be far away, covered, or not shown outside Window mode), in the
+    // target's hint color while hints show, else the accent. It fills from the press's own time,
+    // vanishes at once on a cancel and stays complete for a moment when the hold fires.
+    struct hold_ring_t
+    {
+        std::shared_ptr<scottland::windowing::hold_ring_node> node;
+        wf::output_t *output = nullptr;
+        std::chrono::steady_clock::time_point started;  // the press, on the steady clock
+        double delay = 500;
+        uint64_t hint = 0;     // ring around this window's hint badge (a hint hold)
+        uint64_t target = 0;   // the window a pointer hold acts on (for its color)
+        std::optional<std::chrono::steady_clock::time_point> fired;
+        bool placed = false;  // false: re-add in front (a drag just put its window there)
+    };
+    std::optional<hold_ring_t> hold_ring;
+    wf::wl_timer<true> hold_ring_tick;
+    void start_hold_ring(uint64_t hint, uint64_t target, double elapsed_ms, double delay_ms)
+    {
+        remove_hold_ring();
+        hold_ring_t ring;
+        ring.started = std::chrono::steady_clock::now() -
+            std::chrono::microseconds(int64_t(std::clamp(elapsed_ms, 0.0, delay_ms) * 1000));
+        ring.delay = delay_ms; ring.hint = hint; ring.target = target;
+        hold_ring = std::move(ring);
+        step_hold_ring();
+        if (!hold_ring_tick.is_connected()) hold_ring_tick.set_timeout(16, [=] () { return step_hold_ring(); });
+    }
+    void remove_hold_ring()
+    {
+        if (hold_ring && hold_ring->node) wf::scene::remove_child(hold_ring->node);
+        hold_ring.reset();
+        hold_ring_tick.disconnect();
+    }
+    // A cancel removes it at once; only the ring of the given kind (hint or pointer) is affected.
+    void cancel_hold_ring(bool hint_ring)
+    {
+        if (hold_ring && !hold_ring->fired && (hold_ring->hint != 0) == hint_ring) remove_hold_ring();
+    }
+    void complete_hold_ring()
+    {
+        if (!hold_ring || hold_ring->fired) return;
+        hold_ring->fired = std::chrono::steady_clock::now();
+        step_hold_ring();
+    }
+    bool step_hold_ring()
+    {
+        using namespace std::chrono;
+        if (!hold_ring) return false;
+        auto& ring = *hold_ring;
+        auto now = steady_clock::now();
+        // A hint hold that ended without firing (a release, another key, Alt) loses its ring
+        // even if no input path removed it.
+        if (ring.hint && !ring.fired && !window_keys.hold_waiting()) { remove_hold_ring(); return false; }
+        if (ring.fired && duration<double, std::milli>(now - *ring.fired).count() >=
+            scottland::windowing::hold_ring_linger) { remove_hold_ring(); return false; }
+        double progress = ring.fired ? 1.0 : scottland::windowing::hold_ring_progress(
+            duration<double, std::milli>(now - ring.started).count(), ring.delay, hints_reduced_motion);
+        wf::output_t *output = nullptr;  // null: in front of the whole scene, in layout coordinates
+        double cx = 0, cy = 0, radius = scottland::windowing::hold_ring_pointer;
+        auto color = scottland::windowing::hint_rgb{scottland::palette.accent.r, scottland::palette.accent.g,
+            scottland::palette.accent.b};
+        auto badge = ring.hint ? hint_visuals.find(ring.hint) : hint_visuals.end();
+        if (badge != hint_visuals.end() && badge->second.hint && badge->second.hint_output)
+        {
+            auto c = badge->second.hint->circle;
+            output = badge->second.hint_output;
+            cx = c.x + c.width / 2.0; cy = c.y + c.height / 2.0;
+            radius = c.width / 2.0 + scottland::windowing::hold_ring_gap;
+            color = color_for_hint(ensure_window_memory(ring.hint).hint_slot);
+        } else
+        {
+            // A dragged window is re-added in front of the whole scene (the live drag), so the
+            // pointer's ring goes there too, after it, in layout coordinates.
+            auto cursor = wf::get_core().get_cursor_position();
+            cx = cursor.x; cy = cursor.y;
+            if (window_keys.active && ring.target && model.windows.count(ring.target))
+                color = color_for_hint(ensure_window_memory(ring.target).hint_slot);
+        }
+        if (ring.node && (ring.output != output || !ring.placed)) { wf::scene::remove_child(ring.node); ring.node.reset(); }
+        if (!ring.node)
+        {
+            ring.node = std::make_shared<scottland::windowing::hold_ring_node>();
+            if (output) wf::scene::add_front(output->node_for_layer(wf::scene::layer::OVERLAY), ring.node);
+            else wf::scene::add_front(wf::get_core().scene(), ring.node);
+            ring.output = output; ring.placed = true;
+        }
+        ring.node->update(cx, cy, radius, scottland::windowing::hold_ring_width, color, progress);
+        return true;
+    }
     std::vector<scottland::windowing::rectangle> placement_obstacles(wf::output_t *output, uint64_t excluded)
     {
         std::vector<scottland::windowing::rectangle> rectangles;
@@ -983,13 +1074,21 @@
     static constexpr double PAIR_GAP = scottland::HALO; // a halo-sized gap (P7)
     wf::wl_timer<false> deferred_pair;
     wf::wl_idle_call deferred_pair_ready;
-    void pair_windows(uint64_t held_id, uint64_t partner_id, int attempts = 0)
+    // on_held_screen: the pair forms on the held window's screen and the focused one joins it there
+    // (a pointer or touchpad hold, 2026-10-05: "if you hold down on an unfocused window in
+    // another screen the focused window moves to that screen"); otherwise on the focused window's
+    // (the hint hold: "the window with the hint you're manipulating can move to the screen where
+    // the windows you choose to pair with exists").
+    void pair_windows(uint64_t held_id, uint64_t partner_id, bool on_held_screen = false, int attempts = 0)
     {
         auto held = wf::toplevel_cast(view_by_id(held_id));
         auto partner = wf::toplevel_cast(view_by_id(partner_id));
-        if (!held || !partner || held == partner || deferred_pair.is_connected()) return;
+        auto declined = [&] (const char *why) { LOGI("scottland: pairing ", held_id, " with ", partner_id, " declined: ", why); };
+        if (!held || !partner || held == partner) return declined("not two windows");
+        if (deferred_pair.is_connected()) return declined("another pair is waiting for full screen to end");
         auto held_shown = represented_view(held_id), partner_shown = represented_view(partner_id);
-        if (!held_shown || !partner_shown || !held_shown->get_output() || !partner_shown->get_output()) return;
+        if (!held_shown || !partner_shown || !held_shown->get_output() || !partner_shown->get_output())
+            return declined("a window is not shown");
         // Full screen ends first, as for an explicit cycle (WK12); the pair uses restored sizes.
         bool waiting = false;
         for (auto window : {held, partner})
@@ -1001,11 +1100,40 @@
         if (waiting)
         {
             if (attempts < 10) deferred_pair.set_timeout(100, [=] () {
-                deferred_pair_ready.run_once([=] () { pair_windows(held_id, partner_id, attempts + 1); }); });
+                deferred_pair_ready.run_once([=] () { pair_windows(held_id, partner_id, on_held_screen, attempts + 1); }); });
+            else declined("full screen did not end within a second");
             return;
         }
-        // The pair forms on the focused window's screen; the held one joins it there.
-        auto output = partner_shown->get_output();
+        auto plan = plan_pair(held_id, partner_id, on_held_screen);
+        if (!plan) return declined("no pair layout");
+        auto [left, right, fit, output] = *plan;
+        LOGI("scottland: pairing ", held_id, " with ", partner_id, " at ", fit.scale * 100,
+            "%, gap ", fit.gap, ", margin ", fit.margin);
+        place_paired(left, fit.left, fit.scale, output);
+        place_paired(right, fit.right, fit.scale, output);
+        // Both in front of the other center windows, which stay put and peek out (avoidance);
+        // the held window was selected and focused by its press (WK6) and stays so.
+        wf::view_bring_to_front(partner);
+        wf::get_core().default_wm->focus_raise_view(held);
+        declutter_signature.clear();
+        refresh_layout_avoidance();
+    }
+    // Where a pair goes, without moving anything (the pair, and a hold's offer preview of it).
+    struct pair_plan_t
+    {
+        wayfire_toplevel_view left, right;
+        scottland::windowing::pair_layout fit;
+        wf::output_t *output = nullptr;
+    };
+    std::optional<pair_plan_t> plan_pair(uint64_t held_id, uint64_t partner_id, bool on_held_screen = false)
+    {
+        auto held = wf::toplevel_cast(view_by_id(held_id));
+        auto partner = wf::toplevel_cast(view_by_id(partner_id));
+        if (!held || !partner || held == partner) return std::nullopt;
+        auto held_shown = represented_view(held_id), partner_shown = represented_view(partner_id);
+        if (!held_shown || !partner_shown || !held_shown->get_output() || !partner_shown->get_output()) return std::nullopt;
+        // The pair forms on one window's screen; the other joins it there (see pair_windows).
+        auto output = (on_held_screen ? held_shown : partner_shown)->get_output();
         // Keep the current left/right order across the whole layout (P1).
         auto global_x = [] (wayfire_toplevel_view view) {
             auto g = view->get_geometry();
@@ -1018,16 +1146,7 @@
         auto fit = scottland::windowing::fit_pair({double(lg.width), double(lg.height)},
             {double(rg.width), double(rg.height)},
             {double(a.x), double(a.y), double(a.width), double(a.height)}, PAIR_GAP, SCREEN_PADDING);
-        LOGI("scottland: pairing ", held_id, " with ", partner_id, " at ", fit.scale * 100,
-            "%, gap ", fit.gap, ", margin ", fit.margin);
-        place_paired(left, fit.left, fit.scale, output);
-        place_paired(right, fit.right, fit.scale, output);
-        // Both in front of the other center windows, which stay put and peek out (avoidance);
-        // the held window was selected and focused by its press (WK6) and stays so.
-        wf::view_bring_to_front(partner);
-        wf::get_core().default_wm->focus_raise_view(held);
-        declutter_signature.clear();
-        refresh_layout_avoidance();
+        return pair_plan_t{left, right, fit, output};
     }
     void place_paired(wayfire_toplevel_view window, scottland::windowing::point at, double scale,
         wf::output_t *output)
@@ -1055,14 +1174,17 @@
         if (auto link = link_of_window(window))
         {
             // A widget joins as its app window, opened from the rail into its place (tenet 3).
-            restore_window(*link, wf::pointf_t{at.x, at.y}, true);
+            restore_window(*link, wf::pointf_t{at.x, at.y}, !restore_without_grow);  // an offer already showed it
             if (window->get_output() != output) place();
             remember_pair();
             return;
         }
+        // From where it is drawn, including a hold offer's preview of this very result (WK39).
         auto drawn = hint_rectangle(shown ? shown : window);
         wf::pointf_t from{(drawn.x1 + drawn.x2) / 2, (drawn.y1 + drawn.y2) / 2};
         double from_scale = displayed_scale(window);
+        if (auto frame = frame_of(window, false)) from_scale *= frame->drag_layout_scale;
+        set_drag_layout_offset(window, 0, 0, 1);
         if (window->get_output() != output)
         {
             auto was = window->get_output()->get_layout_geometry(), now = output->get_layout_geometry();
@@ -1084,7 +1206,9 @@
     void arm_hint_hold()
     {
         hint_hold.set_timeout(std::max(1u, window_keys.hold_remaining(now_msec())), [=] () {
-            if (!window_keys.hold_due(now_msec()) && window_keys.hold_waiting())
+            auto now = now_msec();
+            if (window_keys.hold_waiting() && window_keys.hold_remaining(now) == 0) complete_hold_ring();
+            if (!window_keys.hold_due(now) && window_keys.hold_waiting())
                 hint_hold_retry.run_once([=] () { if (window_keys.hold_waiting()) arm_hint_hold(); });
         });
     }
@@ -1818,6 +1942,7 @@
     void end_window_keys()
     {
         window_keys.interrupt(); // Alt release: a focused window's waiting press acts first
+        cancel_hold_ring(true);
         arrow_repeats.clear();
         window_keys.end(); declutter_signature.clear();
         window_filter.exit();
@@ -1884,7 +2009,10 @@
         if (!down && swallowed_keys.erase(code))
         {
             if (auto letter = window_hint_letter(keyboard, code))
+            {
                 window_keys.release(*letter, key_event_time(ev->event));
+                if (!window_keys.hold_waiting()) cancel_hold_ring(true); // released: a tap
+            }
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
             return; // finish our own pair; this is not a new compositor grab
         }
@@ -2004,6 +2132,7 @@
         // Another key ends a hint hold; Esc also drops a focused window's waiting press (WK35).
         if (code == KEY_ESC && first) window_keys.cancel_pending();
         else if (first || arrow_key(code)) window_keys.interrupt();
+        if (!window_keys.hold_waiting()) cancel_hold_ring(true); // another key ended the hold
         if (arrow_key(code)) { press_arrow(code, keyboard, first); return; }
         if (!first) return;
         if (code == KEY_ESC)
@@ -2032,7 +2161,13 @@
                 window_keys.refresh(window_entries(true));
                 window_keys.hold_delay = std::clamp(int(window_hold_delay), 1, 3000);
                 window_keys.letter(*letter, key_event_time(ev->event));
-                if (window_keys.hold_waiting()) arm_hint_hold();
+                if (window_keys.hold_waiting())
+                {
+                    arm_hint_hold();
+                    double delay = window_keys.hold_delay;
+                    start_hold_ring(window_keys.hold_window(), window_keys.hold_window(),
+                        delay - window_keys.hold_remaining(now_msec()), delay);
+                }
             }
         }
     };
@@ -2091,6 +2226,19 @@
         reply["hint_step_count"] = int64_t(hint_step_count);
         reply["hint_step_animation"] = hint_step_animation;
         reply["hint_step_offset"] = hint_step_offset;
+        reply["hold_ring"] = wf::json_t();
+        reply["hold_ring"]["visible"] = hold_ring && hold_ring->node && hold_ring->node->progress > 0;
+        if (hold_ring && hold_ring->node)
+        {
+            // Diagnostics: where the ring is drawn (output-local) and how full; tests judge pixels.
+            auto& n = *hold_ring->node;
+            reply["hold_ring"]["x"] = n.cx; reply["hold_ring"]["y"] = n.cy;
+            reply["hold_ring"]["radius"] = n.radius; reply["hold_ring"]["line"] = n.line;
+            reply["hold_ring"]["progress"] = n.progress; reply["hold_ring"]["fired"] = bool(hold_ring->fired);
+            reply["hold_ring"]["output"] = hold_ring->output ? hold_ring->output->to_string() : ""; // "": layout coordinates
+            reply["hold_ring"]["color"] = wf::json_t::array();
+            for (double c : {n.color.r, n.color.g, n.color.b}) reply["hold_ring"]["color"].append(c);
+        }
         reply["selected"] = int64_t(window_keys.selected); reply["hints"] = wf::json_t::array();
         window_keys.refresh(window_entries(true));
         for (auto e : window_keys.entries)
@@ -2229,6 +2377,8 @@
             keyboard_selection = true; pair_windows(held, partner); };
         window_keys.solo = [=] (uint64_t id) { solo_window(id); };
         window_keys.gather = [=] () { gather_all(); };
+        window_keys.hold_declined = [=] (uint64_t id, const char *why) {
+            LOGI("scottland: hint hold on ", id, " declined: ", why); };
         window_keys.close = [=] (uint64_t id) { auto view = wf::toplevel_cast(view_by_id(id));
             if (auto link = link_of_window(view)) close_linked(*link); else if (view) view->close(); };
         wf::get_core().bindings->add_key(app_alt_space_probe, &app_alt_space_probe_callback);
@@ -2249,7 +2399,7 @@
         hint_hold.disconnect(); hint_hold_retry.disconnect(); deferred_pair.disconnect(); deferred_pair_ready.disconnect();
         hint_registration.disconnect(); deferred_ready.disconnect();
         stop_keyboard_motion();
-        end_center_switcher(false); hint_flash_tick.disconnect();
+        end_center_switcher(false); hint_flash_tick.disconnect(); remove_hold_ring();
         for (auto& [id, flash] : hint_flashes) if (flash.node) wf::scene::remove_child(flash.node);
         hint_flashes.clear();
         window_keys.end();
