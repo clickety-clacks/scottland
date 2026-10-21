@@ -69,6 +69,15 @@ def scene(id):
     return (f['x'], f['y'], f['x'] + f['width'], f['y'] + f['height'])
 
 
+def goo_rect(id):
+    for screen in ipc('scottland/goo-state').get('screens', []):
+        for source in screen.get('source_rects', []):
+            if source['id'] == id and not source['hint_circle']:
+                return (source['x'], source['y'], source['x'] + source['width'],
+                        source['y'] + source['height'])
+    return None
+
+
 def capture(name):
     png = art / (name + '.png')
     subprocess.run(['grim', str(png)], check=True)
@@ -197,11 +206,18 @@ def release():
     button(False); key('LEFTMETA', False)
 
 
-def strip_shows(name, phase, covered, title, timeout, covering_title=None):
+def strip_shows(name, phase, covered, title, timeout, covering_title=None, before_capture=None):
     """Wait for the covered window's strip to show in captured pixels; fail with the last capture."""
     last = {}
     def look():
+        cover_state = None
+        if before_capture is not None:
+            ready, cover_state = before_capture()
+            if not ready:
+                last.clear(); last.update({'cover_state': cover_state})
+                return False, cover_state
         found, row = observe(name, phase, covered, title, quiet=True, covering_title=covering_title)
+        if cover_state is not None: row['cover_state'] = cover_state
         last.clear(); last.update(row)
         return found, {k: row[k] for k in ('pixels', 'scene_frame', 'diagnostic')}
     try:
@@ -241,11 +257,27 @@ try:
                 release()
             else:
                 # Under 3 s: a build that still has the drag audition must not start one meanwhile.
+                prior_cover = [None]
+                held_cover_state = {}
+                def cover_ready():
+                    v = layout(covering)
+                    f = v.get('scene_frame') or v['frame']
+                    frame = (f['x'], f['y'], f['x'] + f['width'], f['y'] + f['height'])
+                    island = goo_rect(covering)
+                    inside = island is not None and island[0] >= frame[0] and island[1] >= frame[1] and \
+                        island[2] <= frame[2] and island[3] <= frame[3]
+                    current = (v['applied_scale'], frame)
+                    stable = prior_cover[0] == current
+                    prior_cover[0] = current
+                    state = {'scale': v['applied_scale'], 'scene_frame': frame, 'goo_island': island,
+                             'goo_inside_frame': inside, 'scale_and_frame_stable': stable}
+                    held_cover_state.clear(); held_cover_state.update(state)
+                    return stable and inside, state
                 ok, detail = strip_shows(name, 'held', covered, title, 2.5,
-                                         covering_title='Big')
+                                         covering_title='Big', before_capture=cover_ready)
                 check(ok, f'{name}: while the cover is held, the covered window shows a strip (pixels)', detail)
                 held_pixels = detail.get('cover_pixel_bounds') if isinstance(detail, dict) else None
-                held_scene = scene(covering)  # diagnostic telemetry; pixels are the P14 oracle
+                held_scene = held_cover_state.get('scene_frame')  # stable telemetry at the held capture
                 release()
             if after_drop: after_drop()
             settled()
