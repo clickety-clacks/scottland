@@ -223,6 +223,12 @@ Candidate source; eight focused helper behavior scenarios pass; compositor build
 | E15 | Integrations can ask whether a session lock holds the screen (`scottland/session-state` → `locked`): true while an output is inhibited by Wayfire's session-lock and shows the lock surface, or the lock's stand-in after the lock client died; false while locking is still in progress. Shortcuts that are not marked to run on the lock screen (E13, E11) do not run while locked. | implemented (headless, ARM test machine, 2026-10-05) |
 | E16 | `scottland-ctl` retains live settings, window listing/presentation and option access, and adds focused terminal cwd lookup (falling back to the session HOME), app-id/title focus, session-lock detection, close-all, distro-locker requests for lock/lid-close, a bounded secure-lock wait before suspend, and a logind delay inhibitor that runs that wait on prepare-for-sleep. Core supplies no lock screen, clamshell behavior or workspace navigation. | shared-runner verification pending |
 
+## Source adoption
+
+| ID | Invariant | Status |
+|---|---|---|
+| SA1 | Package adoption requires `base.commit` to match the full source commit reported by the packaged `scottland-source`; it refuses a missing or mismatched source identity and any absent or non-executable required packaged tool, and activates only a complete detached source store with its commit marker and required executable tools. | Candidate; focused package-identity and tool-completeness regressions added, execution pending. |
+
 ## Terminal theme push
 
 The `scottland-display` session watcher observes Gooarchy's `current-theme` location for changes

@@ -1,14 +1,25 @@
 use crate::paths::Paths;
 use crate::system::System;
 use crate::workspace::Workspace;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_SCRATCH: AtomicUsize = AtomicUsize::new(0);
+
+fn write_executable(path: &Path, contents: &str) {
+    fs::write(path, contents).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn package_system(root: &Path) -> System {
+    System {
+        paths: Paths::under_root("example", root, root.join("state")),
+    }
+}
 
 #[test]
 fn tool_names_accept_workspace_suffixes_and_binary_names() {
@@ -250,6 +261,68 @@ fn installed_loose_ref_symlink_survives_supported_git_operations() {
 }
 
 #[test]
+fn packaged_source_cli_must_report_the_package_commit() {
+    let scratch = Scratch::new();
+    let system = package_system(&scratch.0.join("package-root"));
+    fs::create_dir_all(&system.paths.base_tools).unwrap();
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    let binary = system.paths.base_tools.join("example-source");
+    write_executable(
+        &binary,
+        &format!("#!/bin/sh\nprintf 'example-source {commit}\\n'\n"),
+    );
+
+    system.verify_packaged_source_identity(commit).unwrap();
+
+    let error = system
+        .verify_packaged_source_identity("abcdef0123456789abcdef0123456789abcdef01")
+        .expect_err("a mismatched packaged CLI must be refused");
+    assert!(error.to_string().contains("does not report source commit"));
+}
+
+#[test]
+fn missing_packaged_source_cli_is_refused() {
+    let scratch = Scratch::new();
+    let system = package_system(&scratch.0.join("package-root"));
+    fs::create_dir_all(&system.paths.base_tools).unwrap();
+
+    let error = system
+        .verify_packaged_source_identity("0123456789abcdef0123456789abcdef01234567")
+        .expect_err("an absent packaged CLI must be refused");
+    assert!(error
+        .to_string()
+        .contains("cannot inspect packaged source CLI"));
+}
+
+#[test]
+fn package_tool_set_must_be_complete_and_executable() {
+    let scratch = Scratch::new();
+    let system = package_system(&scratch.0.join("package-root"));
+    fs::create_dir_all(&system.paths.base_tools).unwrap();
+    let expected = BTreeSet::from(["example-source".to_owned(), "example-tool".to_owned()]);
+    assert!(system
+        .require_packaged_tools(&BTreeSet::from(["example-tool".to_owned()]))
+        .is_err());
+    write_executable(
+        &system.paths.base_tools.join("example-source"),
+        "#!/bin/sh\nexit 0\n",
+    );
+
+    assert!(system.require_packaged_tools(&expected).is_err());
+    fs::write(
+        system.paths.base_tools.join("example-tool"),
+        "#!/bin/sh\nexit 0\n",
+    )
+    .unwrap();
+    assert!(system.require_packaged_tools(&expected).is_err());
+    write_executable(
+        &system.paths.base_tools.join("example-tool"),
+        "#!/bin/sh\nexit 0\n",
+    );
+    system.require_packaged_tools(&expected).unwrap();
+}
+
+#[test]
 fn package_removal_drops_switch_before_mechanism_links() {
     let scratch = Scratch::new();
     let paths = Paths::under_root("example", &scratch.0, scratch.0.join("state"));
@@ -322,7 +395,10 @@ fn adopt_downgrade_preparation_failure_preserves_base() {
     let error = system
         .adopt_release(&release, &empty_binaries)
         .expect_err("missing package binary must fail target-store preparation");
-    assert!(error.to_string().contains("cannot run"), "{error}");
+    assert!(
+        error.to_string().contains("cannot inspect packaged tool"),
+        "{error}"
+    );
     assert_eq!(system.base().unwrap(), Some(installed.clone()));
     assert_eq!(system.installed().unwrap(), Some(installed));
 }

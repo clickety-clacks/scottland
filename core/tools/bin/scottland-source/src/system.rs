@@ -7,7 +7,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
+use std::os::unix::fs::{symlink, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -30,6 +30,12 @@ pub struct ReconcileReport {
 pub struct RemovalReport {
     pub old_installed: Option<String>,
     pub removed: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BinaryOrigin {
+    Package,
+    UserBuild,
 }
 
 impl System {
@@ -279,6 +285,7 @@ impl System {
         if !git::valid_object_id(&release) {
             return Err(Error::new("base.commit must contain a full commit id"));
         }
+        self.verify_packaged_source_identity(&release)?;
 
         self.ensure_source_repository()?;
         if self.paths.switch.exists() {
@@ -293,6 +300,9 @@ impl System {
         self.fetch_from_path(&self.paths.package_bundle, &release)?;
         set_tree_readable(&self.paths.source_repo)?;
         let release = self.resolve_commit(&release)?;
+        let expected_tools =
+            crate::workspace::bin_names_at(&self.paths.source_repo, &self.paths.product, &release)?;
+        self.require_packaged_tools(&expected_tools)?;
         self.set_ref("release", &release)?;
 
         let before = self.installed()?;
@@ -329,7 +339,12 @@ impl System {
         release: &str,
         binary_directory: &Path,
     ) -> Result<Option<Vec<String>>> {
-        let workspace = self.prepare_store_from_binaries(release, None, binary_directory, true)?;
+        let workspace = self.prepare_store_from_binaries(
+            release,
+            None,
+            binary_directory,
+            BinaryOrigin::Package,
+        )?;
         let current = self.installed()?;
         let base = self.base()?;
         let mut update_base = false;
@@ -422,7 +437,12 @@ impl System {
         }
 
         let workspace = Workspace::discover(working_clone, &self.paths.product)?;
-        self.prepare_store_from_binaries(&commit, Some(&workspace), binary_directory, false)?;
+        self.prepare_store_from_binaries(
+            &commit,
+            Some(&workspace),
+            binary_directory,
+            BinaryOrigin::UserBuild,
+        )?;
         if before.is_none() {
             let release = release_commit.as_deref().unwrap_or(&commit);
             self.set_ref("release", release)?;
@@ -559,7 +579,7 @@ impl System {
         commit: &str,
         expected_workspace: Option<&Workspace>,
         binary_directory: &Path,
-        verify_binaries: bool,
+        origin: BinaryOrigin,
     ) -> Result<Workspace> {
         let destination = self.paths.build_dir(commit);
         let source = self.paths.build_source(commit);
@@ -615,19 +635,18 @@ impl System {
         fs::create_dir_all(&bin)?;
         for name in workspace.bins.keys() {
             let built = binary_directory.join(name);
-            if verify_binaries {
-                self.verify_binary_commit(&built, commit)?;
-            }
             let installed = bin.join(name);
-            if verify_binaries {
-                fs::copy(&built, &installed).map_err(|error| {
-                    Error::new(format!(
-                        "could not copy built tool {}: {error}",
-                        built.display()
-                    ))
-                })?;
-            } else {
-                copy_user_binary(&built, &installed)?;
+            match origin {
+                BinaryOrigin::Package => {
+                    require_executable_regular_file(&built, "packaged tool")?;
+                    fs::copy(&built, &installed).map_err(|error| {
+                        Error::new(format!(
+                            "could not copy packaged tool {}: {error}",
+                            built.display()
+                        ))
+                    })?;
+                }
+                BinaryOrigin::UserBuild => copy_user_binary(&built, &installed)?,
             }
             fs::set_permissions(&installed, fs::Permissions::from_mode(0o755))?;
         }
@@ -734,22 +753,44 @@ impl System {
             .output()
             .map_err(|error| {
                 Error::new(format!(
-                    "cannot run {} --version: {error}",
+                    "cannot run packaged source CLI {} --version: {error}",
                     binary.display()
                 ))
             })?;
         if !output.status.success() {
             return Err(Error::new(format!(
-                "{} --version failed; the build store was not activated",
+                "packaged source CLI {} --version failed; the package was not adopted",
                 binary.display()
             )));
         }
         let version = String::from_utf8_lossy(&output.stdout);
         if version.split_whitespace().last() != Some(commit) {
             return Err(Error::new(format!(
-                "{} does not report build commit {commit}; the build store was not activated",
+                "packaged source CLI {} does not report source commit {commit}; the package was not adopted",
                 binary.display()
             )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn verify_packaged_source_identity(&self, commit: &str) -> Result<()> {
+        let binary = self
+            .paths
+            .base_tools
+            .join(format!("{}-source", self.paths.product));
+        require_executable_regular_file(&binary, "packaged source CLI")?;
+        self.verify_binary_commit(&binary, commit)
+    }
+
+    pub(crate) fn require_packaged_tools(&self, expected: &BTreeSet<String>) -> Result<()> {
+        let source_cli = format!("{}-source", self.paths.product);
+        if !expected.contains(&source_cli) {
+            return Err(Error::new(format!(
+                "packaged source bundle does not define {source_cli}"
+            )));
+        }
+        for name in expected {
+            require_executable_regular_file(&self.paths.base_tools.join(name), "packaged tool")?;
         }
         Ok(())
     }
@@ -1339,6 +1380,22 @@ fn is_product_binary(name: &str, product: &str) -> bool {
 fn is_executable(path: &Path) -> bool {
     fs::metadata(path)
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+fn require_executable_regular_file(path: &Path, description: &str) -> Result<()> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        Error::new(format!(
+            "cannot inspect {description} {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.file_type().is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err(Error::new(format!(
+            "{description} {} is not an executable regular file",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn set_tree_readable(root: &Path) -> Result<()> {
