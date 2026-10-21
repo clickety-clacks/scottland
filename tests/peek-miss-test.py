@@ -264,8 +264,10 @@ try:
                     f = v.get('scene_frame') or v['frame']
                     frame = (f['x'], f['y'], f['x'] + f['width'], f['y'] + f['height'])
                     island = goo_rect(covering)
-                    inside = island is not None and island[0] >= frame[0] and island[1] >= frame[1] and \
-                        island[2] <= frame[2] and island[3] <= frame[3]
+                    epsilon = 0.01  # allow float32 round-trip error at shared edges
+                    inside = island is not None and island[0] >= frame[0] - epsilon and \
+                        island[1] >= frame[1] - epsilon and island[2] <= frame[2] + epsilon and \
+                        island[3] <= frame[3] + epsilon
                     current = (v['applied_scale'], frame)
                     stable = prior_cover[0] == current
                     prior_cover[0] = current
