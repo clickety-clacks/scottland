@@ -150,7 +150,7 @@ def launch(name, x, y):
     ipc('stipc/move_cursor', {'x': round(x), 'y': round(y)})
     log = artifacts / (name + '.keys')
     log.write_text('')
-    client = subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+    client = subprocess.Popen(['python3',
         str(Path('tests/windowing-key-recorder.py').resolve()), name, str(log)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     clients.append(client)
@@ -326,7 +326,7 @@ try:
     check(memories[1]['set'] and memories[1].get('pin') == pin, 'the left periphery memory keeps the pin (WP1)',
           memories[1])
     (artifacts / 'pinned-before.json').write_text(json.dumps({'view': v, 'hint': hint(a)}, indent=2))
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts / 'pinned-before.png')], check=True)
+    subprocess.run(['grim', str(artifacts / 'pinned-before.png')], check=True)
 
     cycle(a, 'Pinned')
     v = view('Pinned')
@@ -348,7 +348,7 @@ try:
     check(max(settled) - min(settled) < .003 and abs(settled[-1] - pin) < .003,
           'no scale jump after the cycle lands', (min(settled), max(settled)))
     (artifacts / 'pinned-cycle.json').write_text(json.dumps({'samples': samples, 'settled': settled}, indent=2))
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts / 'pinned-after.png')], check=True)
+    subprocess.run(['grim', str(artifacts / 'pinned-after.png')], check=True)
 
     # --- No leak: a plain drag to the right periphery has no pin there; the left pin stays put.
     drag('Pinned', width * .78, height * .5)

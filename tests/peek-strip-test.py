@@ -106,7 +106,7 @@ def set_palette(text_scale):
 def spawn(name, w, h, color):
     palette = artifacts/f'app-{name}.json'
     palette.write_text(json.dumps({'background': color}))
-    clients[name] = subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+    clients[name] = subprocess.Popen(['python3',
         str(Path('tests/hint-style-app.py').resolve()), name, str(w), str(h), str(palette)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     v = wait(lambda: next((v for v in views().values() if v['title'] == name and 'frame' in v), None))
@@ -157,9 +157,9 @@ def order(hs):
 
 def screenshot(name):
     png = artifacts/(name+'.png')
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(png)], check=True)
+    subprocess.run(['grim', str(png)], check=True)
     ppm = artifacts/(name+'.ppm')
-    subprocess.run(['tests/headless.sh', 'run', 'grim', '-t', 'ppm', str(ppm)], check=True)
+    subprocess.run(['grim', '-t', 'ppm', str(ppm)], check=True)
     data = ppm.read_bytes()
     parts, pos = [], 0
     while len(parts) < 4:

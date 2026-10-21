@@ -113,7 +113,7 @@ def capture(name, order):
     vs, hs = views(), hints()
     (artifacts/(name+'.json')).write_text(json.dumps({'views': vs, 'hints': hs, 'front_to_back': order}, indent=2))
     path = artifacts/(name+'.png')
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(path)], check=True)
+    subprocess.run(['grim', str(path)], check=True)
     image = GdkPixbuf.Pixbuf.new_from_file(str(path))
     pixels, stride, channels = image.get_pixels(), image.get_rowstride(), image.get_n_channels()
     foreground = []
@@ -179,7 +179,7 @@ try:
     if sys.argv[2:] == ['--baseline-medium']:
         specs = [('Back', 400, 280), ('Middle', 480, 300), ('Front', 540, 380)]
     for name, w, h in specs:
-        clients.append(subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+        clients.append(subprocess.Popen(['python3',
             str(Path('tests/hint-style-app.py').resolve()), name, str(w), str(h), str(palette)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         v = wait(lambda: next((v for v in views().values() if v['title'] == name and 'frame' in v), None))
@@ -189,7 +189,7 @@ try:
     before = views()
     before_hints = hints()
     original_overlap = overlap_sum([rect(before[i]) for i in ids])
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'stack-before.png')], check=True)
+    subprocess.run(['grim', str(artifacts/'stack-before.png')], check=True)
     hold()
     if sys.argv[2:] in (['--baseline'], ['--baseline-medium']):
         # Run this same real-input fixture in an archived baseline checkout. Its old IPC
@@ -198,7 +198,7 @@ try:
         old_overlap = overlap_sum([rect(drawn[i], state[i]) for i in ids])
         (artifacts/'baseline.json').write_text(json.dumps({'views': drawn, 'hints': state,
             'unheld_overlap': original_overlap, 'held_overlap': old_overlap}, indent=2))
-        subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'baseline-held.png')], check=True)
+        subprocess.run(['grim', str(artifacts/'baseline-held.png')], check=True)
         print(f'Baseline real-Alt fixture: unheld {original_overlap}, held {old_overlap}', flush=True)
         raise SystemExit(0)
     vs, hs = capture('stack-held', list(reversed(ids)))
@@ -277,7 +277,7 @@ try:
     wait(lambda: not views())
     medium = []
     for name, w, h in [('Small', 400, 280), ('Medium', 480, 300), ('Larger', 540, 380)]:
-        clients.append(subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+        clients.append(subprocess.Popen(['python3',
             str(Path('tests/hint-style-app.py').resolve()), name, str(w), str(h), str(palette)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         v = wait(lambda: next((v for v in views().values() if v['title'] == name and 'frame' in v), None))
@@ -308,7 +308,7 @@ try:
     # room where its zone allows (peek-strip decision 5); the focused front window stays put.
     peeking = []
     for name, x in [('PeekingBack', 640), ('CoveringFront', 720)]:
-        clients.append(subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+        clients.append(subprocess.Popen(['python3',
             str(Path('tests/hint-style-app.py').resolve()), name, '800', '520', str(palette)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         v = wait(lambda: next((v for v in views().values() if v['title'] == name and 'frame' in v), None))
@@ -338,7 +338,7 @@ try:
     # Fully covered rear windows can move around the focused front window.
     huge = []
     for name in ('HugeBack', 'HugeMiddle', 'HugeFront'):
-        clients.append(subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+        clients.append(subprocess.Popen(['python3',
             str(Path('tests/hint-style-app.py').resolve()), name, '1000', '600', str(palette)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         v = wait(lambda: next((v for v in views().values() if v['title'] == name and 'frame' in v), None))
@@ -398,7 +398,7 @@ try:
     drag_before = rect(views()[dragged])
     drag_x = round(drag_hint['badge']['x']+drag_hint['badge']['size']/2)
     drag_y = round(drag_hint['badge']['y']+drag_hint['badge']['size']/2)
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'hint-drag-before.png')], check=True)
+    subprocess.run(['grim', str(artifacts/'hint-drag-before.png')], check=True)
     ipc('stipc/move_cursor', {'x': drag_x, 'y': drag_y})
     key('LEFTMETA', True)
     ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'press'})
@@ -412,8 +412,8 @@ try:
           abs(rect(views()[dragged])[0]-drag_before[0]) > 20 and
           all(abs(h['dx'])+abs(h['dy']) < .1 for h in hints().values()),
           'dragging a shifted window keeps its drop and returns every hint offset to zero')
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'hint-drag-after.png')], check=True)
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'no-avoidance-before-drag.png')], check=True)
+    subprocess.run(['grim', str(artifacts/'hint-drag-after.png')], check=True)
+    subprocess.run(['grim', str(artifacts/'no-avoidance-before-drag.png')], check=True)
     real_before = rect(views()[huge[0]])
     check(real_before[2] > 700, 'pointer fixture keeps the focused surface an ordinary window')
     cx, cy = real_before[0]+real_before[2]/2, real_before[1]+real_before[3]/2
@@ -439,7 +439,7 @@ try:
     check(abs(rect(views()[huge[0]])[0] - real_before[0]) > 20 and
           all(abs(h['dx'])+abs(h['dy']) < .1 for h in hints().values()),
           'after pointer drop, the real move remains with no hint offsets')
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'no-avoidance-after-drag.png')], check=True)
+    subprocess.run(['grim', str(artifacts/'no-avoidance-after-drag.png')], check=True)
     # Esc also stops a live coast without undoing the movement the user requested.
     before_esc_move = rect(views()[huge[0]])
     hold()
