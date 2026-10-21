@@ -12,6 +12,12 @@ pub struct Window {
     pub pid: u32,
     pub app_id: String,
     pub title: String,
+    pub provenance: Option<Provenance>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Provenance {
+    pub name: Option<String>,
 }
 
 pub fn read_windows(socket: &Path) -> Result<Vec<Window>, String> {
@@ -75,9 +81,39 @@ pub fn read_windows(socket: &Path) -> Result<Vec<Window>, String> {
                 pid,
                 app_id: string_member(view, "app_id", id)?,
                 title: string_member(view, "title", id)?,
+                provenance: provenance_member(view, id)?,
             })
         })
         .collect()
+}
+
+fn provenance_member(view: &Value, id: u64) -> Result<Option<Provenance>, String> {
+    let Some(value) = view.get("provenance") else {
+        return Ok(None);
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("Scottland IPC window {id} has malformed provenance"))?;
+    let optional_text = |key: &str| -> Result<Option<String>, String> {
+        object
+            .get(key)
+            .map(|value| {
+                value.as_str().map(str::to_string).ok_or_else(|| {
+                    format!("Scottland IPC window {id} provenance {key} is not a string")
+                })
+            })
+            .transpose()
+    };
+    if object.get("launched_at").and_then(Value::as_i64).is_none() {
+        return Err(format!(
+            "Scottland IPC window {id} provenance has no launched_at"
+        ));
+    }
+    let name = optional_text("name")?;
+    optional_text("sender")?;
+    optional_text("launcher")?;
+    optional_text("knock")?;
+    Ok(Some(Provenance { name }))
 }
 
 fn string_member(view: &Value, key: &str, id: u64) -> Result<String, String> {
@@ -89,12 +125,31 @@ fn string_member(view: &Value, key: &str, id: u64) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::string_member;
+    use super::{provenance_member, string_member};
     use serde_json::json;
 
     #[test]
     fn rejects_missing_or_non_string_window_facts() {
         assert!(string_member(&json!({"title": 3}), "title", 17).is_err());
         assert!(string_member(&json!({}), "app_id", 17).is_err());
+    }
+
+    #[test]
+    fn reads_the_declared_name_and_requires_the_plugin_timestamp() {
+        let provenance = provenance_member(
+            &json!({
+                "provenance": {
+                    "name": "deploy",
+                    "sender": "agentd://example-host/inst-7/48211:9127734",
+                    "launched_at": 1791440000000_i64
+                }
+            }),
+            17,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(provenance.name.as_deref(), Some("deploy"));
+        assert_eq!(provenance.name.as_deref(), Some("deploy"));
+        assert!(provenance_member(&json!({"provenance": {"name": "deploy"}}), 17).is_err());
     }
 }

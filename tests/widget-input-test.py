@@ -11,6 +11,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import math
 import re
 import os
 from pathlib import Path
@@ -669,9 +670,17 @@ def modes():
     alt_hold()
     check("WG16 Alt in hidden mode brings widgets in expanded",
           all(placed(t, "in") and settled(lambda t=t: wide(t)) for t in titles), [link(t) for t in titles])
+    brought_in = {link(t)["window"] for t in titles}
+    current_hints = ipc.call("scottland/hints")["hints"]
+    remaining_ease = max((math.hypot(h["target_dx"] - h["dx"], h["target_dy"] - h["dy"])
+                          for h in current_hints if h["window"] in brought_in), default=0.0) / 1000.0
+    hint_timeout = min(3.0, remaining_ease + 1.0)  # WK41: remaining ease at 1,000 px/s, plus its 1 s bound
+    def brought_in_hints_visible():
+        visible = {h["window"] for h in ipc.call("scottland/hints")["hints"] if h["visible"]}
+        return brought_in <= visible
+    hints_ready = settled(brought_in_hints_visible, timeout=hint_timeout)
     check("WG16 widgets brought in by Alt have their hints",
-          all(any(h["window"] == link(t)["window"] and h["visible"] for h in ipc.call("scottland/hints")["hints"])
-              for t in titles), ipc.call("scottland/hints")["hints"])
+          hints_ready, ipc.call("scottland/hints")["hints"])
     shot("alt-hidden")
     key("LEFTALT", False)
     check("WG16 Alt release hides them again", mode() == "hidden" and all(placed(t, "away") for t in titles))
@@ -760,7 +769,8 @@ def modes():
         shutil.copyfile("build/libscottland.so", fresh)
         plugins = ipc.call("wayfire/get-config-option", {"option": "core/plugins"})["value"]
         changed = " ".join(str(fresh) if p == "scottland" or "/libscottland-" in p else p for p in plugins.split())
-        mark = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
+        mark = Path(os.environ.get("SCOTTLAND_SESSION_DIR") or
+                    str(Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland")) / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
         def reload_to(value):
             mark.touch()
             try:

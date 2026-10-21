@@ -2,6 +2,7 @@
 """WK31: a window nothing covers has its hint at its exact center, with real input."""
 import json
 import math
+import os
 import socket
 import struct
 import subprocess
@@ -12,8 +13,7 @@ from pathlib import Path
 artifacts = Path(sys.argv[1]).resolve()
 clients = []
 passed = failed = 0
-socket_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-    "import os;print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
+socket_path = os.environ['WAYFIRE_SOCKET']
 
 
 def ipc(method, data=None):
@@ -149,7 +149,7 @@ def capture(name):
             'center_error': center_error(i, vs, hs) if 'badge' in hs[i] else None}
     (artifacts/(name+'.json')).write_text(json.dumps({'front_to_back': [vs[i]['title'] for i in order],
         'windows': report, 'hints': hs, 'views': vs}, indent=2))
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/(name+'.png'))], check=True)
+    subprocess.run(['grim', str(artifacts/(name+'.png'))], check=True)
     for title, w in report.items():
         print(f'      {name}: {title:6} uncovered={w["uncovered"]!s:5} '
               f'center=({w["center"][0]:.1f},{w["center"][1]:.1f}) badge='
@@ -184,15 +184,13 @@ try:
     colors = {'scheme': 'dark', 'background': '#1f232c', 'foreground': '#d8deea',
               'accent': '#81a1c1', 'text_scale': 1, 'reduced_motion': False}
     palette.write_text(json.dumps(colors))
-    palette_path = Path(subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-        "import os;print(os.path.join(os.environ['XDG_RUNTIME_DIR'],'scottland',os.environ['WAYLAND_DISPLAY']+'.palette.json'))"],
-        text=True).strip())
+    palette_path = Path(os.environ['SCOTTLAND_SESSION_DIR']) / (os.environ['WAYLAND_DISPLAY'] + '.palette.json')
     palette_path.write_text(json.dumps(colors))
     ids = {}
     # Side sits alone; Back is large and centered; Front covers Back's center.
     for name, w, h, x, y in [('Side', 240, 180, 1180, 600), ('Back', 900, 600, 640, 360),
                              ('Front', 480, 320, 700, 400)]:
-        clients.append(subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+        clients.append(subprocess.Popen(['python3',
             str(Path('tests/hint-style-app.py').resolve()), name, str(w), str(h), str(palette)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         v = wait(lambda: next((v for v in views().values() if v['title'] == name and 'frame' in v), None))

@@ -6,13 +6,14 @@ with windows open, is updated the way dev-install + scottland-reload update a li
 the session's helper links repointed to this checkout (as dev-install repoints the dev dir), the
 new settings metadata registered, the config rebuilt by the new generators, a fresh copy of the
 new plugin swapped in over IPC with the widget hand-over mark, and the adapter's reload.d hooks
-run (10-hyprshim, 30-lua-host). Checks: it survives, keeps every window where it was, renders
-them (screencopy pixels), and the new build works (session-state IPC, F9 press/release through
-the regenerated config and the restarted Lua host).
+run (10-hyprshim, 30-lua-host, 40-omarchy-shell). Checks: it survives, keeps every window where it
+was, renders them (screencopy pixels), the new shim serves requests, and the new build works
+(session-state IPC, F9 press/release through the regenerated config and restarted Lua host).
 
-The Hyprland shim is not restarted by a reload (reload.d/10-hyprshim only starts a missing one),
-so the rehearsal also records that the old shim keeps serving, then restarts it as a separate
-step and checks the new shim and whether a Quickshell Hyprland client keeps its event stream.
+The stock Omarchy shell restart command is a test-owned stand-in here: it records that the adapter
+invokes it after the replacement shim is ready and with Scottland's libexec first on PATH. The
+separate Quickshell event probe is not the Omarchy shell and records whether a generic client
+reconnects after its shim socket closes.
 
 OLD_CHECKOUT is only read: it must be built (make test-hooks), and the session runs from a copy of
 it, so the reload repoints the copy's helpers and metadata, never the old checkout's. Everything
@@ -25,7 +26,6 @@ verified as this session's.
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -96,24 +96,6 @@ def shim(session):
         return None
 
 
-def stop_shim(session, identity):
-    """SIGTERM exactly the process identity names: pinned by a pidfd, then re-verified (same PID
-    and start time, still this session's shim) before the signal goes through that pidfd."""
-    try:
-        pidfd = os.pidfd_open(identity[0])
-    except (OSError, TypeError):
-        return False
-    try:
-        if shim(session) != identity:
-            return False
-        signal.pidfd_send_signal(pidfd, signal.SIGTERM)
-        return True
-    except OSError:
-        return False
-    finally:
-        os.close(pidfd)
-
-
 def rendered(session, name, placed):
     shot = screenshot(session, name)
     if not shot:
@@ -130,6 +112,24 @@ def pressed_f9():
     session.key("KEY_F9", False)
     ok_release, calls = fixture.wait_calls(lambda c: ("mark", "stop") in c[before:], timeout=5)
     return ok_press, ok_release, calls[before:]
+
+
+shell_helper_dir = scratch / "shell-helper"
+shell_helper_dir.mkdir()
+shell_restart_log = scratch / "shell-restart.pid"
+shell_restart_command = scratch / "shell-restart.command"
+shell_helper = shell_helper_dir / "omarchy-restart-shell"
+shell_helper.write_text(
+    "#!/bin/sh\n"
+    "set -eu\n"
+    "lock=$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/hyprland.lock\n"
+    "pid=$(sed -n '1p' \"$lock\")\n"
+    "[ \"$pid\" = \"$EXPECTED_SHIM_PID\" ] || exit 31\n"
+    "grep -aq scottland-hyprshim \"/proc/$pid/cmdline\" || exit 32\n"
+    "printf '%s\\n' \"$pid\" >\"$SHELL_RESTART_LOG\"\n"
+    "command -v omarchy-hyprland-workspace-layout-toggle >\"$SHELL_RESTART_COMMAND\"\n"
+)
+shell_helper.chmod(0o755)
 
 
 with Session(fixture, "hl-omarchy-rehearsal", extra_args=["--widgets"], repo=old) as session:
@@ -191,6 +191,22 @@ with Session(fixture, "hl-omarchy-rehearsal", extra_args=["--widgets"], repo=old
     for hook in ("10-hyprshim", "30-lua-host"):
         result = session.run(str(hooks / "reload.d" / hook), timeout=30)
         check(f"reload.d/{hook} succeeds", result.returncode == 0, result.stderr)
+    new_shim = shim(session)
+    check("reload replaces the session's Hyprland shim", new_shim is not None and
+          old_shim is not None and new_shim != old_shim, (old_shim, new_shim))
+    if new_shim is not None:
+        result = session.run(
+            "env", f"PATH={shell_helper_dir}:/usr/bin:/bin",
+            f"EXPECTED_SHIM_PID={new_shim[0]}", f"SHELL_RESTART_LOG={shell_restart_log}",
+            f"SHELL_RESTART_COMMAND={shell_restart_command}",
+            str(hooks / "reload.d" / "40-omarchy-shell"), timeout=30)
+        selected = shell_restart_command.read_text().strip() if shell_restart_command.exists() else ""
+        helper_pid = shell_restart_log.read_text().strip() if shell_restart_log.exists() else ""
+        check("adapter calls Omarchy's shell restart helper after the new shim is ready",
+              result.returncode == 0 and helper_pid == str(new_shim[0]), result.stderr)
+        check("shell restart helper resolves adapter commands from libexec",
+              selected == str(hooks / "libexec" / "omarchy-hyprland-workspace-layout-toggle"),
+              selected)
 
     # --- After. ---
     state = session.ipc("scottland/session-state")
@@ -211,25 +227,12 @@ with Session(fixture, "hl-omarchy-rehearsal", extra_args=["--widgets"], repo=old
     press, release, calls = pressed_f9()
     check("after: F9 press and release both run (new importer and Lua host)", press and release, calls)
 
-    # The shim: a reload keeps the old one serving.
-    check("after: the reload left the old shim running", old_shim is not None and shim(session) == old_shim,
-          (old_shim, shim(session)))
+    # The new shim is already active before the shell-restart hook runs.
     target = scratch / "long-string"
     session.hyprctl("dispatch", f"hl.dsp.exec_cmd([[touch {target}]])")
-    time.sleep(1.0)  # an intended hold: the old shim must not run it
-    check("after: shim fixes wait for a shim restart (old shim ignores [[long strings]])",
-          not target.exists())
-
-    # A separate step: restart the shim, as a new session would start the new one.
-    check("shim restart: the verified old shim is signaled", stop_shim(session, old_shim), old_shim)
-    session.wait(lambda: shim(session) != old_shim, timeout=5)
-    result = session.run(str(hooks / "reload.d/10-hyprshim"), timeout=30)
-    check("shim restart: reload.d/10-hyprshim starts the new shim", result.returncode == 0 and
-          session.wait_shim()[0], result.stderr)
-    session.hyprctl("dispatch", f"hl.dsp.exec_cmd([[touch {target}]])")
-    check("shim restart: the new shim runs [[long strings]]", session.wait(target.exists)[0])
+    check("after: the reloaded shim runs [[long strings]]", session.wait(target.exists)[0])
     locked = session.run("omarchy-hyprland-session-locked").returncode
-    check("shim restart: lock state answers unlocked (exit 1)", locked == 1, locked)
+    check("after: lock state answers unlocked (exit 1)", locked == 1, locked)
     mark_events = len(events.read_text().splitlines())
     session.run("sh", "-c", f"python3 {REPO}/tests/solid-color-app.py four '#808080' "
                             ">/dev/null 2>&1 </dev/null &")

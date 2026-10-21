@@ -122,6 +122,9 @@ class Session:
             # caller supplied a conflicting SCOTTLAND_HEADLESS_DIR or TMPDIR override.
             self.env["SCOTTLAND_HEADLESS_DIR"] = str(self.dir)
             self.env["TMPDIR"] = str(tmpdir)
+        # A compositor wrapper belongs to one explicit Omarchy start request only. Removing it
+        # here keeps later run/ipc/stop requests and the sanitized environment wrapper-free.
+        self.test_wrap = self.env.pop("SCOTTLAND_TEST_WRAP", None)
         if isolated:
             tmpdir.mkdir(exist_ok=True)
         else:
@@ -138,8 +141,13 @@ class Session:
         self.stop()
 
     def harness(self, *args, check=True, timeout=60, input=None):
+        env = self.env
+        if args and args[0] == "start":
+            if "--omarchy" in args[1:] and self.test_wrap is not None:
+                env = {**self.env, "SCOTTLAND_TEST_WRAP": self.test_wrap}
+            self.test_wrap = None
         try:
-            return subprocess.run([str(self.repo / "tests/headless.sh"), *args], env=self.env,
+            return subprocess.run([str(self.repo / "tests/headless.sh"), *args], env=env,
                                   text=True, capture_output=True, check=check, timeout=timeout,
                                   input=input)
         except subprocess.CalledProcessError as error:

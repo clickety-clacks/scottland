@@ -8,6 +8,7 @@ WP8's 95% line is still a periphery pin); the same without a pin; a pin made in 
 reaching another; the pins surviving a reload; every hint-key path out and back (slow presses
 through the widget, a WK15 double tap to the rail); Esc; Shift+arrow pins; and a remembered spot
 that zone settings have moved into the center (no longer used, WP8)."""
+import errno
 import json
 import math
 import os
@@ -21,19 +22,35 @@ from pathlib import Path
 artifacts = Path(sys.argv[1])
 passed = failed = 0
 clients = []
-request_path = None
+request_path = os.environ['WAYFIRE_SOCKET']
+
+
+def connect_request(timeout=10):
+    deadline = time.monotonic() + timeout
+    last_failure = None
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if last_failure is not None:
+                raise last_failure
+            raise TimeoutError('timed out connecting to the compositor IPC socket')
+        request = socket.socket(socket.AF_UNIX)
+        request.settimeout(remaining)
+        try:
+            request.connect(request_path)
+        except OSError as failure:
+            request.close()
+            if failure.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                raise
+            last_failure = failure
+            time.sleep(min(.05, max(0, deadline - time.monotonic())))
+            continue
+        request.settimeout(timeout)
+        return request
 
 
 def ipc(method, data=None):
-    global request_path
-    if request_path is None:
-        # The headless session's own recorded socket, never the caller's desktop.
-        request_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-            "import os; print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
-    with socket.socket(socket.AF_UNIX) as request:
-        request.settimeout(10)
-        request.connect(request_path)
-
+    with connect_request() as request:
         def receive(n):
             data = b''
             while len(data) < n:
@@ -64,10 +81,6 @@ def wait_for(predicate, timeout=5):
 
 def wait_for_compositor(timeout=15):
     """Wait until this headless session's Wayfire IPC socket accepts connections."""
-    global request_path
-    if request_path is None:
-        request_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-            "import os; print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
     deadline = time.monotonic() + timeout
     last_error = None
     while time.monotonic() < deadline:
@@ -137,7 +150,7 @@ def launch(name, x, y):
     ipc('stipc/move_cursor', {'x': round(x), 'y': round(y)})
     log = artifacts / (name + '.keys')
     log.write_text('')
-    client = subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+    client = subprocess.Popen(['python3',
         str(Path('tests/windowing-key-recorder.py').resolve()), name, str(log)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     clients.append(client)
@@ -313,7 +326,7 @@ try:
     check(memories[1]['set'] and memories[1].get('pin') == pin, 'the left periphery memory keeps the pin (WP1)',
           memories[1])
     (artifacts / 'pinned-before.json').write_text(json.dumps({'view': v, 'hint': hint(a)}, indent=2))
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts / 'pinned-before.png')], check=True)
+    subprocess.run(['grim', str(artifacts / 'pinned-before.png')], check=True)
 
     cycle(a, 'Pinned')
     v = view('Pinned')
@@ -335,7 +348,7 @@ try:
     check(max(settled) - min(settled) < .003 and abs(settled[-1] - pin) < .003,
           'no scale jump after the cycle lands', (min(settled), max(settled)))
     (artifacts / 'pinned-cycle.json').write_text(json.dumps({'samples': samples, 'settled': settled}, indent=2))
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts / 'pinned-after.png')], check=True)
+    subprocess.run(['grim', str(artifacts / 'pinned-after.png')], check=True)
 
     # --- No leak: a plain drag to the right periphery has no pin there; the left pin stays put.
     drag('Pinned', width * .78, height * .5)

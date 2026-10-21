@@ -54,7 +54,7 @@ samples remain under `build/coast-*`.
 | `tests/inertia-test.sh` | 61 single-output and 8 two-output checks passed |
 | `tests/windowing-test.sh` | 84 checks passed |
 | `tests/widgets-test.sh` | 146 checks passed |
-| `tests/widget-morph-test.sh` | Final pass: 185 checks passed |
+| Retired widget-morph suite (historical) | Final pass: 185 checks passed |
 | `tests/inertia-unit.sh` | 43 checks passed |
 | `tests/windowing-unit.sh` | 75 checks passed |
 

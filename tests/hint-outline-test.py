@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""WK37 occluded-window outline and WK38 overlay strength, with real stipc input.
+"""WK14/WK37 Window-mode tint layer and WK38 strength, with real stipc input.
 Run inside a caller-owned headless session (tests/hint-outline-test.sh). Screenshots and
 state land in build/hint-outline-evidence; no live config, session or service is used.
 """
 import json
+import math
 import os
 from pathlib import Path
 import stat
@@ -167,6 +168,8 @@ if peer_pid != compositor_pid or peer_uid != os.getuid():
     raise RuntimeError("isolated headless session required: IPC peer is not this run's owned Wayfire")
 clients = []
 passed = failed = 0
+widget_hint_id = None
+hint_colors = {}
 BACKGROUND = "#1f232c"
 
 
@@ -187,9 +190,10 @@ def ipc(method, data=None):
     return result
 
 
-def check(name, ok):
+def check(name, ok, detail=None):
     global passed, failed
-    print(("PASS " if ok else "FAIL ") + name, flush=True)
+    print(("PASS " if ok else "FAIL ") + name +
+          (f": {detail}" if detail is not None else ""), flush=True)
     passed += bool(ok)
     failed += not ok
 
@@ -250,7 +254,10 @@ class Shot:
         self.data, self.stride, self.channels = self.img.get_pixels(), self.img.get_rowstride(), self.img.get_n_channels()
 
     def device(self, x, y):
-        offset = round(y) * self.stride + round(x) * self.channels
+        x, y = round(x), round(y)
+        if not (0 <= x < self.img.get_width() and 0 <= y < self.img.get_height()):
+            raise ValueError(f"pixel ({x}, {y}) is outside {self.img.get_width()}x{self.img.get_height()} capture")
+        offset = y * self.stride + x * self.channels
         return tuple(self.data[offset:offset + 3])
 
     def pixel(self, x, y):
@@ -261,21 +268,12 @@ def near(a, b, tolerance=4):
     return all(abs(x - y) <= tolerance for x, y in zip(a, b))
 
 
-def drawn(identifier):
-    v, h = views()[identifier], hints()[identifier]
+def drawn(identifier, state=None):
+    links = {int(w["id"]): int(w["widget_view"]) for w in ipc("scottland/widgets")["widgets"]
+             if int(w.get("widget_view", -1)) > 0}
+    v, h = views()[links.get(identifier, identifier)], (state or hints())[identifier]
     f = v["frame"]
     return (f["x"] + h["dx"], f["y"] + h["dy"], f["width"], f["height"])
-
-
-def union_visible(rect, front, screen=(0, 0, 1280, 720)):
-    x1, y1 = max(rect[0], screen[0]), max(rect[1], screen[1])
-    x2, y2 = min(rect[0] + rect[2], screen[0] + screen[2]), min(rect[1] + rect[3], screen[1] + screen[3])
-    covered = 0
-    for x in range(int(x1), int(x2), 2):
-        for y in range(int(y1), int(y2), 2):
-            covered += any(f[0] <= x < f[0] + f[2] and f[1] <= y < f[1] + f[3] for f in front)
-    total = len(range(int(x1), int(x2), 2)) * len(range(int(y1), int(y2), 2))
-    return 1 - covered / total
 
 
 def open_window(name, geometry, palette=None):
@@ -314,11 +312,6 @@ def press_hint(identifier):
         tap(letter.upper())
 
 
-def st(identifier):
-    h = hints()[identifier]
-    return round(h["visible_fraction"], 3), h["outline"]
-
-
 def badges(state):
     return [h["badge"] for h in state.values() if h.get("badge")]
 
@@ -328,48 +321,229 @@ def off_badges(state, x, y, margin=6):
                (c["size"] / 2 + margin) ** 2 for c in badges(state))
 
 
-def ring_edges(shot, state, identifier, origin=(0, 0)):
-    """Which of the outline's four edges show its hint color (sampled at quarter points)."""
-    o, color = state[identifier]["outline_frame"], tuple(round(c * 255) for c in state[identifier]["color"])
-    ox, oy = origin
-    def hit(x, y):
-        return any(near(shot.pixel(ox + x + dx, oy + y + dy), color, 8) for dx in (-1, 0, 1) for dy in (-1, 0, 1))
-    edges = {}
-    for name, points in (
-            ("top", [(o["x"] + o["width"] * t, o["y"] + 1) for t in (.25, .5, .75)]),
-            ("bottom", [(o["x"] + o["width"] * t, o["y"] + o["height"] - 1.5) for t in (.25, .5, .75)]),
-            ("left", [(o["x"] + 1, o["y"] + o["height"] * t) for t in (.25, .5, .75)]),
-            ("right", [(o["x"] + o["width"] - 1.5, o["y"] + o["height"] * t) for t in (.25, .5, .75)])):
-        usable = [(x, y) for x, y in points if off_badges(state, x, y)]
-        edges[name] = bool(usable) and any(hit(x, y) for x, y in usable)
-    return edges
+def contains(rect, point):
+    x, y = point
+    return rect[0] <= x < rect[0] + rect[2] and rect[1] <= y < rect[1] + rect[3]
 
 
-def corner_blend(shot, state, identifier, cover):
-    """Antialiased corner: device pixels between the hint color and the content under the ring,
-    at a corner that lies inside `cover` (so the content on both sides of the ring is the same)."""
-    o, color = state[identifier]["outline_frame"], tuple(round(c * 255) for c in state[identifier]["color"])
-    r = max(2, o["radius"])
-    k = shot.scale
-    for sx, sy in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
-        cx = o["x"] if sx > 0 else o["x"] + o["width"]
-        cy = o["y"] if sy > 0 else o["y"] + o["height"]
-        inside = (cover[0] + r + 10 < cx < cover[0] + cover[2] - r - 10 and
-                  cover[1] + r + 10 < cy < cover[1] + cover[3] - r - 10)
-        if not inside or not off_badges(state, cx + sx * r / 2, cy + sy * r / 2, 12):
+def contains_with_margin(rect, point, margin):
+    x, y = point
+    return (rect[0] + margin <= x < rect[0] + rect[2] - margin and
+            rect[1] + margin <= y < rect[1] + rect[3] - margin)
+
+
+def rect_distance(rect, point):
+    x, y = point
+    dx = max(rect[0] - x, 0, x - (rect[0] + rect[2]))
+    dy = max(rect[1] - y, 0, y - (rect[1] + rect[3]))
+    return math.hypot(dx, dy)
+
+
+def rect_interior_clearance(rect, point):
+    x, y = point
+    return min(x - rect[0], rect[0] + rect[2] - x,
+               y - rect[1], rect[1] + rect[3] - y)
+
+
+def color_bytes(color):
+    return tuple(round(float(channel) * 255) for channel in color)
+
+
+def blend_pixel(base, color, strength):
+    return tuple(round((1 - strength) * old + strength * new)
+                 for old, new in zip(base, color_bytes(color)))
+
+
+def frame_map(state):
+    result = {}
+    for identifier in state:
+        try:
+            result[identifier] = drawn(identifier, state)
+        except (KeyError, TypeError):
             continue
-        content = shot.pixel(cx + sx * (r + 6), cy + sy * (r + 6))
-        def gap(a, b):
-            return max(abs(x - y) for x, y in zip(a, b))
-        if gap(content, color) < 60:
-            continue
-        blends = 0
-        for i in range(-1, round((r + 2) * k)):
-            for j in range(-1, round((r + 2) * k)):
-                p = shot.device(cx * k + sx * i - (sx < 0), cy * k + sy * j - (sy < 0))
-                blends += gap(p, color) > 16 and gap(p, content) > 16
-        return blends
+    return result
+
+
+def set_tint(value):
+    ipc("wayfire/set-config-options", {"scottland/window_mode_tint": float(value)})
+    if not option_reaches("window_mode_tint", float(value), timeout=3, tolerance=.1):
+        raise RuntimeError(f"window_mode_tint did not reach {value}%")
+    time.sleep(.12)
+
+
+def option_enabled(name):
+    value = ipc("wayfire/get-config-option", {"option": "scottland/" + name})["value"]
+    return value is True or str(value).lower() in ("true", "1", "yes")
+
+
+def set_goo(enabled):
+    ipc("wayfire/set-config-options", {"scottland/goo": bool(enabled)})
+    wait(lambda: option_enabled("goo") == enabled, 3)
+    time.sleep(.12)
+
+
+def find_point(target_id, require_ids=(), avoid_ids=()):
+    state = hints()
+    frame_by_id = frame_map(state)
+    target = frame_by_id[target_id]
+    for fy in (.18, .28, .38, .48, .58, .68, .78):
+        for fx in (.18, .28, .38, .48, .58, .68, .78):
+            point = (target[0] + target[2] * fx, target[1] + target[3] * fy)
+            if not off_badges(state, *point, margin=10):
+                continue
+            if not contains_with_margin(target, point, 24):
+                continue
+            if any(identifier not in frame_by_id or
+                   not contains_with_margin(frame_by_id[identifier], point, 24)
+                   for identifier in require_ids):
+                continue
+            if any(identifier in frame_by_id and contains(frame_by_id[identifier], point)
+                   for identifier in avoid_ids):
+                continue
+            return point
+    raise RuntimeError(f"no usable tint sample for window {target_id}; required={require_ids}")
+
+
+def find_overlap_point(left_id, right_id, left_rect_override=None):
+    state = hints()
+    frames = frame_map(state)
+    left, right = left_rect_override or frames[left_id], frames[right_id]
+    x1, y1 = max(left[0], right[0]), max(left[1], right[1])
+    x2, y2 = min(left[0] + left[2], right[0] + right[2]), \
+        min(left[1] + left[3], right[1] + right[3])
+    if x2 <= x1 or y2 <= y1:
+        raise RuntimeError(f"tint extents do not overlap: {left_id}={left} {right_id}={right}")
+    for fy in (.5, .25, .75, .1, .9):
+        for fx in (.5, .25, .75, .1, .9):
+            point = (x1 + (x2 - x1) * fx, y1 + (y2 - y1) * fy)
+            if off_badges(state, *point, margin=8):
+                return point
+    raise RuntimeError(f"no badge-clear tint sample in overlap: {left_id}={left} {right_id}={right}; "
+                       f"badges={badges(state)}")
+
+
+def outside_point(capture_size, origin=(0, 0)):
+    state = hints()
+    frames = frame_map(state)
+    # A fallback halo grows to about 21 px. Keep this check near the window edge,
+    # but outside every fallback band and every other drawn window.
+    for frame in frames.values():
+        candidates = []
+        for distance in (48, 64, 80, 96, 128):
+            for t in (.2, .35, .5, .65, .8):
+                candidates.extend((
+                    (frame[0] + frame[2] * t, frame[1] - distance),
+                    (frame[0] + frame[2] * t, frame[1] + frame[3] + distance),
+                    (frame[0] - distance, frame[1] + frame[3] * t),
+                    (frame[0] + frame[2] + distance, frame[1] + frame[3] * t),
+                ))
+        for point in candidates:
+            sx, sy = point[0] + origin[0], point[1] + origin[1]
+            in_capture = 0 <= sx < capture_size[0] and 0 <= sy < capture_size[1]
+            if (in_capture and off_badges(state, *point, margin=20) and
+                    all(rect_distance(other, point) >= 32 for other in frames.values())):
+                return point
     return None
+
+
+def cover_pixels(window_rect, card_rect, state):
+    exposed, covered = [], []
+    for fy_step in range(1, 20):
+        fy = fy_step / 20
+        for fx_step in range(1, 20):
+            fx = fx_step / 20
+            point = (window_rect[0] + window_rect[2] * fx,
+                     window_rect[1] + window_rect[3] * fy)
+            if (not contains_with_margin(window_rect, point, 8) or
+                    not off_badges(state, *point, margin=20)):
+                continue
+            card_distance = rect_distance(card_rect, point)
+            if card_distance >= 8:
+                score = min(rect_interior_clearance(window_rect, point), card_distance)
+                exposed.append((score, point))
+            if contains_with_margin(card_rect, point, 8):
+                score = min(rect_interior_clearance(window_rect, point),
+                            rect_interior_clearance(card_rect, point))
+                covered.append((score, point))
+    return (max(exposed)[1] if exposed else None,
+            max(covered)[1] if covered else None)
+
+
+def tint_stack_check(name, point, order, strength=7, scale=1, origin=(0, 0), no_stroke=True,
+                     frames_override=None):
+    state = hints()
+    # The hint IPC omits color after a hint has been selected, but the tint remains
+    # attached to the window's assigned slot for the rest of the active session.
+    for identifier, item in state.items():
+        if "color" in item:
+            hint_colors[identifier] = item["color"]
+    frames = frame_map(state)
+    if frames_override:
+        frames.update(frames_override)
+    old = option("window_mode_tint")
+    try:
+        set_tint(0)
+        before = Shot(name + "-base", scale)
+        set_tint(strength)
+        after = Shot(name + "-tint", scale)
+        screen_point = (point[0] + origin[0], point[1] + origin[1])
+        expected = before.pixel(*screen_point)
+        for identifier in order:
+            if identifier in frames and contains(frames[identifier], point):
+                color = state.get(identifier, {}).get("color", hint_colors.get(identifier))
+                if color is None:
+                    raise RuntimeError(f"no retained hint color for tinted window {identifier}")
+                expected = blend_pixel(expected, color, strength / 100)
+        actual = after.pixel(*screen_point)
+        check(name + f": {strength}% tint follows rear-first extent order",
+              near(actual, expected, 5))
+        if no_stroke:
+            point_out = outside_point((before.img.get_width() / scale,
+                                      before.img.get_height() / scale), origin)
+            if point_out is not None:
+                goo_was_enabled = option_enabled("goo")
+                try:
+                    # The separate tint layer is independent of Goo. Disable only its animated
+                    # field for this near-edge pair so movement in the Goo cannot mask a stroke.
+                    if goo_was_enabled:
+                        set_goo(False)
+                    set_tint(0)
+                    outside_base = Shot(name + "-outside-base", scale)
+                    set_tint(100)
+                    outside_full = Shot(name + "-outside-full", scale)
+                    outside_screen = (point_out[0] + origin[0], point_out[1] + origin[1])
+                    outside_before = outside_base.pixel(*outside_screen)
+                    outside_after = outside_full.pixel(*outside_screen)
+                    outside_ok = near(outside_before, outside_after, 3)
+                    outside_detail = {"point": point_out, "base": outside_before, "tinted": outside_after}
+                    if not outside_ok:
+                        outside_detail["frames"] = frames
+                        outside_detail["badges"] = badges(state)
+                    check(name + ": no tint stroke outside drawn extents",
+                          outside_ok, outside_detail)
+                finally:
+                    if goo_was_enabled:
+                        set_goo(True)
+            else:
+                check(name + ": no tint stroke sample outside drawn extents", False,
+                      "no point is clear of the window frames and badges")
+        return point, before, after
+    finally:
+        set_tint(old)
+
+
+def no_tint_when_inactive(name, point, scale=1, origin=(0, 0)):
+    old = option("window_mode_tint")
+    try:
+        set_tint(0)
+        zero = Shot(name + "-zero", scale)
+        set_tint(100)
+        full = Shot(name + "-full", scale)
+        screen_point = (point[0] + origin[0], point[1] + origin[1])
+        check(name + ": inactive Window mode draws no tint at any strength",
+              near(zero.pixel(*screen_point), full.pixel(*screen_point), 3))
+    finally:
+        set_tint(old)
 
 
 def hidpi():
@@ -380,26 +554,10 @@ def hidpi():
     ipc("window-rules/focus-view", dict(id=front2))
     time.sleep(.6)
     hold()
-    state = hints()
     image = Shot("11-hidpi", 2)
     check("HiDPI: screenshot is at device resolution", image.img.get_width() == 2560)
-    check("HiDPI: the covered window is outlined", state[back2]["outline"])
-    edges = ring_edges(image, state, back2)
-    print("HiDPI edges", edges, flush=True)
-    check("HiDPI: all four edges show the ring", all(edges.values()))
-    o, color = state[back2]["outline_frame"], tuple(round(c * 255) for c in state[back2]["color"])
-    # 2 logical px are 4 device px: solid in the middle of the band, absent beyond it.
-    mid_x = o["x"] + o["width"] / 2
-    mid_x = next(x for x in (mid_x, o["x"] + o["width"] * .3, o["x"] + o["width"] * .7)
-                 if off_badges(state, x, o["y"] + o["height"] - 2))
-    bottom = (o["y"] + o["height"]) * 2
-    column = [image.device(mid_x * 2, bottom - d) for d in range(1, 9)]
-    print("HiDPI bottom-edge column (device px up from the edge)", column, flush=True)
-    solid = sum(near(p, color, 10) for p in column[:4])
-    check("HiDPI: the ring is about 4 device px thick", solid >= 2 and not near(column[6], color, 30))
-    blends = corner_blend(image, state, back2, drawn(front2))
-    print("HiDPI corner blend device pixels", blends, flush=True)
-    check("HiDPI: the corner is antialiased at device pixels", blends is not None and blends >= 4)
+    point = find_point(back2, require_ids=(front2,))
+    tint_stack_check("HiDPI", point, (back2, front2), scale=2)
     release()
 
 
@@ -432,6 +590,20 @@ def section(function):
         import traceback
         traceback.print_exc()
         check(function.__name__ + " ran", False)
+    finally:
+        # A failed pixel assertion must not leave Alt held or fullscreen/always-on
+        # avoidance active and contaminate the remaining independent scenarios.
+        try:
+            if ipc("scottland/hints")["active"]:
+                release()
+            ipc("wayfire/set-config-options", {"scottland/window_avoidance_always": False})
+            if "front" in globals():
+                ipc("wm-actions/set-fullscreen", dict(view_id=front, state=False))
+            set_tint(7)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            check(function.__name__ + " cleanup", False)
 
 
 def reset_layout():
@@ -445,43 +617,76 @@ def reset_layout():
 def restack_during_hold():
     reset_layout()
     hold()
-    first = st(back)
+    point = find_point(back, require_ids=(front,))
+    tint_stack_check("restack before raise", point, (back, front))
+    set_tint(100)
     press_hint(back)  # selects, focuses and raises the rear window
-    raised = wait(lambda: (lambda v: v if not v[1] else None)(st(back)), 4)
+    for frame in range(3):
+        time.sleep(.04)
+        motion_tint_sample(f"peek-ease frame {frame + 1}", front, "right")
+    time.sleep(.2)
+    tint_stack_check("restack after rear raise", point, (front, back))
     press_hint(front)
-    covered = wait(lambda: (lambda v: v if v[1] else None)(st(back)), 4)
+    time.sleep(.4)
+    tint_stack_check("restack after front raise", point, (back, front))
+    set_tint(7)
     release()
-    print("restack", first, raised, covered, flush=True)
-    check("hold: outline goes when the rear window is raised", first[1] and not raised[1] and raised[0] == 1)
-    check("hold: outline returns when the rear window is covered again", covered[1])
+
+
+def motion_tint_sample(name, identifier, edge):
+    state = hints()
+    rect = drawn(identifier, state)
+    color = state[identifier].get("color", hint_colors.get(identifier))
+    if color is None:
+        raise RuntimeError(f"no retained tint color while sampling motion for {identifier}")
+    image = Shot(name)
+    if edge == "right":
+        # Keep sampling the straight side while keyboard motion carries the window
+        # below the screen center under the shipped key impulse.
+        y = rect[1] + min(48, rect[3] * .25)
+        inside, outside = (rect[0] + rect[2] - 1.2, y), (rect[0] + rect[2] + 1.2, y)
+    else:
+        y = rect[1] + min(48, rect[3] * .25)
+        inside, outside = (rect[0] + 1.2, y), (rect[0] - 1.2, y)
+    inside_pixel, outside_pixel = image.pixel(*inside), image.pixel(*outside)
+    check(f"{name}: tint edge follows the drawn frame within one pixel",
+          near(inside_pixel, color_bytes(color), 8) and
+          not near(outside_pixel, color_bytes(color), 4),
+          {"frame": rect, "edge": edge, "inside_point": inside,
+           "inside_pixel": inside_pixel, "outside_point": outside,
+           "outside_pixel": outside_pixel, "tint_color": color_bytes(color)})
 
 
 def cover_moves_away():
     reset_layout()
     hold()
-    first = st(back)
-    # Downward: the bottom edge stops a window (WK20), a side would widgetize it.
-    for _ in range(4):
+    before = drawn(front)
+    set_tint(100)
+    for step in range(4):
         tap("DOWN")
-        time.sleep(.15)
-    moved = wait(lambda: (lambda v: v if not v[1] else None)(st(back)), 6)
+        time.sleep(.05)
+        motion_tint_sample(f"keyboard motion frame {step + 1}", front, "right")
+        time.sleep(.10)
+    after = drawn(front)
+    check("arrow pushes keep the cover an ordinary window", not any(v.get("widget") for v in views().values()))
+    check("arrow pushes changed the covered layout", abs(before[0] - after[0]) + abs(before[1] - after[1]) > 1)
+    point = find_point(back)
+    tint_stack_check("arrow-pushed tint", point, (back, front))
+
+    set_tint(7)
     release()
-    check("arrow pushes left the cover an ordinary window", not any(
-        v["widget"] for v in views().values()))
-    print("cover moved", first, moved, flush=True)
-    check("hold: outline clears live when arrow pushes move the cover off", first[1] and not moved[1] and moved[0] >= .5)
 
 
 def escape_clears():
     reset_layout()
     hold()
-    first = st(back)
+    point = find_point(back, require_ids=(front,))
+    tint_stack_check("before Esc", point, (back, front))
     tap("ESC")
-    cleared = wait(lambda: not hints()[back]["outline"], 3)
-    image = Shot("06-after-esc")
+    wait(lambda: not ipc("scottland/hints")["active"], 3)
     key("LEFTALT", False)
-    time.sleep(.6)
-    check("Esc with Alt still held clears the outline", first[1] and cleared)
+    time.sleep(.4)
+    no_tint_when_inactive("Esc with Alt held", point)
 
 
 def scaled_window():
@@ -492,20 +697,9 @@ def scaled_window():
     time.sleep(.5)
     hold()
     state, v = hints(), views()
-    image = Shot("07-scaled")
-    (art / "07-state.json").write_text(json.dumps({"hints": state, "views": v}, indent=2))
-    b, o = drawn(back), state[back]["outline_frame"]
-    print("scaled", v[back]["applied_scale"], st(back), "drawn", [round(x, 1) for x in b], "outline", o, flush=True)
-    check("scaled: the covered window is scaled down", v[back]["applied_scale"] < .9)
-    check("scaled: it is outlined", state[back]["outline"])
-    check("scaled: the outline follows its drawn (scaled) frame",
-          all(abs(a - b_) < 1.5 for a, b_ in zip((o["x"], o["y"], o["width"], o["height"]), b)))
-    edges = ring_edges(image, state, back)
-    print("scaled edges", edges, flush=True)
-    check("scaled: all four edges show the ring", all(edges.values()))
-    blends = corner_blend(image, state, back, drawn(front))
-    print("scaled corner blend pixels", blends, flush=True)
-    check("scaled: the ring's corner is antialiased", blends is not None and blends >= 3)
+    check("scaled: covered window is scaled down", v[back]["applied_scale"] < .9)
+    point = find_point(back, require_ids=(front,))
+    tint_stack_check("scaled drawn extent", point, (back, front))
     release()
 
 
@@ -516,16 +710,45 @@ def fullscreen_in_front():
     ipc("window-rules/focus-view", dict(id=front))
     time.sleep(.5)
     hold()
-    image = Shot("08-fullscreen")
-    covered, top, other = st(back), st(front), st(side)
-    edges = ring_edges(image, hints(), back)
+    # Fullscreen has no ordinary layout frame. Its visible tint extent is the owning output.
+    output = max(ipc("window-rules/list-outputs"), key=lambda o:
+        float(o["geometry"]["width"]) * float(o["geometry"]["height"]))
+    geometry = output["geometry"]
+    fs = (geometry["x"], geometry["y"], geometry["width"], geometry["height"])
+    point = (fs[0] + fs[2] * .20, fs[1] + fs[3] * .75)
+    tint_stack_check("fullscreen extent", point, (front,), no_stroke=False,
+                     frames_override={front: fs})
+    # A widget card remains above fullscreen; test its rear-first mix separately from the edge
+    # samples so the card cannot hide a fullscreen boundary point.
+    if widget_hint_id is not None and widget_hint_id in hints():
+        state = hints()
+        card_frame = drawn(widget_hint_id, state)
+        card_point = find_overlap_point(front, widget_hint_id, left_rect_override=fs)
+        tint_stack_check("widget card above fullscreen mixes after fullscreen",
+                         card_point, (front, widget_hint_id), no_stroke=False,
+                         frames_override={front: fs, widget_hint_id: card_frame})
+    # Fullscreen bounds are square. Sample each edge away from badges and any widget card so an
+    # inset rim or missed tint along one side cannot be hidden by the interior sample.
+    state = hints()
+    card_frame = drawn(widget_hint_id, state) if widget_hint_id in state else None
+    edge_specs = (
+        ("top", lambda ratio: (fs[0] + fs[2] * ratio, fs[1] + 1)),
+        ("bottom", lambda ratio: (fs[0] + fs[2] * ratio, fs[1] + fs[3] - 2)),
+        ("left", lambda ratio: (fs[0] + 1, fs[1] + fs[3] * ratio)),
+        ("right", lambda ratio: (fs[0] + fs[2] - 2, fs[1] + fs[3] * ratio)),
+    )
+    for edge, make_point in edge_specs:
+        edge_point = next((make_point(ratio) for ratio in (.2, .35, .65, .8)
+                           if off_badges(state, *make_point(ratio)) and
+                           (card_frame is None or not contains(card_frame, make_point(ratio)))), None)
+        if edge_point is None:
+            check(f"fullscreen {edge} edge has an unobstructed tint sample", False)
+            continue
+        tint_stack_check(f"fullscreen {edge} edge has tint only", edge_point, (front,),
+                         no_stroke=False, frames_override={front: fs})
     release()
     ipc("wm-actions/set-fullscreen", dict(view_id=front, state=False))
     time.sleep(1.2)
-    print("fullscreen", covered, top, other, edges, flush=True)
-    check("fullscreen in front: windows under it are outlined, it is not",
-          covered[1] and other[1] and not top[1])
-    check("fullscreen in front: the outline is drawn over the fullscreen window", all(edges.values()))
 
 
 def always_avoidance():
@@ -534,20 +757,18 @@ def always_avoidance():
     time.sleep(1)
     ipc("window-rules/configure-view", dict(id=front, geometry=dict(x=340, y=110, width=620, height=470)))
     time.sleep(1)
-    solved = ipc("scottland/hints")["avoidance_solve_count"]
-    state = st(back)
+    check("always-on avoidance leaves Window mode inactive", not ipc("scottland/hints")["active"])
+    point = (drawn(back)[0] + drawn(back)[2] / 2, drawn(back)[1] + drawn(back)[3] / 2)
+    no_tint_when_inactive("always-on avoidance", point)
     ipc("wayfire/set-config-options", {"scottland/window_avoidance_always": False})
     time.sleep(.8)
-    print("always-on avoidance", state, "solves", solved, flush=True)
-    check("always-on avoidance: no occlusion pass or outline outside Window mode",
-          state == (1, False))
 
 
 def widget_cover():
+    global widget_hint_id
     reset_layout()
     card = open_window("Card", (800, 300, 320, 180))
-    v = views()[card]
-    f = v["frame"]
+    f = views()[card]["frame"]
     cx, cy = f["x"] + f["width"] / 2, f["y"] + f["height"] / 2
     pointer(cx, cy); time.sleep(.1)
     key("LEFTMETA", True)
@@ -558,85 +779,154 @@ def widget_cover():
     ipc("stipc/feed_button", dict(combo="BTN_LEFT", mode="release"))
     key("LEFTMETA", False)
     pointer(640, 5)
-    widget = wait(lambda: next((w for w in views().values() if w["widget"]), None), 10)
+    wait(lambda: next((w for w in views().values() if w.get("widget")), None), 10)
     time.sleep(1)
-    widget = next(w for w in views().values() if w["widget"])
+    widget = next(w for w in views().values() if w.get("widget"))
     wf_ = widget["frame"]
-    # Right of the other windows, its top 100 px above the card: room for its hint there, so window
-    # avoidance leaves it where it is (WK13), and the card is the only thing covering it.
     client_color = (208, 80, 144)
     under_palette = art / "under-palette.json"
     under_palette.write_text(json.dumps(dict(scheme="dark", background="#d05090",
                                              foreground="#ffffff", accent="#81a1c1")))
-    # A distinct known client color makes card coverage observable in the image.
-    ipc("wayfire/set-config-options", {"scottland/window_mode_tint": 0})
-    small = open_window("Under", (1100 - 150, round(wf_["y"]) - 110, 300, 220), under_palette)
-    shown = wait(lambda: (lambda v: v if "frame" in v else None)(views()[small]))["frame"]
-    ipc("window-rules/configure-view", dict(id=small, geometry=dict(
-        x=1100 - 150, y=round(wf_["y"] - 100 + shown["height"] / 2 - 110), width=300, height=220)))
-    wait(lambda: abs(views()[small]["frame"]["y"] - (wf_["y"] - 100)) < 2)
-    ipc("window-rules/focus-view", dict(id=front))
-    time.sleep(.6)
-    hold()
-    def measure(phase):
-        state = hints()
-        links = {int(w["id"]): w["widget_view"] for w in ipc("scottland/widgets")["widgets"]}
-        widget_hint = next(h for h in state.values() if links.get(h["window"]) == widget["id"])
-        w_frame = widget["frame"]
-        cover = (w_frame["x"] + widget_hint["dx"], w_frame["y"] + widget_hint["dy"], w_frame["width"], w_frame["height"])
-        u = drawn(small)
-        expected = union_visible(u, [cover])
-        image = Shot("09-widget-cover-" + phase)
-        got = st(small)
-        # From the pixels: sample the window's drawn rectangle (inset past its frame and corners, off its
-        # hint badge and glossy surround); a point shows the client when it has its known color.
-        # Tint is disabled for this fixture. Compare separately on either side of the card:
-        # the glossy goo contour may occupy most of a narrow exposed strip. At least
-        # eight known client pixels must remain exposed, and at most 5% may show through the card.
-        ux, uy, uw, uh = u
-        inset = 8
-        points = [(x, y) for y in range(int(uy + inset), int(uy + uh - inset), 3)
-                  for x in range(int(ux + inset), int(ux + uw - inset), 3) if off_badges(state, x, y, 20)]
-        under_card = lambda x, y: cover[0] <= x < cover[0] + cover[2] and cover[1] <= y < cover[1] + cover[3]
-        references = [p for p in points if not under_card(*p)]
-        shown_points = sum(near(image.pixel(x, y), client_color, 8) for x, y in points)
-        open_points = len(references)
-        uncovered_hits = sum(near(image.pixel(x, y), client_color, 8) for x, y in references)
-        covered_points = [p for p in points if under_card(*p)]
-        covered_hits = sum(near(image.pixel(x, y), client_color, 8) for x, y in covered_points)
-        pixel_fraction = shown_points / max(1, len(points))
-        # An outline ring (WK37) is opaque hint color on the frame's edges; look where the card isn't.
-        color = tuple(round(c * 255) for c in state[small]["color"])
-        edge = [(ux + uw * t, uy + 1) for t in (.2, .5, .8)] + [(ux + uw * t, uy + uh - 1.5) for t in (.2, .5, .8)] + \
-               [(ux + 1, uy + uh * t) for t in (.2, .5, .8)] + [(ux + uw - 1.5, uy + uh * t) for t in (.2, .5, .8)]
-        ring = sum(any(near(image.pixel(x + dx, y + dy), color, 8) for dx in (-1, 0, 1) for dy in (-1, 0, 1))
-                   for x, y in edge if not under_card(x, y) and off_badges(state, x, y))
-        release()
-        print("widget cover", phase, got, "expected", round(expected, 3), "pixels", round(pixel_fraction, 3), "of",
-              round(open_points / max(1, len(points)), 3), "ring points", ring, "under", [round(x, 1) for x in u],
-              "card", [round(x, 1) for x in cover], "uncovered", [uncovered_hits, len(references)],
-              "covered", [covered_hits, len(covered_points)], flush=True)
-        check("widget as cover " + phase + ": card hides known client pixels while exposed pixels remain",
-              len(references) > 30 and len(covered_points) > 50 and
-              uncovered_hits >= 8 and covered_hits / len(covered_points) < .05)
-        check("widget as cover " + phase + ": the occlusion measure counts the card (diagnostic)",
-              got[0] < 1 and abs(got[0] - expected) < .05)
-        check("widget as cover " + phase + ": fixture is on the expected side of half visible",
-              (pixel_fraction < .5) == (phase == "mostly"))
-        check("widget as cover " + phase + ": in the pixels, outlined exactly when less than half visible",
-              (ring >= 3) == (pixel_fraction < .5))
-
-    measure("partial")
-    # Focus anchors this window; the card stays above ordinary windows. Put most of
-    # its drawn body under the card so this second pixel case must show an outline.
+    set_tint(0)
+    # Keep the under-window centered on the same overlap while giving its sampled
+    # pixels room around the hint badge at the merged zone scale.
+    under_x, under_width, under_height = 900, 400, 220
+    small = open_window("Under", (under_x, round(wf_["y"]) - 110, under_width, under_height), under_palette)
     shown = views()[small]["frame"]
     ipc("window-rules/configure-view", dict(id=small, geometry=dict(
-        x=950, y=round(wf_["y"] - 25 + shown["height"] / 2 - 110), width=300, height=220)))
+        x=under_x, y=round(wf_["y"] - 60 + shown["height"] / 2 - under_height / 2),
+        width=under_width, height=under_height)))
+    wait(lambda: abs(views()[small]["frame"]["y"] - (wf_["y"] - 60)) < 2)
+    ipc("window-rules/focus-view", dict(id=front))
+    time.sleep(.6)
+
+    def measure(phase):
+        global widget_hint_id
+        hold()
+        state = hints()
+        links = {int(w["id"]): int(w["widget_view"]) for w in ipc("scottland/widgets")["widgets"]
+                 if int(w.get("widget_view", -1)) > 0}
+        widget_id = next(identifier for identifier in state
+                         if links.get(identifier, -1) == widget["id"])
+        widget_hint_id = widget_id
+        card_rect = drawn(widget_id)
+        under_rect = drawn(small)
+        exposed, covered = cover_pixels(under_rect, card_rect, state)
+        print("widget tint overlap geometry", {"card": card_rect, "window": under_rect,
+              "window_badge": state.get(small, {}).get("badge"),
+              "widget_badge": state.get(widget_id, {}).get("badge")}, flush=True)
+        image = Shot("09-widget-cover-" + phase)
+        exposed_is_sampleable, covered_is_sampleable = exposed is not None, covered is not None
+        exposed_pixel = image.pixel(*exposed) if exposed_is_sampleable else None
+        covered_pixel = image.pixel(*covered) if covered_is_sampleable else None
+        check("widget as cover " + phase + ": card hides client pixels while exposed pixels remain",
+              exposed_is_sampleable and covered_is_sampleable and
+              near(exposed_pixel, client_color, 8) and not near(covered_pixel, client_color, 8),
+              {"exposed_point": exposed, "exposed_pixel": exposed_pixel,
+               "covered_point": covered, "covered_pixel": covered_pixel})
+        point = find_overlap_point(small, widget_id)
+        tint_stack_check("widget card tint " + phase, point, (small, widget_id))
+        release()
+
+    measure("partial")
+    shown = views()[small]["frame"]
+    ipc("window-rules/configure-view", dict(id=small, geometry=dict(
+        x=under_x, y=round(wf_["y"] - 30 + shown["height"] / 2 - under_height / 2),
+        width=under_width, height=under_height)))
+    wait(lambda: abs(views()[small]["frame"]["y"] - (wf_["y"] - 30)) < 2)
     ipc("window-rules/focus-view", dict(id=small))
     time.sleep(.7)
-    hold()
     measure("mostly")
-    ipc("wayfire/set-config-options", {"scottland/window_mode_tint": 7})
+    set_tint(7)
+
+
+def list_picker_overlay_isolation():
+    reset_layout()
+    hold()
+    set_tint(0)
+    outputs = ipc("window-rules/list-outputs")
+    output = max(outputs, key=lambda row:
+        float(row["geometry"]["width"]) * float(row["geometry"]["height"]))
+    geometry = output["geometry"]
+    width, height = float(geometry["width"]), float(geometry["height"])
+    panel_width = min(640, width - 48)
+    # Two 44px rows, the 44px search box, prompt and 20px outer padding.
+    panel_height = 40 + 44 + 12 + 88 + 12 + 19
+    panel_left = float(geometry["x"]) + (width - panel_width) / 2
+    panel_top = float(geometry["y"]) + (height - panel_height) / 2
+    # Sample the panel's opaque top margin, away from prompt, search placeholder, rows and
+    # rounded corners. First compare with a pre-map capture so an identical Settings pixel cannot
+    # falsely satisfy the map wait.
+    overlay_candidates = [
+        (panel_left + panel_width * fx, panel_top + 10)
+        for fx in (.1, .2, .3, .7, .8, .9)
+    ]
+    pre_picker = Shot("12-list-picker-before-map")
+    overlay_sample = []
+    picker = subprocess.Popen(
+        [str(repo / "core/libexec/scottland-list-picker"), "--prompt", "Choose a fixture"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        picker.stdin.write(b"TintRear\nTintFront\n")
+        picker.stdin.close()
+
+        def panel_visible():
+            shot = Shot("12-list-picker-map-probe")
+            state = hints()
+            changed = [(point, shot.pixel(*point)) for point in overlay_candidates
+                       if off_badges(state, *point, margin=20) and
+                       not near(shot.pixel(*point), pre_picker.pixel(*point), 3)]
+            if len(changed) < 3:
+                return False
+            reference = changed[0][1]
+            overlay_sample[:] = [point for point, pixel in changed
+                                 if near(pixel, reference, 3)]
+            return len(overlay_sample) >= 3
+
+        wait(panel_visible, 10)
+        overlay_point = overlay_sample[0]
+        set_tint(0)
+        untinted = Shot("12-list-picker-untinted")
+        set_tint(100)
+        tinted = Shot("12-list-picker-tint-100")
+        panel_zero = untinted.pixel(*overlay_point)
+        panel_full = tinted.pixel(*overlay_point)
+        check("list picker panel remains untinted above a 100% window tint",
+              near(panel_zero, panel_full, 3),
+              {"point": overlay_point, "untinted": panel_zero, "full": panel_full})
+
+        side_point = find_point(side, avoid_ids=(back, front))
+        if side_point[0] >= panel_left - 8:
+            raise RuntimeError(f"adjacent window sample falls under list-picker panel: {side_point}")
+        adjacent_zero, adjacent_full = untinted.pixel(*side_point), tinted.pixel(*side_point)
+        side_color = hints()[side].get("color", hint_colors.get(side))
+        check("window beside list picker keeps its expected tint",
+              side_color is not None and near(adjacent_full, color_bytes(side_color), 5) and
+              not near(adjacent_zero, adjacent_full, 3),
+              {"point": side_point, "zero": adjacent_zero, "full": adjacent_full,
+               "hint_color": color_bytes(side_color) if side_color else None})
+        # Release Alt so the compositor's Window-mode Esc handler does not consume the key.
+        release()
+        # The search TextInput owns Esc; focus it explicitly after mapping the layer surface.
+        search_focus = (panel_left + panel_width / 2, panel_top + 20 + 19 + 12 + 22)
+        click(*search_focus)
+        tap("ESC")
+        picker.wait(timeout=8)
+        stdout, stderr = picker.stdout.read(), picker.stderr.read()
+        check("list picker Esc cancels without returning a choice",
+              picker.returncode != 0 and stdout == b"",
+              {"returncode": picker.returncode, "stdout": stdout.decode(errors="replace"),
+               "stderr": stderr.decode(errors="replace")[-800:]})
+    finally:
+        if picker.poll() is None:
+            picker.terminate()
+            try:
+                picker.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                picker.kill(); picker.wait(timeout=3)
+        set_tint(7)
+        release()
+
 
 def second_output():
     outputs = ipc("window-rules/list-outputs")
@@ -654,13 +944,8 @@ def second_output():
     check("second output: both windows are on the offset output",
           placed.get(back2) == target["id"] and placed.get(front2) == target["id"])
     hold()
-    state = hints()
-    image = Shot("10-second-output")
-    print("second output", target["name"], origin, st(back2), state[back2]["outline_frame"], flush=True)
-    check("second output: the covered window is outlined", state[back2]["outline"])
-    edges = ring_edges(image, state, back2, origin)
-    print("second output edges", edges, flush=True)
-    check("second output: the ring is drawn on its window there, at the output's offset", all(edges.values()))
+    point = find_point(back2, require_ids=(front2,))
+    tint_stack_check("second output at offset", point, (back2, front2), origin=origin)
     release()
 
 
@@ -681,6 +966,10 @@ try:
     ipc("wayfire/set-config-options", {"scottland/color_scheme": "dark", "scottland/accent_color": "#81a1c1ff",
                                        "scottland/sounds": False})
     pointer(640, 10)
+
+    initial_window_tint = option("window_mode_tint")
+    print("initial Window-mode tint default", initial_window_tint, flush=True)
+    check("Window-mode tint default is 17.5%", abs(initial_window_tint - 17.5) < .01)
     if "--second-output" in sys.argv:
         section(second_output)
         raise SystemExit
@@ -688,68 +977,28 @@ try:
         section(hidpi)
         raise SystemExit
 
-    # --- WK37: a rear window almost wholly covered by a front one -------------------------
+    # --- WK14/WK37: the tint layer replaces the outline and covers the rear window ------------------
     back = open_window("Back", (450, 200, 380, 260))
     front = open_window("Front", (330, 110, 620, 470))
     side = open_window("Side", (20, 60, 380, 420))
     ipc("window-rules/focus-view", dict(id=front))
     time.sleep(.6)
-    before = Shot("01-before-window-mode")
-    check("no outline outside Window mode", not any(h["outline"] for h in hints().values()))
+    base = views()[back]["frame"]
+    inactive_point = (base["x"] + base["width"] * .7, base["y"] + base["height"] * .72)
+    no_tint_when_inactive("before Window mode", inactive_point)
     hold()
     state = hints()
-    shot = Shot("02-window-mode-outline")
+    shot = Shot("02-window-mode-tint")
     (art / "02-state.json").write_text(json.dumps({"hints": state, "views": views()}, indent=2))
-    b, f, s = drawn(back), drawn(front), drawn(side)
-    measured = union_visible(b, [f])
-    print("back visible", state[back]["visible_fraction"], "measured", round(measured, 3), flush=True)
-    check("solver occlusion matches the displayed layout", abs(state[back]["visible_fraction"] - measured) < .03)
-    check("rear window is less than half visible", state[back]["visible_fraction"] < .5)
-    check("mostly occluded rear window has an outline", state[back]["outline"])
-    check("front window has no outline", not state[front]["outline"] and state[front]["visible_fraction"] == 1)
-    check("uncovered window has no outline", not state[side]["outline"])
-    color = tuple(round(c * 255) for c in state[back]["color"])
-    circles = [h["badge"] for h in state.values() if h.get("badge")]
-    def on_badge(x, y):
-        return any((x - c["x"] - c["size"] / 2) ** 2 + (y - c["y"] - c["size"] / 2) ** 2 <
-                   (c["size"] / 2 + 6) ** 2 for c in circles)
-    # Sample the rear window's edges where the front window covers them, away from corners.
-    samples = []
-    for i in range(1, 20):
-        x = b[0] + 24 + (b[2] - 48) * i / 20
-        for y in (b[1], b[1] + b[3] - 1):
-            samples.append((x, y))
-        y = b[1] + 24 + (b[3] - 48) * i / 20
-        for x in (b[0], b[0] + b[2] - 1):
-            samples.append((x, y))
-    covered = [(x, y) for x, y in samples if f[0] + 4 < x < f[0] + f[2] - 4 and
-               f[1] + 4 < y < f[1] + f[3] - 4 and not on_badge(x, y)]
-    def edge_hit(image, x, y):
-        return any(near(image.pixel(x + dx, y + dy), color) for dx in (-1, 0, 1) for dy in (-1, 0, 1))
-    hits = sum(edge_hit(shot, x, y) for x, y in covered)
-    print("outline samples above front window", hits, "/", len(covered), "color", color, flush=True)
-    check("opaque outline in the rear hint color is drawn above the front window",
-          len(covered) >= 20 and hits >= .9 * len(covered))
-    check("the edge was front-window content before Window mode",
-          sum(edge_hit(before, x, y) for x, y in covered) == 0)
-    inner = [(b[0] + 8, b[1] + b[3] / 2), (b[0] + b[2] / 2, b[1] + 8)]
-    inner = [(x, y) for x, y in inner if not on_badge(x, y)]
-    check("outline stays thin (front content shows inside it)",
-          inner and not any(near(shot.pixel(x, y), color, 12) for x, y in inner))
+    overlap = find_point(back, require_ids=(front,))
+    tint_stack_check("rear tint over front window", overlap, (back, front))
+    side_point = find_point(side, avoid_ids=(back, front))
+    tint_stack_check("uncovered side window tint", side_point, (side,))
     release()
-    after = Shot("03-after-release")
-    check("outline clears with the hints", not any(h["outline"] for h in hints().values()))
-    check("released screen shows no outline pixels",
-          sum(edge_hit(after, x, y) for x, y in covered) == 0)
-    corner = corner_blend(shot, state, back, f)
-    print("corner blend pixels", corner, flush=True)
-    check("the ring's corner is antialiased", corner is not None and corner >= 3)
+    no_tint_when_inactive("after Alt release", overlap)
     for function in (restack_during_hold, cover_moves_away, escape_clears, scaled_window,
-                     fullscreen_in_front, always_avoidance, widget_cover):
+                     always_avoidance, widget_cover, fullscreen_in_front):
         section(function)
-    reset_layout()
-    timing = ipc("scottland/hints")
-    print("occlusion pass max ms", timing["occlusion_pass_max_ms"], "deferrals", timing["occlusion_deferrals"], flush=True)
 
     # --- WK38: overlay strength slider, live ------------------------------------------------
     probe = "0"
@@ -773,7 +1022,11 @@ try:
     q = snapshot()
     panel_x = (1280 - q["panel"]["width"]) / 2
     panel_y = 720 - max(24, round(720 * .04)) - q["panel"]["height"]
-    check("default strength is 7%", abs(q["motion"]["window_mode_tint"] - 7) < .01 and option("window_mode_tint") == 7)
+    default_motion_strength = q["motion"]["window_mode_tint"]
+    default_plugin_strength = option("window_mode_tint")
+    check("Settings strength matches the live option", abs(default_motion_strength -
+          default_plugin_strength) < .01,
+          {"settings": default_motion_strength, "Wayfire": default_plugin_strength})
     for _ in range(3):
         click(panel_x + 36 + 2.5 * (q["panel"]["width"] - 72) / 6, panel_y + 100)
         if snapshot()["tab"] == 2:
@@ -838,24 +1091,19 @@ try:
           all(abs(d100 - d20 * strengths[100] / strengths[20]) <= 6 for d20, d100 in zip(results[20], results[100])))
     # Live inside one hold: moving the slider while hints show changes the drawn tint at once.
     hold()
-    state = hints()
-    sample = sample_point(state)
+    sample = sample_point(hints())
     first_image = Shot("05-live-before")
     first = first_image.pixel(*sample)
-    # WK37: the outline is never occluded, not even by an overlay surface such as this panel.
-    b = drawn(back)
-    color = tuple(round(c * 255) for c in state[back]["color"])
-    circles = [h["badge"] for h in state.values() if h.get("badge")]
-    pw, ph = snapshot()["panel"]["width"], snapshot()["panel"]["height"]
-    under_panel = [(b[0] + b[2] * i / 20, y) for i in range(1, 20) for y in (b[1], b[1] + b[3] - 1)]
-    under_panel += [(x, b[1] + b[3] * i / 20) for i in range(1, 20) for x in (b[0], b[0] + b[2] - 1)]
-    under_panel = [(x, y) for x, y in under_panel if panel_x + 16 < x < panel_x + pw - 16 and
-                   panel_y + 16 < y < panel_y + ph - 16 and not on_badge(x, y)]
-    hits = sum(edge_hit(first_image, x, y) for x, y in under_panel)
-    print("outline samples above the settings panel", hits, "/", len(under_panel), flush=True)
-    check("mostly occluded window still outlined with the panel open", state[back]["outline"])
-    check("outline draws above an overlay surface (the settings panel)",
-          len(under_panel) >= 8 and hits >= .9 * len(under_panel))
+    # Settings is above the tint layer. Its own pixels must not change when tint strength changes.
+    panel_snapshot = snapshot()["panel"]
+    overlay_sample = (panel_x + panel_snapshot["width"] / 2,
+                      panel_y + panel_snapshot["height"] / 2)
+    set_tint(0)
+    overlay_zero = Shot("05-settings-untinted-zero")
+    set_tint(100)
+    overlay_full = Shot("05-settings-untinted-full")
+    check("Window-mode Settings stays above and untinted by the layer",
+          near(overlay_zero.pixel(*overlay_sample), overlay_full.pixel(*overlay_sample), 3))
     x, y, width = reveal_tint()
     click(x + width - 1, y + 34)
     check("slider reaches its 100% maximum", option_reaches("window_mode_tint", 100))
@@ -866,10 +1114,11 @@ try:
           sum(abs(a - b) for a, b in zip(second, bg)) > sum(abs(a - b) for a, b in zip(first, bg)) + 10)
     release()
     panel.terminate(); panel.wait(timeout=5)
+    section(list_picker_overlay_isolation)
     # scottland-ctl takes both separate settings across 0-100%; Wayfire bounds a stored value by
     # the option's metadata range, so a tint above the old 30% maximum must read back unclamped.
     ctl = [str(repo / "core/libexec/scottland-ctl"), "set"]
-    for name, values, default in (("window_mode_tint", (0, 45, 100), 7), ("hint_background_opacity", (0, 100), 21)):
+    for name, values, default in (("window_mode_tint", (0, 45, 100), 17.5), ("hint_background_opacity", (0, 100), 80)):
         for value in values:
             subprocess.run(ctl + [name, str(value)], check=True, timeout=10, stdout=log, stderr=log)
             check(f"scottland-ctl sets {name} to {value}%", option_reaches(name, value, tolerance=.01))

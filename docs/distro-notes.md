@@ -49,7 +49,7 @@ Gooarchy will have its own bar and its own notification system (see docs/knocks.
 - **Coding agents ring the terminal's bell when they need the user**, so Scottland's attention
   (WG15, docs/attention.md) sees them, including over mosh where desktop notifications from the
   remote host can't arrive (Claude Code: `preferredNotifChannel: terminal_bell`).
-- **Touchpad tapping and tap-and-drag on**: double-tap-and-drag with drag lock (L22) and the three-finger tap-and-drag resize (L24) ride on
+- **Touchpad tapping and tap-and-drag on**: double-tap-and-drag with drag lock (L22) and the three-finger tap-and-drag window move (L24) ride on
   libinput's tap-and-drag.
 - **A notification daemon with a do-not-disturb control, and a `focus.d` hook for it**, so full screen
   holds notifications (FS1, tenet 6). On Omarchy the adapter provides this.

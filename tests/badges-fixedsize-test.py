@@ -67,8 +67,9 @@ def badge_pixels(rail, collapsed, count):
     time.sleep(.8)
     f = t.card("badge-corners")["frame"]
     image = shot(f"badge-{rail}-{'collapsed' if collapsed else 'expanded'}-{count}")
-    # Use the live palette, including integrations, rather than hard-coding its alert hue.
-    palette = json.loads((Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".palette.json")).read_text())
+    # Use the session palette, including integrations, rather than hard-coding its alert hue.
+    palette_path = Path(os.environ["SCOTTLAND_SESSION_DIR"]) / (os.environ["WAYLAND_DISPLAY"] + ".palette.json")
+    palette = json.loads(palette_path.read_text())
     alert = tuple(bytes.fromhex(palette.get("alert", "#bf616a").lstrip("#")))
     x, y, w, h = (round(f[k]) for k in ("x", "y", "width", "height"))
     colored = [(px, py) for py in range(y, y+h) for px in range(x, x+w)

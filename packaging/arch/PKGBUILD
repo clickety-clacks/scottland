@@ -26,7 +26,7 @@ build() {
     return 1
   fi
   PRODUCT_SOURCE_BUILD_COMMIT="$source_commit" cargo build --locked --manifest-path "$_root/core/tools/Cargo.toml" --workspace --release --target-dir "$srcdir/cargo"
-  install -dm755 "$srcdir/tools/bin" "$srcdir/source"
+  install -dm755 "$srcdir/tools/bin" "$srcdir/tools/lib" "$srcdir/source"
   cargo metadata --no-deps --format-version 1 --manifest-path "$_root/core/tools/Cargo.toml" > "$srcdir/metadata.json"
   python - "$srcdir/metadata.json" "$srcdir/cargo/release" "$srcdir/tools/bin" <<'PY'
 import json
@@ -199,6 +199,8 @@ package_scottland-omarchy() {
   install -Dm644 "$o/agents/skills/scottland-omarchy/SKILL.md" "$pkgdir/usr/share/scottland/agents/skills/scottland-omarchy/SKILL.md"
   install -Dm755 "$o/autostart.d/10-hyprshim" "$pkgdir/usr/lib/scottland/autostart.d/10-hyprshim"
   install -Dm755 "$o/reload.d/10-hyprshim" "$pkgdir/usr/lib/scottland/reload.d/10-hyprshim"
+  install -Dm755 "$o/reload.d/40-omarchy-shell" \
+    "$pkgdir/usr/lib/scottland/reload.d/40-omarchy-shell"
   install -Dm755 "$o/autostart.d/20-omarchy-shell" "$pkgdir/usr/lib/scottland/autostart.d/20-omarchy-shell"
   install -Dm644 "$o/switch-dialog/shell.qml" "$pkgdir/usr/share/scottland/switch-dialog/shell.qml"
   ln -s /usr/share/omarchy/shell/Commons "$pkgdir/usr/share/scottland/switch-dialog/Commons"

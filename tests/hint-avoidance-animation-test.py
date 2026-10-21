@@ -22,7 +22,7 @@ t = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(t)
 passes = failures = 0
 children = []
-palette_path = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / \
+palette_path = Path(os.environ["SCOTTLAND_SESSION_DIR"]) / \
     (os.environ["WAYLAND_DISPLAY"] + ".palette.json")
 old_palette = palette_path.read_bytes() if palette_path.exists() else None
 

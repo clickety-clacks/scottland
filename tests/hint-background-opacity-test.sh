@@ -11,11 +11,15 @@ art=$(realpath -m "${1:-build/hint-background-opacity-evidence}")
 [[ $art == "$PWD"/build/* && ! -e $art ]] || { echo 'artifacts must be fresh under build/' >&2; exit 1; }
 mkdir -p "$art"
 cleanup() {
+  local status=$?
+  trap - EXIT
   cp "$SCOTTLAND_HEADLESS_DIR/wayfire.log" "$art/wayfire.log" 2>/dev/null || true
-  tests/headless.sh stop >/dev/null 2>&1 || true
-  rm -rf -- "$SCOTTLAND_HEADLESS_DIR"
+  if ! tests/headless.sh stop >/dev/null 2>&1; then
+    echo 'headless stop failed; preserving owned scratch for inspection' >&2
+  fi
+  exit "$status"
 }
 trap cleanup EXIT
-export TMPDIR="$PWD/build/test-tmp";mkdir -p "$TMPDIR"
+# headless.sh binds TMPDIR to this run's private scratch for every command in the session.
 tests/headless.sh start --widgets
 tests/headless.sh run timeout --signal=TERM --kill-after=30s 4m python3 tests/hint-background-opacity-test.py "$art" | tee "$art/results.log"

@@ -10,7 +10,6 @@ import sys
 import time
 
 art=Path(sys.argv[1]);art.mkdir(parents=True,exist_ok=True)
-assert os.environ['WAYLAND_DISPLAY']!='wayland-1'
 sock=socket.socket(socket.AF_UNIX);sock.connect(os.environ['WAYFIRE_SOCKET'])
 def ipc(method,data=None):
     body=json.dumps(dict(method=method,data=data or {})).encode()

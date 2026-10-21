@@ -21,7 +21,11 @@ t = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(t)
 out = Path(sys.argv[1])
 out.mkdir(parents=True, exist_ok=True)
-palette = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".palette.json")
+# Use the same per-session directory as scottland-widget-launch. Isolated headless runs set
+# The headless runner exposes the palette through this session's runtime namespace.
+session_dir = Path(os.environ.get("SCOTTLAND_SESSION_DIR") or os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland"))
+palette = session_dir / (os.environ["WAYLAND_DISPLAY"] + ".palette.json")
 SCHEMES = {
     "dark": {"background": "#2e3440", "foreground": "#d8dee9", "muted": "#97a3ab", "accent": "#81a1c1", "alert": "#bf616a"},
     "light": {"background": "#eceff4", "foreground": "#2e3440", "muted": "#4c566a", "accent": "#5e81ac", "alert": "#bf616a"},

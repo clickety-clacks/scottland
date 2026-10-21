@@ -69,10 +69,22 @@ def scene(id):
     return (f['x'], f['y'], f['x'] + f['width'], f['y'] + f['height'])
 
 
+def goo_rect(id):
+    for screen in ipc('scottland/goo-state').get('screens', []):
+        for source in screen.get('source_rects', []):
+            if source['id'] == id and not source['hint_circle']:
+                return (source['x'], source['y'], source['x'] + source['width'],
+                        source['y'] + source['height'])
+    return None
+
+
 def capture(name):
     png = art / (name + '.png')
     subprocess.run(['grim', str(png)], check=True)
     data = subprocess.check_output(['grim', '-t', 'ppm', '-'])
+    if name in ('grabbed-while-peeking-held', 'grabbed-while-peeking-dropped'):
+        # Retain the exact compositor frame used by both pixel oracles below.
+        (art / (name + '.ppm')).write_bytes(data)
     parts, pos = [], 0
     while len(parts) < 4:
         while data[pos:pos + 1].isspace(): pos += 1
@@ -105,6 +117,27 @@ def labels_of(image):
     return rows
 
 
+def bounds_of(rows, title):
+    """Return exclusive pixel bounds and count for one fixture client's labeled pixels."""
+    index = list(dict.fromkeys(COLORS.values())).index(COLORS[title]) + 1
+    needle = bytes((index,))
+    left = top = right = bottom = None
+    count = 0
+    for y, line in enumerate(rows):
+        n = line.count(needle)
+        if not n:
+            continue
+        x1, x2 = line.find(needle), line.rfind(needle) + 1
+        left = x1 if left is None else min(left, x1)
+        right = x2 if right is None else max(right, x2)
+        top = y if top is None else top
+        bottom = y + 1
+        count += n
+    if left is None:
+        return None
+    return {'bounds': [left, top, right, bottom], 'pixels': count}
+
+
 def strip_of(rows, color, size):
     """Does the color show a block STRIP_L x STRIP_D (either way; a dimension larger than the
     window's drawn size shrinks to it)? Returns (found, pixel count)."""
@@ -133,14 +166,17 @@ def zone_of(x):
     return 'center' if abs(x - W / 2) <= half else 'left' if x < W / 2 else 'right'
 
 
-def observe(name, phase, covered, title, quiet=False):
+def observe(name, phase, covered, title, quiet=False, covering_title=None):
     image = capture(f'{name}-{phase}')
     x1, y1, x2, y2 = scene(covered)
-    found, count = strip_of(labels_of(image), COLORS[title], (x2 - x1, y2 - y1))
+    rows = labels_of(image)
+    found, count = strip_of(rows, COLORS[title], (x2 - x1, y2 - y1))
     h = hint(covered)
     row = {'case': name, 'phase': phase, 'strip_in_pixels': found, 'pixels': count,
            'scene_frame': [round(v, 1) for v in (x1, y1, x2, y2)],
            'diagnostic': {k: h.get(k) for k in ('outcome', 'rung', 'rule')}}
+    if covering_title is not None:
+        row['cover_pixel_bounds'] = bounds_of(rows, covering_title)
     if not quiet:
         results.append(row)
         print(f'      {name} [{phase}]: {json.dumps(row)}', flush=True)
@@ -170,11 +206,18 @@ def release():
     button(False); key('LEFTMETA', False)
 
 
-def strip_shows(name, phase, covered, title, timeout):
+def strip_shows(name, phase, covered, title, timeout, covering_title=None, before_capture=None):
     """Wait for the covered window's strip to show in captured pixels; fail with the last capture."""
     last = {}
     def look():
-        found, row = observe(name, phase, covered, title, quiet=True)
+        cover_state = None
+        if before_capture is not None:
+            ready, cover_state = before_capture()
+            if not ready:
+                last.clear(); last.update({'cover_state': cover_state})
+                return False, cover_state
+        found, row = observe(name, phase, covered, title, quiet=True, covering_title=covering_title)
+        if cover_state is not None: row['cover_state'] = cover_state
         last.clear(); last.update(row)
         return found, {k: row[k] for k in ('pixels', 'scene_frame', 'diagnostic')}
     try:
@@ -214,19 +257,46 @@ try:
                 release()
             else:
                 # Under 3 s: a build that still has the drag audition must not start one meanwhile.
-                ok, detail = strip_shows(name, 'held', covered, title, 2.5)
+                prior_cover = [None]
+                held_cover_state = {}
+                def cover_ready():
+                    v = layout(covering)
+                    f = v.get('scene_frame') or v['frame']
+                    frame = (f['x'], f['y'], f['x'] + f['width'], f['y'] + f['height'])
+                    island = goo_rect(covering)
+                    epsilon = 0.01  # allow float32 round-trip error at shared edges
+                    inside = island is not None and island[0] >= frame[0] - epsilon and \
+                        island[1] >= frame[1] - epsilon and island[2] <= frame[2] + epsilon and \
+                        island[3] <= frame[3] + epsilon
+                    current = (v['applied_scale'], frame)
+                    stable = prior_cover[0] == current
+                    prior_cover[0] = current
+                    state = {'scale': v['applied_scale'], 'scene_frame': frame, 'goo_island': island,
+                             'goo_inside_frame': inside, 'scale_and_frame_stable': stable}
+                    held_cover_state.clear(); held_cover_state.update(state)
+                    return stable and inside, state
+                ok, detail = strip_shows(name, 'held', covered, title, 2.5,
+                                         covering_title='Big', before_capture=cover_ready)
                 check(ok, f'{name}: while the cover is held, the covered window shows a strip (pixels)', detail)
-                held_at = scene(covering)  # where it is drawn under the pointer
+                held_pixels = detail.get('cover_pixel_bounds') if isinstance(detail, dict) else None
+                held_scene = held_cover_state.get('scene_frame')  # stable telemetry at the held capture
                 release()
             if after_drop: after_drop()
             settled()
-            ok, detail = strip_shows(name, 'dropped', covered, title, 6)
+            ok, detail = strip_shows(name, 'dropped', covered, title, 6,
+                                     covering_title='Big' if not coast else None)
             check(ok, f'{name}: after the drop, the covered window shows a strip (pixels)', detail)
             if not coast:
-                now = scene(covering)
-                check(all(abs(a - b) <= 1 for a, b in zip(now, held_at)),
-                      f'{name}: the covering window stays exactly where it was dropped (P14)',
-                      f'drawn {[round(v, 1) for v in now]} vs at release {[round(v, 1) for v in held_at]}')
+                dropped_pixels = detail.get('cover_pixel_bounds') if isinstance(detail, dict) else None
+                dropped_scene = scene(covering)
+                held_bounds = held_pixels.get('bounds') if held_pixels else None
+                dropped_bounds = dropped_pixels.get('bounds') if dropped_pixels else None
+                check(held_bounds is not None and dropped_bounds is not None and
+                      all(abs(a - b) <= 1 for a, b in zip(dropped_bounds, held_bounds)),
+                      f'{name}: the covering window\'s visible pixel bounds stay where it was dropped (P14)',
+                      f'visible pixel bounds {dropped_pixels} vs held {held_pixels}; '
+                      f'scene telemetry {[round(v, 1) for v in dropped_scene]} '
+                      f'vs {[round(v, 1) for v in held_scene]}')
             if not after_drop:
                 check(geometry(covered) == true_before, f'{name}: the covered window\'s real geometry is unchanged (P3)',
                       f'{geometry(covered)} vs {true_before}')
@@ -268,9 +338,32 @@ try:
             ((sx1 + sx2) / 2, sy1 + 8) if sy1 < fx[1] - 10 else ((sx1 + sx2) / 2, sy2 - 8)
         pointer(gx, gy); time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.2)
         pointer(gx + 3, gy + 3); time.sleep(.3); release()
-        until(lambda: (ipc('scottland/desktop-model').get('drag', {}).get('dragged', 0) in (0, None), 'dragging'), 3, 'grab ended')
+        def drag_state():
+            return ipc('scottland/desktop-model').get('drag', {})
+        def drag_ended():
+            state = drag_state()
+            return not state.get('started'), state
+        until(drag_ended, 3, 'grab ended')
         # Clear the cover off it again, back where it started, so the case's own cover starts clear.
-        pointer_drag(B, (40 + 760 / 2, 60 + 560 / 2)); release(); settled()
+        ipc('window-rules/focus-view', {'id': B})
+        until(lambda: (focused_id() == B, focused_id()), 3, 'Big focused before reset drag')
+        pointer_drag(B, (40 + 760 / 2, 60 + 560 / 2))
+        def drag_started_for_big():
+            state = drag_state()
+            return state.get('started') and state.get('window') == B, state
+        until(drag_started_for_big, 3, 'Big is the actual reset drag target')
+        release()
+        until(drag_ended, 3, 'reset drag ended')
+        # The reset gesture can touch a rail and leave Big widgetized; restore the
+        # same ordinary-window fixture before the enclosing case's real cover drag.
+        if layout(B)['widgetized']:
+            ipc('scottland/present', {'window': B})
+            until(lambda: (not layout(B)['widgetized'], layout(B)), 3,
+                  'Big restored from widget after reset drag')
+            settle([B])
+        place(B, 40, 60, 760, 560)
+        settle([B])
+        settled()
 
     def solo_big():
         ipc('window-rules/focus-view', {'id': B})
