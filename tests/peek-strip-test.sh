@@ -12,4 +12,4 @@ cleanup() {
 }
 trap cleanup EXIT
 tests/headless.sh start
-python3 tests/peek-strip-test.py "$artifacts"
+tests/headless.sh run python3 tests/peek-strip-test.py "$artifacts"

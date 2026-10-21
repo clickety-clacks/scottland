@@ -18,6 +18,7 @@ width there: with empty space at the center edge it hangs about that far (and la
 a spot clear of the zone would); with a center window at the edge it stays clear of that window."""
 import json
 import math
+import os
 import socket
 import struct
 import subprocess
@@ -28,7 +29,7 @@ from pathlib import Path
 artifacts = Path(sys.argv[1])
 passed = failed = 0
 clients = []
-request_path = None
+request_path = os.environ['WAYFIRE_SOCKET']
 # Mike's layout.ini on daily-desktop (2026-10-04).
 MIKE = {'scottland/center_width': 30.0, 'scottland/rail_width': 1.9, 'scottland/blend_width': 40.0,
         'scottland/scale_curve': '0.000:0.997 0.041:0.779 1.000:0.255',
@@ -37,11 +38,6 @@ PAD = 32 / 3 + 5   # WP7: halo plus 5 pt
 
 
 def ipc(method, data=None):
-    global request_path
-    if request_path is None:
-        # The headless session's own recorded socket, never the caller's desktop.
-        request_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-            "import os; print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
     with socket.socket(socket.AF_UNIX) as request:
         request.settimeout(10)
         request.connect(request_path)

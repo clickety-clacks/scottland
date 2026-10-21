@@ -21,15 +21,10 @@ from pathlib import Path
 artifacts = Path(sys.argv[1])
 passed = failed = 0
 clients = []
-request_path = None
+request_path = os.environ['WAYFIRE_SOCKET']
 
 
 def ipc(method, data=None):
-    global request_path
-    if request_path is None:
-        # The headless session's own recorded socket, never the caller's desktop.
-        request_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-            "import os; print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
     with socket.socket(socket.AF_UNIX) as request:
         request.settimeout(10)
         request.connect(request_path)
@@ -64,10 +59,6 @@ def wait_for(predicate, timeout=5):
 
 def wait_for_compositor(timeout=15):
     """Wait until this headless session's Wayfire IPC socket accepts connections."""
-    global request_path
-    if request_path is None:
-        request_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-            "import os; print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
     deadline = time.monotonic() + timeout
     last_error = None
     while time.monotonic() < deadline:

@@ -9,6 +9,7 @@ the engram case (a top sliver) gets its hint out from under the front window.
 """
 import json
 import math
+import os
 import re
 import socket
 import struct
@@ -16,16 +17,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from headless_palette import write_session_file
 
 artifacts = Path(sys.argv[1]).resolve()
 clients = {}
 passed = failed = 0
-socket_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-    "import os;print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
-palette_path = Path(subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-    "import os;print(os.path.join(os.environ['SCOTTLAND_SESSION_DIR'],os.environ['WAYLAND_DISPLAY']+'.palette.json'))"],
-    text=True).strip())
+socket_path = os.environ['WAYFIRE_SOCKET']
+palette_path = Path(os.environ['SCOTTLAND_SESSION_DIR']) / (os.environ['WAYLAND_DISPLAY'] + '.palette.json')
 solve_max_ms = 0.0
 slice_units_max = 0
 pass_slices_max = 0
@@ -102,7 +99,7 @@ def settled(timeout=10):
 def set_palette(text_scale):
     colors = {'scheme': 'dark', 'background': '#1f232c', 'foreground': '#d8deea',
               'accent': '#81a1c1', 'text_scale': text_scale, 'reduced_motion': False}
-    write_session_file(palette_path, json.dumps(colors))
+    palette_path.write_text(json.dumps(colors))
     time.sleep(.6)
 
 

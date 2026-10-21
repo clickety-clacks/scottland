@@ -2,13 +2,13 @@
 """Pixel masks against foreground rectangles, real Alt/drag input and stable attachments."""
 import json
 import math
+import os
 import socket
 import struct
 import subprocess
 import sys
 import time
 from pathlib import Path
-from headless_palette import write_session_file
 import gi
 gi.require_version('GdkPixbuf', '2.0')
 from gi.repository import GdkPixbuf
@@ -16,8 +16,7 @@ from gi.repository import GdkPixbuf
 artifacts = Path(sys.argv[1]).resolve()
 clients = []
 passed = failed = 0
-socket_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-    "import os;print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
+socket_path = os.environ['WAYFIRE_SOCKET']
 
 
 def ipc(method, data=None):
@@ -171,12 +170,10 @@ try:
     palette.write_text(json.dumps(colors))
     # A reused Wayland display name can retain a previous suite's palette (e.g. 3×
     # text). Pin only this headless session's palette; never change desktop preferences.
-    palette_path = Path(subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-        "import os;print(os.path.join(os.environ['SCOTTLAND_SESSION_DIR'],os.environ['WAYLAND_DISPLAY']+'.palette.json'))"],
-        text=True).strip())
+    palette_path = Path(os.environ['SCOTTLAND_SESSION_DIR']) / (os.environ['WAYLAND_DISPLAY'] + '.palette.json')
     temporary = artifacts/'compositor-palette.json'
     temporary.write_text(json.dumps(colors))
-    write_session_file(palette_path, temporary.read_text())
+    palette_path.write_text(temporary.read_text())
     ids = []
     specs = [('Back', 980, 620), ('Middle', 780, 520), ('Front', 540, 380)]
     if sys.argv[2:] == ['--baseline-medium']:
