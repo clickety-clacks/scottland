@@ -8,6 +8,7 @@ WP8's 95% line is still a periphery pin); the same without a pin; a pin made in 
 reaching another; the pins surviving a reload; every hint-key path out and back (slow presses
 through the widget, a WK15 double tap to the rail); Esc; Shift+arrow pins; and a remembered spot
 that zone settings have moved into the center (no longer used, WP8)."""
+import errno
 import json
 import math
 import os
@@ -24,11 +25,32 @@ clients = []
 request_path = os.environ['WAYFIRE_SOCKET']
 
 
-def ipc(method, data=None):
-    with socket.socket(socket.AF_UNIX) as request:
-        request.settimeout(10)
-        request.connect(request_path)
+def connect_request(timeout=10):
+    deadline = time.monotonic() + timeout
+    last_failure = None
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if last_failure is not None:
+                raise last_failure
+            raise TimeoutError('timed out connecting to the compositor IPC socket')
+        request = socket.socket(socket.AF_UNIX)
+        request.settimeout(remaining)
+        try:
+            request.connect(request_path)
+        except OSError as failure:
+            request.close()
+            if failure.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                raise
+            last_failure = failure
+            time.sleep(min(.05, max(0, deadline - time.monotonic())))
+            continue
+        request.settimeout(timeout)
+        return request
 
+
+def ipc(method, data=None):
+    with connect_request() as request:
         def receive(n):
             data = b''
             while len(data) < n:
