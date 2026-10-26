@@ -80,13 +80,8 @@ fn overlaps(a: Rect, b: Rect) -> bool {
 
 fn parse_output(output: &Value, heads: &[Value]) -> Option<Output> {
     let name = output.get("name")?.as_str()?.to_string();
-    let geometry = output.get("geometry")?;
-    let rect = Rect {
-        x: geometry.get("x")?.as_i64()?,
-        y: geometry.get("y")?.as_i64()?,
-        width: geometry.get("width")?.as_u64()?,
-        height: geometry.get("height")?.as_u64()?,
-    };
+    // Wayfire reports the geometry as floating-point numbers.
+    let rect = logical_rect(output.get("geometry")?)?;
     let head = heads
         .iter()
         .find(|head| head.get("name").and_then(Value::as_str) == Some(name.as_str()));
@@ -319,11 +314,21 @@ mod tests {
 
     #[test]
     fn rotated_heads_swap_pixel_size() {
-        let output =
-            json!({"name": "DSI-1", "geometry": {"x": 0, "y": 0, "width": 1080, "height": 1920}});
+        // As Wayfire's window-rules/list-outputs reports it, in floating-point numbers.
+        let output = json!({"name": "DSI-1",
+                            "geometry": {"x": 0.0, "y": 0.0, "width": 1080.0, "height": 1920.0}});
         let heads = [json!({"name": "DSI-1", "scale": 1.0, "transform": 1,
                             "mode": {"width": 1920, "height": 1080, "refresh": 60.0}})];
         let parsed = parse_output(&output, &heads).unwrap();
+        assert_eq!(
+            parsed.rect,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 1080,
+                height: 1920
+            }
+        );
         assert_eq!(parsed.pixels, Some((1080, 1920)));
         assert_eq!(parsed.scale, 1.0);
     }
