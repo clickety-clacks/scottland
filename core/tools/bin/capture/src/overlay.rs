@@ -191,6 +191,7 @@ impl Overlay {
             }
             let reply = match parse_event(line.trim_end()) {
                 Some(Event::Hover(point)) => picker.hover(point),
+                Some(Event::Drag(from, to)) => picker.drag(from, to),
                 Some(Event::Release(from, to)) => picker.release(from, to),
                 Some(Event::Key(key)) => picker.key(key),
                 None => Reply::Nothing,
@@ -256,6 +257,7 @@ fn log_tail(log: &Path) -> String {
 #[derive(Debug, PartialEq)]
 enum Event {
     Hover(Point),
+    Drag(Point, Point),
     Release(Point, Point),
     Key(Key),
 }
@@ -271,6 +273,7 @@ fn parse_event(line: &str) -> Option<Event> {
     };
     match *words.first()? {
         "hover" => Some(Event::Hover(point(1)?)),
+        "drag" => Some(Event::Drag(point(1)?, point(3)?)),
         "release" => Some(Event::Release(point(1)?, point(3)?)),
         "key" => Some(Event::Key(match *words.get(1)? {
             "tab" => Key::Tab,
@@ -297,6 +300,10 @@ mod tests {
         assert_eq!(
             parse_event("hover -5 12"),
             Some(Event::Hover(Point { x: -5, y: 12 }))
+        );
+        assert_eq!(
+            parse_event("drag 1 2 -3 4"),
+            Some(Event::Drag(Point { x: 1, y: 2 }, Point { x: -3, y: 4 }))
         );
         assert_eq!(
             parse_event("release 1 2 3 4"),

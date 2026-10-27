@@ -449,6 +449,10 @@ def recorder_pids():
     return pids_matching(lambda cmd, env: any('capture-recorder.py' in part for part in cmd))
 
 
+def clipboard_owners():
+    return set(pids_matching(lambda cmd, env: bool(cmd) and os.path.basename(cmd[0]).startswith('wl-copy')))
+
+
 def capture_pids():
     def ours(cmd, env):
         if not cmd: return False
@@ -617,6 +621,32 @@ if shot:
 else:
     check('CP1 hover: the window a click would pick is highlighted, and only it', False, r)
 
+# ---------------------------------------------------------------- CP1 drag highlight
+def drag_and_grab(x0, y0, x1, y1):
+    def act():
+        hover(x0, y0)
+        button('press'); time.sleep(0.08)
+        for i in range(1, 6):
+            pointer(x0 + (x1 - x0) * i / 5, y0 + (y1 - y0) * i / 5); time.sleep(0.05)
+        time.sleep(0.6)
+        shot.append(grab(H1))
+        button('release'); time.sleep(0.3)
+    return act
+for mode, start, label in [
+        ('windows', (ox + 1100, oy + 650), 'a drag in windows mode highlights the window under the pointer'),
+        ('smart', (ox + 302, oy + 201), 'a small smart drag highlights the window it would pick')]:
+    shot.clear()
+    r = capture('region', mode, actions=drag_and_grab(*start, ox + 300, oy + 200))
+    if shot:
+        # Part of B left of a long drag's box, and part of A outside B.
+        inside_b = mean_difference(crop(shot[0], 210, 160, 80, 130), crop(reference, 210, 160, 80, 130))
+        in_a = differs(crop(shot[0], 110, 320, 80, 150), crop(reference, 110, 320, 80, 150))
+        check(f'CP1 drag: {label}, and the release picks it',
+              inside_b > 5 and in_a is not None and in_a[1] <= 3 and r.rc == 0 and r.stdout == geo(200, 150, 200, 150),
+              (inside_b, in_a, r))
+    else:
+        check(f'CP1 drag: {label}, and the release picks it', False, r)
+
 # ---------------------------------------------------------------- CP2: keys
 listing(A, B, win(800, 400, 200, 100), A)
 for label, combos, expected in [
@@ -641,8 +671,9 @@ check('CP2: an arrow weighs distance across twice distance along',
 r = capture('region', 'windows', actions=lambda: hover(ox + 1100, oy + 650) or keys(TAB, 'KEY_DOWN', RET))
 check('CP2: Down picks the window below', r.rc == 0 and r.stdout == geo(350, 180, 100, 100), r)
 listing(A, B)
-r = capture('region', 'windows', actions=lambda: hover(ox + 1100, oy + 650) or keys(RET))
-check('CP2: Return picks the highlighted output', r.rc == 0 and r.stdout == FULL, r)
+r = capture('region', 'windows', actions=lambda: hover(ox + 1100, oy + 650) or keys(RET) or time.sleep(0.5) or keys(ESC))
+check('CP2: Return over no window picks nothing (the output is Ctrl+Return\'s)',
+      r.rc == 1 and r.stdout == '' and 'cancelled' in r.stderr, r)
 r = capture('region', 'windows', actions=lambda: hover(ox + 250, oy + 200) or keys(CTRL_RET))
 check('CP2: Ctrl+Return picks the whole output even over a window', r.rc == 0 and r.stdout == FULL, r)
 r = capture('region', 'windows', actions=lambda: hover(ox + 250, oy + 200) or keys(ESC))
@@ -803,7 +834,18 @@ tx, ty, tw, th = show_fixture('text', '--text', SENTENCE)
 ensure_focus(H1)
 stills = {name: grab(name) for name in layout}
 area = (tx + 2, ty + 2, tw - 4, th - 4)
+owners = clipboard_owners()
+r = capture('screenshot', 'region', actions=lambda: drag(area[0], area[1], area[0] + area[2], area[1] + area[3]))
+shot_owner = clipboard_owners() - owners
+pasted = png(clipboard('image/png') or b'')
+check('CP14: after a screenshot exits, its copy still pastes, served by one clipboard owner',
+      r.rc == 0 and pasted is not None and len(shot_owner) == 1, (r, shot_owner))
+owners = clipboard_owners()
 r = capture('text', actions=lambda: drag(area[0], area[1], area[0] + area[2], area[1] + area[3]))
+text_owner = clipboard_owners() - owners
+check('CP14: a text read replaces it and the screenshot\'s clipboard owner exits',
+      r.rc == 0 and len(text_owner) == 1 and wait(lambda: not (shot_owner & clipboard_owners()), 5),
+      (shot_owner, text_owner, clipboard_owners()))
 independent = scratch / 'text-crop.png'
 write_png(independent, *cut(area, stills))
 langs = os.environ.get('SCOTTLAND_OCR_LANGS', 'eng')
@@ -813,6 +855,9 @@ copied = (clipboard() or b'').decode(errors='replace')
 check('CP11: the text tesseract reads in the picked area is copied, trimmed',
       r.rc == 0 and copied == direct and SENTENCE in copied, (r, copied, direct))
 check('CP11: notice "Copied text from selection to clipboard"', summaries(r) == ['Copied text from selection to clipboard'], r.notices)
+set_sentinel()
+check('CP14: copying elsewhere makes the text read\'s clipboard owner exit',
+      text_owner and wait(lambda: not (text_owner & clipboard_owners()), 5), (text_owner, clipboard_owners()))
 hide_fixture('text')
 
 # ---------------------------------------------------------------- cancelling every command

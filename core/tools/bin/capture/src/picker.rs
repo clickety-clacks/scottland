@@ -5,7 +5,7 @@
 //! listing that says which output draws each window; without one, the paths that need them say
 //! so and every other path still works.
 
-use scottland::capture::{Point, Rect, select_window_rectangle};
+use scottland::capture::{Point, Rect, ordered_unique_window_rectangles, smallest_containing};
 
 /// A drag covering less than this many square logical pixels counts as a click in `smart`.
 const SMART_CLICK_AREA: u128 = 20;
@@ -44,6 +44,21 @@ pub enum Reply {
     Nothing,
 }
 
+/// What is highlighted: a window rectangle, or the focused output where no smaller window is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Target {
+    Window(Rect),
+    Output(Rect),
+}
+
+impl Target {
+    fn rect(self) -> Rect {
+        match self {
+            Target::Window(rect) | Target::Output(rect) => rect,
+        }
+    }
+}
+
 pub struct Picker {
     mode: Mode,
     focused: Rect,
@@ -55,13 +70,16 @@ pub struct Picker {
     pointer: Option<Point>,
     /// The window rectangle keys move from.
     current: Option<Rect>,
-    highlight: Option<Rect>,
+    highlight: Option<Target>,
 }
 
 impl Picker {
     pub fn new(mode: Mode, focused: Rect, windows: Result<Vec<Rect>, String>) -> Self {
         let (windows, unavailable) = match windows {
-            Ok(windows) => (Some(cp1_order(windows)), String::new()),
+            Ok(windows) => (
+                Some(ordered_unique_window_rectangles(&windows)),
+                String::new(),
+            ),
             Err(reason) => (None, reason),
         };
         Self {
@@ -83,9 +101,33 @@ impl Picker {
         let Some(windows) = &self.windows else {
             return Reply::Nothing;
         };
-        self.current = select_window_rectangle(point, windows);
-        let highlight = self.windows_pick(point);
-        self.set_highlight(highlight)
+        let window = smallest_containing(point, windows);
+        self.current = window;
+        let target = self.target(point, window);
+        self.set_highlight(target)
+    }
+
+    /// The pointer went down at `from` and is now at `to`, still down: highlight what releasing
+    /// here would pick by a click. A `smart` drag big enough to pick its own rectangle shows only
+    /// the dragged box.
+    pub fn drag(&mut self, from: Point, to: Point) -> Reply {
+        match self.mode {
+            Mode::Region => Reply::Nothing,
+            Mode::Windows => self.hover(to),
+            Mode::Smart => {
+                let dragged = drag_rect(from, to);
+                let reply = if area(dragged) >= SMART_CLICK_AREA {
+                    self.set_highlight(None)
+                } else {
+                    self.hover(Point {
+                        x: dragged.x,
+                        y: dragged.y,
+                    })
+                };
+                self.pointer = Some(to);
+                reply
+            }
+        }
     }
 
     /// The pointer went down at `from` and came up at `to`.
@@ -122,9 +164,10 @@ impl Picker {
             return Reply::Picked(self.focused);
         }
         if key == Key::Return {
+            // Return picks a highlighted window rectangle only; the output is Ctrl+Return's.
             return match self.highlight {
-                Some(rect) => Reply::Picked(rect),
-                None => Reply::Nothing,
+                Some(Target::Window(rect)) => Reply::Picked(rect),
+                _ => Reply::Nothing,
             };
         }
         let Some(windows) = &self.windows else {
@@ -147,7 +190,7 @@ impl Picker {
         match next {
             Some(rect) => {
                 self.current = Some(rect);
-                self.set_highlight(Some(rect))
+                self.set_highlight(Some(Target::Window(rect)))
             }
             None => Reply::Nothing,
         }
@@ -158,37 +201,35 @@ impl Picker {
         if !self.focused.contains(point) {
             return Reply::Nothing;
         }
-        if self.windows.is_none() {
+        let Some(windows) = &self.windows else {
             return Reply::Notice(self.unavailable_notice());
-        }
-        match self.windows_pick(point) {
-            Some(rect) => Reply::Picked(rect),
+        };
+        let window = smallest_containing(point, windows);
+        match self.target(point, window) {
+            Some(target) => Reply::Picked(target.rect()),
             None => Reply::Nothing,
         }
     }
 
-    /// What a `windows` click at `point` picks: among the focused output and the window
-    /// rectangles containing it, the smallest, the focused output first on equal areas.
-    fn windows_pick(&self, point: Point) -> Option<Rect> {
+    /// What a `windows` click at `point` picks, given the smallest window rectangle containing
+    /// it: that window, or the focused output when it is no smaller (the output first on equal
+    /// areas) or there is none.
+    fn target(&self, point: Point, window: Option<Rect>) -> Option<Target> {
         if !self.focused.contains(point) {
             return None;
         }
-        let window = self
-            .windows
-            .as_deref()
-            .and_then(|windows| select_window_rectangle(point, windows));
         match window {
-            Some(window) if area(window) < area(self.focused) => Some(window),
-            _ => Some(self.focused),
+            Some(window) if area(window) < area(self.focused) => Some(Target::Window(window)),
+            _ => Some(Target::Output(self.focused)),
         }
     }
 
-    fn set_highlight(&mut self, highlight: Option<Rect>) -> Reply {
+    fn set_highlight(&mut self, highlight: Option<Target>) -> Reply {
         if self.highlight == highlight {
             return Reply::Nothing;
         }
         self.highlight = highlight;
-        Reply::Highlight(highlight)
+        Reply::Highlight(highlight.map(Target::rect))
     }
 
     fn unavailable_notice(&self) -> String {
@@ -221,13 +262,6 @@ fn center(rect: Rect) -> Point {
         x: rect.x + (rect.width / 2) as i64,
         y: rect.y + (rect.height / 2) as i64,
     }
-}
-
-/// Unique window rectangles in CP1 order: by geometry text, byte by byte.
-fn cp1_order(mut windows: Vec<Rect>) -> Vec<Rect> {
-    windows.sort_by_key(|rect| geometry(*rect).into_bytes());
-    windows.dedup();
-    windows
 }
 
 /// The next (or previous) window rectangle in reading order: top edge, then left edge.
@@ -559,6 +593,95 @@ mod tests {
         let mut picker = picker(Mode::Windows, three_in_a_row());
         assert_eq!(picker.key(Key::Return), Reply::Nothing);
         assert_eq!(picker.key(Key::CtrlReturn), Reply::Picked(OUTPUT));
+    }
+
+    #[test]
+    fn return_picks_only_a_highlighted_window() {
+        let mut picker = picker(Mode::Smart, three_in_a_row());
+        assert_eq!(
+            picker.hover(point(500, 900)),
+            Reply::Highlight(Some(OUTPUT))
+        );
+        assert_eq!(
+            picker.key(Key::Return),
+            Reply::Nothing,
+            "the output is Ctrl+Return's"
+        );
+        assert_eq!(
+            picker.hover(point(800, 400)),
+            Reply::Highlight(Some(rect(700, 300, 400, 400)))
+        );
+        assert_eq!(
+            picker.key(Key::Return),
+            Reply::Picked(rect(700, 300, 400, 400))
+        );
+
+        let mut picker = self::picker(Mode::Windows, three_in_a_row());
+        picker.hover(point(500, 900));
+        picker.key(Key::Tab);
+        assert_eq!(
+            picker.key(Key::Return),
+            Reply::Picked(rect(0, 300, 400, 400))
+        );
+    }
+
+    #[test]
+    fn drag_highlights_what_releasing_there_would_pick() {
+        let windows = vec![rect(100, 100, 1200, 800), rect(200, 200, 600, 400)];
+        let mut picker = picker(Mode::Windows, windows.clone());
+        assert_eq!(
+            picker.drag(point(1500, 1000), point(300, 300)),
+            Reply::Highlight(Some(rect(200, 200, 600, 400)))
+        );
+        assert_eq!(
+            picker.drag(point(1500, 1000), point(1000, 850)),
+            Reply::Highlight(Some(rect(100, 100, 1200, 800)))
+        );
+        assert_eq!(
+            picker.release(point(1500, 1000), point(1000, 850)),
+            Reply::Picked(rect(100, 100, 1200, 800))
+        );
+
+        let mut picker = self::picker(Mode::Smart, windows);
+        assert_eq!(
+            picker.drag(point(303, 303), point(300, 300)),
+            Reply::Highlight(Some(rect(200, 200, 600, 400))),
+            "a small smart drag is a click at its top-left"
+        );
+        assert_eq!(
+            picker.drag(point(303, 303), point(250, 250)),
+            Reply::Highlight(None),
+            "a bigger one picks its own rectangle"
+        );
+        assert_eq!(
+            picker.drag(point(303, 303), point(302, 300)),
+            Reply::Highlight(Some(rect(200, 200, 600, 400)))
+        );
+
+        let mut picker = self::picker(Mode::Region, side_by_side());
+        assert_eq!(picker.drag(point(10, 10), point(11, 11)), Reply::Nothing);
+    }
+
+    #[test]
+    fn hover_and_click_agree_with_the_library_on_many_windows() {
+        let windows: Vec<Rect> = (0..400)
+            .map(|i| {
+                rect(
+                    (i * 37) % 1700,
+                    (i * 53) % 900,
+                    100 + (i % 7) as u64 * 40,
+                    80 + (i % 5) as u64 * 30,
+                )
+            })
+            .collect();
+        for (x, y) in [(5, 5), (400, 300), (1000, 700), (1899, 1079), (1750, 20)] {
+            let mut picker = picker(Mode::Windows, windows.clone());
+            let window = scottland::capture::select_window_rectangle(point(x, y), &windows)
+                .filter(|window| area(*window) < area(OUTPUT))
+                .unwrap_or(OUTPUT);
+            assert_eq!(picker.hover(point(x, y)), Reply::Highlight(Some(window)));
+            assert_eq!(click(&mut picker, x, y), Reply::Picked(window));
+        }
     }
 
     #[test]

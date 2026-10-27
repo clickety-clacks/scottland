@@ -81,7 +81,7 @@ ShellRoot {
       }
 
       Rectangle {
-        visible: root.hasHighlight && !root.dragging
+        visible: root.hasHighlight
         x: root.highlight.x - panel.modelData.x
         y: root.highlight.y - panel.modelData.y
         width: root.highlight.width
@@ -134,7 +134,11 @@ ShellRoot {
         }
         onPositionChanged: mouse => {
           root.pointer = Qt.point(panel.globalX(mouse.x), panel.globalY(mouse.y))
-          root.send("hover " + root.pointer.x + " " + root.pointer.y)
+          if (root.dragging)
+            root.send("drag " + root.pressed.x + " " + root.pressed.y + " "
+              + root.pointer.x + " " + root.pointer.y)
+          else
+            root.send("hover " + root.pointer.x + " " + root.pointer.y)
         }
         onReleased: mouse => {
           root.pointer = Qt.point(panel.globalX(mouse.x), panel.globalY(mouse.y))
