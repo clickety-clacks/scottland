@@ -217,7 +217,7 @@ Candidate source; eight focused helper behavior scenarios pass; compositor build
 
 | ID | Invariant | Status |
 |---|---|---|
-| SA1 | Package adoption requires `base.commit` to match the full source commit reported by the packaged `scottland-source`; it refuses a missing or mismatched source identity and any absent or non-executable required packaged tool, and activates only a complete detached source store with its commit marker and required executable tools. | Candidate; focused package-identity and tool-completeness regressions added, execution pending. |
+| SA1 | Package adoption requires `base.commit` to match the full source commit reported by the packaged `scottland-source`; it refuses a missing or mismatched source identity and a missing or non-executable source CLI. A missing or non-executable other source-declared packaged tool produces a warning naming that tool and omits only it; adoption continues with the available tools. The activated detached source store has its commit marker and every tool it exposes is executable. | Implemented; package adoption regressions in `core/tools` tests. |
 
 ## Terminal theme push
 
