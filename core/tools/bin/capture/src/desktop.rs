@@ -3,7 +3,7 @@
 //!
 //! Outputs and focus come from Wayfire's IPC. Without it, the outputs come from the compositor's
 //! output report (`scottland-output list`) and the parts that need Wayfire are off: window picking,
-//! and with several outputs, knowing which one has focus.
+//! and with several outputs, knowing which one has focus. A click on a screen still picks it.
 
 use scottland::capture::Rect;
 use scottland::{dirs, session::Session};
@@ -97,7 +97,7 @@ impl Desktop {
         let off = if focused.is_some() {
             "window picking is off; the whole screen and dragged regions still work"
         } else {
-            "window picking and the whole screen are off, since which screen has focus is unknown; dragged regions still work"
+            "window picking and the whole screen without a click are off, since which screen has focus is unknown; clicking a screen and dragged regions still work"
         };
         eprintln!("scottland-capture: {why}: {off}");
         Ok(Self {

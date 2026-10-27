@@ -3,7 +3,8 @@
 //! The overlay reports events in global logical coordinates and draws what this module answers:
 //! a highlight, a notice, or the end of the pick. Window rectangles come only from a window
 //! listing that says which output draws each window; without one, the paths that need them say
-//! so and every other path still works.
+//! so and every other path still works. Without Wayfire's IPC there are no windows, but a click on
+//! a point inside exactly one output's rectangle still picks that output.
 
 use scottland::capture::{Point, Rect, ordered_unique_window_rectangles, smallest_containing};
 
@@ -68,6 +69,9 @@ pub struct Picker {
     windows: Option<Vec<Rect>>,
     /// Why `windows` is `None`.
     unavailable: String,
+    /// Output rectangles a click picks from when there are no windows because Wayfire's IPC is
+    /// unavailable; empty otherwise.
+    outputs: Vec<Rect>,
     pointer: Option<Point>,
     /// The window rectangle keys move from.
     current: Option<Rect>,
@@ -88,10 +92,17 @@ impl Picker {
             focused,
             windows,
             unavailable,
+            outputs: Vec::new(),
             pointer: None,
             current: None,
             highlight: None,
         }
+    }
+
+    /// Without windows, let a click pick the output whose rectangle alone contains it.
+    pub fn with_output_clicks(mut self, outputs: Vec<Rect>) -> Self {
+        self.outputs = outputs;
+        self
     }
 
     pub fn hover(&mut self, point: Point) -> Reply {
@@ -100,7 +111,8 @@ impl Picker {
             return Reply::Nothing;
         }
         let Some(windows) = &self.windows else {
-            return Reply::Nothing;
+            let output = self.output_at(point).ok().map(Target::Output);
+            return self.set_highlight(output);
         };
         let window = smallest_containing(point, windows);
         self.current = window;
@@ -164,8 +176,9 @@ impl Picker {
             return match self.focused {
                 Some(focused) => Reply::Picked(focused),
                 None => Reply::Notice(format!(
-                    "Which screen has focus is unknown: {}. Drag a region.",
-                    self.unavailable
+                    "Which screen has focus is unknown: {}. {}",
+                    self.unavailable,
+                    self.instead()
                 )),
             };
         }
@@ -211,7 +224,17 @@ impl Picker {
             return Reply::Nothing;
         }
         let Some(windows) = &self.windows else {
-            return Reply::Notice(self.unavailable_notice());
+            if self.outputs.is_empty() {
+                return Reply::Notice(self.unavailable_notice());
+            }
+            return match self.output_at(point) {
+                Ok(output) => Reply::Picked(output),
+                Err(0) => Reply::Notice("That point is on no screen. Drag a region.".to_string()),
+                Err(_) => Reply::Notice(
+                    "That point is on more than one screen, so which one to capture is unknown. Drag a region."
+                        .to_string(),
+                ),
+            };
         };
         let window = smallest_containing(point, windows);
         match self.target(point, window) {
@@ -231,6 +254,20 @@ impl Picker {
         }
     }
 
+    /// The one output rectangle among `outputs` that contains `point`, or how many do.
+    fn output_at(&self, point: Point) -> Result<Rect, usize> {
+        let containing: Vec<Rect> = self
+            .outputs
+            .iter()
+            .copied()
+            .filter(|output| output.contains(point))
+            .collect();
+        match containing.as_slice() {
+            [only] => Ok(*only),
+            _ => Err(containing.len()),
+        }
+    }
+
     fn set_highlight(&mut self, highlight: Option<Target>) -> Reply {
         if self.highlight == highlight {
             return Reply::Nothing;
@@ -240,15 +277,23 @@ impl Picker {
     }
 
     fn unavailable_notice(&self) -> String {
-        let instead = if self.focused.is_some() {
-            "Drag a region, or press Ctrl+Return for the whole screen."
-        } else {
-            "Drag a region."
-        };
         format!(
-            "Window picking is unavailable: {}. {instead}",
-            self.unavailable
+            "Window picking is unavailable: {}. {}",
+            self.unavailable,
+            self.instead()
         )
+    }
+
+    /// What still picks when windows or focus are unknown.
+    fn instead(&self) -> &'static str {
+        match (self.outputs.is_empty(), self.focused.is_some()) {
+            (true, true) => "Drag a region, or press Ctrl+Return for the whole screen.",
+            (true, false) => "Drag a region.",
+            (false, true) => {
+                "Click the screen or press Ctrl+Return to capture it, or drag a region."
+            }
+            (false, false) => "Click a screen to capture it, or drag a region.",
+        }
     }
 }
 
@@ -737,6 +782,78 @@ mod tests {
             Reply::Picked(rect(10, 10, 100, 50))
         );
         assert_eq!(picker.key(Key::Escape), Reply::Cancelled);
+    }
+
+    const RIGHT: Rect = Rect {
+        x: 1920,
+        y: 0,
+        width: 2560,
+        height: 1440,
+    };
+
+    fn without_ipc(focused: Option<Rect>, outputs: Vec<Rect>) -> Picker {
+        Picker::new(Mode::Smart, focused, Err("no IPC".into())).with_output_clicks(outputs)
+    }
+
+    #[test]
+    fn without_ipc_a_click_on_one_screen_picks_that_screen() {
+        let mut picker = without_ipc(None, vec![OUTPUT, RIGHT]);
+        assert_eq!(
+            picker.hover(point(2000, 100)),
+            Reply::Highlight(Some(RIGHT))
+        );
+        assert_eq!(picker.key(Key::Return), Reply::Nothing);
+        assert_eq!(click(&mut picker, 2000, 100), Reply::Picked(RIGHT));
+        assert_eq!(click(&mut picker, 1919, 1079), Reply::Picked(OUTPUT));
+        assert_eq!(
+            picker.drag(point(10, 10), point(12, 11)),
+            Reply::Highlight(Some(OUTPUT))
+        );
+        assert_eq!(
+            picker.release(point(10, 10), point(110, 60)),
+            Reply::Picked(rect(10, 10, 100, 50))
+        );
+        let Reply::Notice(text) = picker.key(Key::Tab) else {
+            panic!("expected a notice");
+        };
+        assert!(text.contains("no IPC") && text.contains("Click a screen"));
+        let Reply::Notice(text) = picker.key(Key::CtrlReturn) else {
+            panic!("expected a notice");
+        };
+        assert!(text.contains("Click a screen") && !text.contains("Ctrl+Return"));
+    }
+
+    #[test]
+    fn without_ipc_a_click_on_no_screen_or_several_is_unavailable() {
+        let gap = rect(3000, 0, 1920, 1080);
+        let mut picker = without_ipc(None, vec![OUTPUT, OUTPUT, gap]);
+        assert_eq!(picker.hover(point(10, 10)), Reply::Nothing);
+        let Reply::Notice(text) = click(&mut picker, 10, 10) else {
+            panic!("expected a notice");
+        };
+        assert!(text.contains("more than one screen"));
+        assert_eq!(picker.hover(point(3010, 10)), Reply::Highlight(Some(gap)));
+        assert_eq!(picker.hover(point(2500, 10)), Reply::Highlight(None));
+        let Reply::Notice(text) = click(&mut picker, 2500, 10) else {
+            panic!("expected a notice");
+        };
+        assert!(text.contains("no screen"));
+        assert_eq!(click(&mut picker, 3010, 10), Reply::Picked(gap));
+        assert_eq!(
+            picker.release(point(10, 10), point(110, 60)),
+            Reply::Picked(rect(10, 10, 100, 50))
+        );
+    }
+
+    #[test]
+    fn without_ipc_one_screen_is_picked_by_a_click_or_ctrl_return() {
+        let mut picker = without_ipc(Some(OUTPUT), vec![OUTPUT]);
+        assert_eq!(click(&mut picker, 10, 10), Reply::Picked(OUTPUT));
+        assert_eq!(picker.key(Key::CtrlReturn), Reply::Picked(OUTPUT));
+        let Reply::Notice(text) = picker.key(Key::Right) else {
+            panic!("expected a notice");
+        };
+        assert!(text.contains("no IPC"));
     }
 
     #[test]

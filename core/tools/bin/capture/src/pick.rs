@@ -95,7 +95,12 @@ pub fn pick<'a>(
         (_, mode) => mode,
     };
     let focused = desktop.focused.as_ref().map(|output| output.rect);
-    let mut picker = Picker::new(mode, focused, windows);
+    // Without Wayfire's IPC there are no windows, but a click on one screen still picks it.
+    let outputs = match desktop.no_ipc {
+        Some(_) => desktop.outputs.iter().map(|output| output.rect).collect(),
+        None => Vec::new(),
+    };
+    let mut picker = Picker::new(mode, focused, windows).with_output_clicks(outputs);
     let dir = PrivateDir::create()?;
     let mut overlay = Overlay::open(session, desktop, &stills, &dir)?;
     let picked = overlay.pick(&mut picker);
