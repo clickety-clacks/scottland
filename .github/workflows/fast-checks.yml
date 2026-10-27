@@ -34,7 +34,8 @@ jobs:
                 archlinux-keyring bubblewrap dbus gdk-pixbuf2 git glm grim inotify-tools jq \
                 libglvnd libinput libxkbcommon mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
                 quickshell rust shadow wayfire wayland wayland-protocols wlroots0.20 cairo \
-            && useradd --uid "$CI_UID" --gid 0 --create-home ci
+            && useradd --uid "$CI_UID" --gid 0 --create-home ci \
+            && install -d -m 0700 -o ci -g 0 "/run/user/$CI_UID"
           DOCKERFILE
           printf 'Container base image: %s\n' "$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
           printf 'Prepared container image: %s\n' "$(docker image inspect scottland-checks:phase1 --format '{{.Id}}')"
@@ -195,7 +196,7 @@ jobs:
           docker run --rm --privileged \
             --user "$(id -u):$(id -g)" \
             --env HOME=/home/ci \
-            --env XDG_RUNTIME_DIR=/tmp/ci-runtime \
+            --env XDG_RUNTIME_DIR="/run/user/$(id -u)" \
             --env SCOTTLAND_HEADLESS_ISOLATION=1 \
             --volume "$GITHUB_WORKSPACE:/work" \
             --workdir /work \
