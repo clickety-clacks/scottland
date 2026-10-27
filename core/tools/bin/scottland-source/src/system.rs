@@ -10,9 +10,6 @@ use std::io::Write;
 use std::os::unix::fs::{symlink, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static NEXT_STORE_RESTORE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
 pub struct System {
@@ -741,64 +738,30 @@ impl System {
     ) -> Result<Vec<String>> {
         let bin = self.paths.build_bin(commit);
         fs::create_dir_all(&bin)?;
-        let mut staged = Vec::<(String, PathBuf, PathBuf)>::new();
-        let stage_result = (|| -> Result<()> {
-            for name in workspace.bins.keys() {
-                let installed = bin.join(name);
-                if installed.is_file() && is_executable(&installed) {
-                    continue;
-                }
-                match fs::symlink_metadata(&installed) {
-                    Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-                        return Err(Error::new(format!(
-                            "cached build-store tool path {} is a directory; it was left untouched",
-                            installed.display()
-                        )));
-                    }
-                    Ok(_) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.into()),
-                }
+        let mut restored = Vec::new();
+        for name in workspace.bins.keys() {
+            let installed = bin.join(name);
+            if installed.is_file() && is_executable(&installed) {
+                continue;
+            }
 
-                let built = binary_directory.join(name);
-                let sequence = NEXT_STORE_RESTORE.fetch_add(1, Ordering::Relaxed);
-                let temporary = bin.join(format!(
-                    ".{name}.restore-{}-{sequence}",
-                    std::process::id()
-                ));
-                staged.push((name.clone(), temporary.clone(), installed));
-                match origin {
-                    BinaryOrigin::Package => {
-                        require_executable_regular_file(&built, "packaged tool")?;
-                        fs::copy(&built, &temporary).map_err(|error| {
-                            Error::new(format!(
-                                "could not copy packaged tool {}: {error}",
-                                built.display()
-                            ))
-                        })?;
-                    }
-                    BinaryOrigin::UserBuild => copy_user_binary(&built, &temporary)?,
+            let built = binary_directory.join(name);
+            match origin {
+                BinaryOrigin::Package => {
+                    require_executable_regular_file(&built, "packaged tool")?;
+                    fs::copy(&built, &installed).map_err(|error| {
+                        Error::new(format!(
+                            "could not copy packaged tool {}: {error}",
+                            built.display()
+                        ))
+                    })?;
                 }
-                fs::set_permissions(&temporary, fs::Permissions::from_mode(0o755))?;
+                BinaryOrigin::UserBuild => copy_user_binary(&built, &installed)?,
             }
-            Ok(())
-        })();
-        if let Err(error) = stage_result {
-            for (_, temporary, _) in &staged {
-                let _ = fs::remove_file(temporary);
-            }
-            return Err(error);
+            fs::set_permissions(&installed, fs::Permissions::from_mode(0o755))?;
+            restored.push(name.clone());
         }
-
-        for (index, (_, temporary, installed)) in staged.iter().enumerate() {
-            if let Err(error) = fs::rename(temporary, installed) {
-                for (_, remaining, _) in &staged[index..] {
-                    let _ = fs::remove_file(remaining);
-                }
-                return Err(error.into());
-            }
-        }
-        Ok(staged.into_iter().map(|(name, _, _)| name).collect())
+        Ok(restored)
     }
 
     fn remove_unavailable_store_tools(
