@@ -61,7 +61,8 @@ impl Target {
 
 pub struct Picker {
     mode: Mode,
-    focused: Rect,
+    /// The focused output; `None` when the session cannot say which output has focus.
+    focused: Option<Rect>,
     /// Window rectangles on the focused output, unique, in CP1 order; `None` when the window
     /// listing cannot say which output draws each window.
     windows: Option<Vec<Rect>>,
@@ -74,7 +75,7 @@ pub struct Picker {
 }
 
 impl Picker {
-    pub fn new(mode: Mode, focused: Rect, windows: Result<Vec<Rect>, String>) -> Self {
+    pub fn new(mode: Mode, focused: Option<Rect>, windows: Result<Vec<Rect>, String>) -> Self {
         let (windows, unavailable) = match windows {
             Ok(windows) => (
                 Some(ordered_unique_window_rectangles(&windows)),
@@ -143,11 +144,10 @@ impl Picker {
                     x: dragged.x,
                     y: dragged.y,
                 };
-                if !self.focused.contains(point) {
+                match self.focused {
                     // A click outside the focused output picks the dragged rectangle itself.
-                    Reply::Picked(dragged)
-                } else {
-                    self.click(point)
+                    Some(focused) if !focused.contains(point) => Reply::Picked(dragged),
+                    _ => self.click(point),
                 }
             }
         }
@@ -161,7 +161,13 @@ impl Picker {
             return Reply::Nothing;
         }
         if key == Key::CtrlReturn {
-            return Reply::Picked(self.focused);
+            return match self.focused {
+                Some(focused) => Reply::Picked(focused),
+                None => Reply::Notice(format!(
+                    "Which screen has focus is unknown: {}. Drag a region.",
+                    self.unavailable
+                )),
+            };
         }
         if key == Key::Return {
             // Return picks a highlighted window rectangle only; the output is Ctrl+Return's.
@@ -182,7 +188,10 @@ impl Picker {
                 let from = match (self.current, self.pointer) {
                     (Some(rect), _) => center(rect),
                     (None, Some(point)) => point,
-                    (None, None) => center(self.focused),
+                    (None, None) => match self.focused {
+                        Some(focused) => center(focused),
+                        None => return Reply::Nothing,
+                    },
                 };
                 nearest(windows, self.current, from, key)
             }
@@ -198,7 +207,7 @@ impl Picker {
 
     /// A click at `point` in `windows` mode, or a small drag in `smart`.
     fn click(&mut self, point: Point) -> Reply {
-        if !self.focused.contains(point) {
+        if self.focused.is_some_and(|focused| !focused.contains(point)) {
             return Reply::Nothing;
         }
         let Some(windows) = &self.windows else {
@@ -215,12 +224,10 @@ impl Picker {
     /// it: that window, or the focused output when it is no smaller (the output first on equal
     /// areas) or there is none.
     fn target(&self, point: Point, window: Option<Rect>) -> Option<Target> {
-        if !self.focused.contains(point) {
-            return None;
-        }
+        let focused = self.focused.filter(|focused| focused.contains(point))?;
         match window {
-            Some(window) if area(window) < area(self.focused) => Some(Target::Window(window)),
-            _ => Some(Target::Output(self.focused)),
+            Some(window) if area(window) < area(focused) => Some(Target::Window(window)),
+            _ => Some(Target::Output(focused)),
         }
     }
 
@@ -233,8 +240,13 @@ impl Picker {
     }
 
     fn unavailable_notice(&self) -> String {
+        let instead = if self.focused.is_some() {
+            "Drag a region, or press Ctrl+Return for the whole screen."
+        } else {
+            "Drag a region."
+        };
         format!(
-            "Window picking is unavailable: {}. Drag a region, or press Ctrl+Return for the whole screen.",
+            "Window picking is unavailable: {}. {instead}",
             self.unavailable
         )
     }
@@ -336,7 +348,7 @@ mod tests {
     };
 
     fn picker(mode: Mode, windows: Vec<Rect>) -> Picker {
-        Picker::new(mode, OUTPUT, Ok(windows))
+        Picker::new(mode, Some(OUTPUT), Ok(windows))
     }
 
     fn click(picker: &mut Picker, x: i64, y: i64) -> Reply {
@@ -686,7 +698,7 @@ mod tests {
 
     #[test]
     fn without_window_identity_window_paths_say_so_and_the_rest_works() {
-        let mut picker = Picker::new(Mode::Smart, OUTPUT, Err("no output named".into()));
+        let mut picker = Picker::new(Mode::Smart, Some(OUTPUT), Err("no output named".into()));
         assert_eq!(picker.hover(point(10, 10)), Reply::Nothing);
         let Reply::Notice(text) = click(&mut picker, 10, 10) else {
             panic!("expected a notice");
@@ -703,6 +715,27 @@ mod tests {
             Reply::Picked(rect(2000, 100, 0, 0))
         );
         assert_eq!(picker.key(Key::CtrlReturn), Reply::Picked(OUTPUT));
+        assert_eq!(picker.key(Key::Escape), Reply::Cancelled);
+    }
+
+    #[test]
+    fn without_a_focused_output_only_dragging_picks() {
+        let mut picker = Picker::new(Mode::Smart, None, Err("no IPC".into()));
+        assert_eq!(picker.hover(point(10, 10)), Reply::Nothing);
+        let Reply::Notice(text) = click(&mut picker, 10, 10) else {
+            panic!("expected a notice");
+        };
+        assert!(text.contains("no IPC") && !text.contains("Ctrl+Return"));
+        let Reply::Notice(text) = picker.key(Key::CtrlReturn) else {
+            panic!("expected a notice");
+        };
+        assert!(text.contains("no IPC"));
+        assert_eq!(picker.key(Key::Return), Reply::Nothing);
+        assert!(matches!(picker.key(Key::Tab), Reply::Notice(_)));
+        assert_eq!(
+            picker.release(point(10, 10), point(110, 60)),
+            Reply::Picked(rect(10, 10, 100, 50))
+        );
         assert_eq!(picker.key(Key::Escape), Reply::Cancelled);
     }
 

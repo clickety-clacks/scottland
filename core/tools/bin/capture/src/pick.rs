@@ -45,13 +45,19 @@ pub fn pick<'a>(
 ) -> Result<Option<Picked<'a>>, String> {
     let mode = match mode {
         PickMode::Fullscreen => {
+            let Some(focused) = &desktop.focused else {
+                return Err(
+                    "the whole screen is unavailable: which screen has focus is unknown without Scottland's Wayfire IPC"
+                        .to_string(),
+                );
+            };
             let stills = if keep_stills {
                 take_stills(session, desktop)?
             } else {
                 Vec::new()
             };
             return Ok(Some(Picked {
-                rect: desktop.focused.rect,
+                rect: focused.rect,
                 stills,
             }));
         }
@@ -61,27 +67,35 @@ pub fn pick<'a>(
     };
     // The still comes first, before the window listing or anything else that takes time.
     let stills = take_stills(session, desktop)?;
-    let windows = if mode == Mode::Region {
-        Ok(Vec::new())
-    } else {
-        window_rects(session, &desktop.focused.name)
+    let windows = match (mode, &desktop.no_ipc, &desktop.focused) {
+        (Mode::Region, ..) => Ok(Vec::new()),
+        // Desktop::read has already warned that window picking is off.
+        (_, Some(why), _) => Err(why.clone()),
+        (_, None, Some(focused)) => window_rects(session, &focused.name),
+        (_, None, None) => Err("no output has focus".to_string()),
     };
+    let warn = desktop.no_ipc.is_none();
     let mode = match (&windows, mode) {
         (Err(reason), Mode::Windows) => {
-            eprintln!(
-                "scottland-capture: window picking is unavailable: {reason}; drag a region instead"
-            );
+            if warn {
+                eprintln!(
+                    "scottland-capture: window picking is unavailable: {reason}; drag a region instead"
+                );
+            }
             Mode::Smart
         }
         (Err(reason), Mode::Smart) => {
-            eprintln!(
-                "scottland-capture: window picking is unavailable: {reason}; dragging a region and the whole screen still work"
-            );
+            if warn {
+                eprintln!(
+                    "scottland-capture: window picking is unavailable: {reason}; dragging a region and the whole screen still work"
+                );
+            }
             Mode::Smart
         }
         (_, mode) => mode,
     };
-    let mut picker = Picker::new(mode, desktop.focused.rect, windows);
+    let focused = desktop.focused.as_ref().map(|output| output.rect);
+    let mut picker = Picker::new(mode, focused, windows);
     let dir = PrivateDir::create()?;
     let mut overlay = Overlay::open(session, desktop, &stills, &dir)?;
     let picked = overlay.pick(&mut picker);

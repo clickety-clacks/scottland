@@ -123,9 +123,12 @@ impl Overlay {
         listener
             .set_nonblocking(true)
             .map_err(|error| format!("cannot open the picker socket: {error}"))?;
+        // The keyboard and notices go to the focused output; when which one has focus is
+        // unknown, to the first, which decides nothing about what is picked.
+        let keyboard = desktop.focused.as_ref().or(desktop.outputs.first());
         let config = json!({
             "socket": socket.to_string_lossy(),
-            "focused": desktop.focused.name,
+            "focused": keyboard.map(|output| output.name.as_str()),
             "stills": paths,
         });
         let log = dir.path().join("picker.log");

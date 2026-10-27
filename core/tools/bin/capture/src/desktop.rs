@@ -1,5 +1,9 @@
 //! What the selected session shows when the command starts: its outputs, which one has focus,
 //! and the window rectangles on that output.
+//!
+//! Outputs and focus come from Wayfire's IPC. Without it, the outputs come from the compositor's
+//! output report (`scottland-output list`) and the parts that need Wayfire are off: window picking,
+//! and with several outputs, knowing which one has focus.
 
 use scottland::capture::Rect;
 use scottland::{dirs, session::Session};
@@ -25,16 +29,28 @@ pub struct Output {
 
 pub struct Desktop {
     pub outputs: Vec<Output>,
-    pub focused: Output,
+    /// The output with focus; `None` only without Wayfire's IPC and with several outputs.
+    pub focused: Option<Output>,
+    /// Why Wayfire's IPC cannot be used, when it cannot.
+    pub no_ipc: Option<String>,
 }
 
 impl Desktop {
     pub fn read(session: &Session) -> Result<Self, String> {
-        let socket = session
-            .wayfire_socket()
-            .ok_or_else(|| "the selected session has no Wayfire IPC socket".to_string())?;
-        let listed = ipc_call(socket, "window-rules/list-outputs")?;
-        let focused = ipc_call(socket, "window-rules/get-focused-output")?;
+        let mut stream = match session.wayfire_socket() {
+            None => return Self::without_ipc(session, "the session has no WAYFIRE_SOCKET".into()),
+            Some(socket) => match UnixStream::connect(socket) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    return Self::without_ipc(
+                        session,
+                        format!("cannot connect to {}: {error}", socket.display()),
+                    );
+                }
+            },
+        };
+        let listed = ipc_call(&mut stream, "window-rules/list-outputs")?;
+        let focused = ipc_call(&mut stream, "window-rules/get-focused-output")?;
         let focused_name = focused
             .pointer("/info/name")
             .and_then(Value::as_str)
@@ -54,7 +70,41 @@ impl Desktop {
             .ok_or_else(|| {
                 format!("the focused output {focused_name} is not in the output list")
             })?;
-        Ok(Self { outputs, focused })
+        Ok(Self {
+            outputs,
+            focused: Some(focused),
+            no_ipc: None,
+        })
+    }
+
+    /// The outputs as the compositor reports them, with a warning that says what is off.
+    fn without_ipc(session: &Session, why: String) -> Result<Self, String> {
+        let why = format!("Scottland's Wayfire IPC is unavailable ({why})");
+        let outputs = read_heads(session)
+            .iter()
+            .filter_map(head_output)
+            .collect::<Vec<_>>();
+        if outputs.is_empty() {
+            return Err(format!(
+                "{why} and scottland-output list reported no screens"
+            ));
+        }
+        // With one output it has focus; with several, which one does is Wayfire's to say.
+        let focused = match outputs.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        };
+        let off = if focused.is_some() {
+            "window picking is off; the whole screen and dragged regions still work"
+        } else {
+            "window picking and the whole screen are off, since which screen has focus is unknown; dragged regions still work"
+        };
+        eprintln!("scottland-capture: {why}: {off}");
+        Ok(Self {
+            outputs,
+            focused,
+            no_ipc: Some(why),
+        })
     }
 
     /// The largest scale among the outputs `rect` covers, at least 1.
@@ -85,26 +135,59 @@ fn parse_output(output: &Value, heads: &[Value]) -> Option<Output> {
     let head = heads
         .iter()
         .find(|head| head.get("name").and_then(Value::as_str) == Some(name.as_str()));
-    let scale = head
-        .and_then(|head| head.get("scale"))
-        .and_then(Value::as_f64)
-        .filter(|scale| *scale > 0.0)
-        .unwrap_or(1.0);
-    let pixels = head.and_then(|head| {
-        let mode = head.get("mode")?;
-        let (width, height) = (mode.get("width")?.as_u64()?, mode.get("height")?.as_u64()?);
-        let rotated = head.get("transform")?.as_u64()? % 2 == 1;
-        Some(if rotated {
-            (height, width)
-        } else {
-            (width, height)
-        })
-    });
     Some(Output {
         name,
         rect,
+        scale: head.map_or(1.0, head_scale),
+        pixels: head.and_then(head_pixels),
+    })
+}
+
+/// An enabled head from `scottland-output list` as an output. Its logical size is its pixel
+/// size over its scale, whole pixels down, as wlroots lays outputs out.
+fn head_output(head: &Value) -> Option<Output> {
+    if head.get("enabled") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    let name = head.get("name")?.as_str()?.to_string();
+    let pixels = head_pixels(head)?;
+    let scale = head_scale(head);
+    let (width, height) = (
+        (pixels.0 as f64 / scale) as u64,
+        (pixels.1 as f64 / scale) as u64,
+    );
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some(Output {
+        name,
+        rect: Rect {
+            x: head.get("x")?.as_i64()?,
+            y: head.get("y")?.as_i64()?,
+            width,
+            height,
+        },
         scale,
-        pixels,
+        pixels: Some(pixels),
+    })
+}
+
+fn head_scale(head: &Value) -> f64 {
+    head.get("scale")
+        .and_then(Value::as_f64)
+        .filter(|scale| *scale > 0.0)
+        .unwrap_or(1.0)
+}
+
+/// The head's current mode in device pixels, after rotation.
+fn head_pixels(head: &Value) -> Option<(u64, u64)> {
+    let mode = head.get("mode")?;
+    let (width, height) = (mode.get("width")?.as_u64()?, mode.get("height")?.as_u64()?);
+    let rotated = head.get("transform")?.as_u64()? % 2 == 1;
+    Some(if rotated {
+        (height, width)
+    } else {
+        (width, height)
     })
 }
 
@@ -226,9 +309,7 @@ pub fn hooks_dir(session: &Session) -> PathBuf {
     PathBuf::from(dirs::PACKAGE_HOOKS)
 }
 
-fn ipc_call(socket: &Path, method: &str) -> Result<Value, String> {
-    let mut stream = UnixStream::connect(socket)
-        .map_err(|error| format!("cannot connect to Scottland IPC: {error}"))?;
+fn ipc_call(stream: &mut UnixStream, method: &str) -> Result<Value, String> {
     let timeout = Some(Duration::from_secs(3));
     stream
         .set_read_timeout(timeout)
@@ -334,6 +415,46 @@ mod tests {
     }
 
     #[test]
+    fn heads_give_enabled_outputs_in_logical_pixels() {
+        // As scottland-output list reports heads, trimmed to the fields read here.
+        let heads = json!([
+            {"name": "DP-1", "enabled": true, "x": 0, "y": 0, "scale": 1.5, "transform": 0,
+             "mode": {"width": 3840, "height": 2160, "refresh": 60.0}},
+            {"name": "DSI-1", "enabled": true, "x": 2560, "y": 0, "scale": 1, "transform": 3,
+             "mode": {"width": 1920, "height": 1080, "refresh": 60.0}},
+            {"name": "HDMI-A-1", "enabled": false, "x": 0, "y": 0, "scale": 1, "transform": 0,
+             "mode": null}
+        ]);
+        let outputs = heads
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(head_output)
+            .collect::<Vec<_>>();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(
+            outputs[0].rect,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1440
+            }
+        );
+        assert_eq!(outputs[0].pixels, Some((3840, 2160)));
+        assert_eq!(outputs[0].scale, 1.5);
+        assert_eq!(
+            outputs[1].rect,
+            Rect {
+                x: 2560,
+                y: 0,
+                width: 1080,
+                height: 1920
+            }
+        );
+    }
+
+    #[test]
     fn scale_for_takes_the_largest_covered_scale() {
         let output = |name: &str, x: i64, scale: f64| Output {
             name: name.into(),
@@ -348,7 +469,8 @@ mod tests {
         };
         let desktop = Desktop {
             outputs: vec![output("A", 0, 1.0), output("B", 1000, 2.0)],
-            focused: output("A", 0, 1.0),
+            focused: Some(output("A", 0, 1.0)),
+            no_ipc: None,
         };
         let left = Rect {
             x: 10,
