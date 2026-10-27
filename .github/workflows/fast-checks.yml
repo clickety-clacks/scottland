@@ -191,6 +191,7 @@ jobs:
 
       - name: Run the headless check
         run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           docker run --rm --privileged \
             --user "$(id -u):$(id -g)" \
             --env HOME=/home/ci \
