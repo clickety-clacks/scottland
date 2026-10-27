@@ -1,0 +1,4 @@
+id = "title"
+name = "Title"
+exec = "quickshell -p %d/shell.qml"
+touch_drag = true
