@@ -76,7 +76,7 @@ fn run() -> Result<(), String> {
         }
         _ => {}
     }
-    let selected = session::current(display.as_deref())
+    let selected = session::current_displayed(display.as_deref())
         .map_err(|error| format!("cannot select a running Scottland session: {error}"))?;
     match command {
         Command::Region(mode) => {

@@ -1,5 +1,6 @@
 //! Session selection against real recorded files and real sockets: a live session is one whose
-//! Wayfire socket accepts a connection, here a listener the test binds.
+//! Wayfire socket accepts a connection, or for display-aware selection one whose Wayland display
+//! does; here, listeners the test binds.
 
 use scottland::session::{self, SessionError};
 use std::ffi::OsStr;
@@ -46,6 +47,26 @@ impl Runtime {
     fn stale(&self, display: &str) {
         let (listener, _) = self.live(display);
         drop(listener);
+    }
+
+    /// A session whose Wayland display is listening, in this directory as its `XDG_RUNTIME_DIR`,
+    /// but whose Wayfire IPC is not: with `ipc_file`, its recorded `WAYFIRE_SOCKET` is a socket file
+    /// nothing listens on; without it, there is no `WAYFIRE_SOCKET` at all.
+    fn without_ipc(&self, display: &str, ipc_file: bool) -> UnixListener {
+        let socket = self.dir.join(display);
+        let listener = UnixListener::bind(&socket)
+            .unwrap_or_else(|e| panic!("binding {}: {e}", socket.display()));
+        let mut body = format!(
+            "WAYLAND_DISPLAY={display}\0XDG_RUNTIME_DIR={}\0",
+            self.dir.display()
+        );
+        if ipc_file {
+            let ipc = self.dir.join(format!("{}.s", display.trim_start_matches("wayland-")));
+            drop(UnixListener::bind(&ipc).unwrap());
+            body.push_str(&format!("WAYFIRE_SOCKET={}\0", ipc.display()));
+        }
+        fs::write(self.dir.join(format!("{display}.env")), body).unwrap();
+        listener
     }
 }
 
@@ -157,4 +178,75 @@ fn a_display_name_must_be_a_plain_file_name() {
             Err(SessionError::InvalidDisplay(name.into()))
         );
     }
+}
+
+#[test]
+fn a_session_without_ipc_is_not_running_for_ipc_commands() {
+    let rt = Runtime::new("xi");
+    let _one = rt.without_ipc("wayland-1", false);
+    let _two = rt.without_ipc("wayland-2", true);
+    assert!(session::running(&rt.dir).is_empty());
+    assert_eq!(
+        session::select(&rt.dir, Some("wayland-1"), None),
+        Err(SessionError::NotRunning("wayland-1".into()))
+    );
+    assert_eq!(
+        session::select(&rt.dir, None, None),
+        Err(SessionError::NoneRunning)
+    );
+}
+
+#[test]
+fn a_named_display_without_ipc_is_used_when_its_display_answers() {
+    let rt = Runtime::new("dn");
+    let _one = rt.live("wayland-1");
+    let _two = rt.without_ipc("wayland-2", false);
+    let _three = rt.without_ipc("wayland-3", true);
+    for name in ["wayland-2", "wayland-3"] {
+        assert_eq!(
+            session::select_displayed(&rt.dir, Some(name), None)
+                .unwrap()
+                .name,
+            name
+        );
+    }
+}
+
+#[test]
+fn the_only_displayed_session_is_chosen_without_ipc() {
+    let rt = Runtime::new("do");
+    let _one = rt.without_ipc("wayland-1", true);
+    rt.stale("wayland-2");
+    let chosen = session::select_displayed(&rt.dir, None, None).unwrap();
+    assert_eq!(chosen.name, "wayland-1");
+}
+
+#[test]
+fn a_session_without_ipc_is_not_passed_over_for_another() {
+    let rt = Runtime::new("dp");
+    let _one = rt.without_ipc("wayland-1", false);
+    let (_two, socket) = rt.live("wayland-2");
+    assert_eq!(
+        session::select_displayed(&rt.dir, None, None),
+        Err(SessionError::Several(vec![
+            "wayland-1".into(),
+            "wayland-2".into()
+        ]))
+    );
+    let chosen = session::select_displayed(&rt.dir, None, Some(socket.as_os_str())).unwrap();
+    assert_eq!(chosen.name, "wayland-2");
+}
+
+#[test]
+fn a_display_that_ended_is_not_running_without_ipc() {
+    let rt = Runtime::new("de");
+    drop(rt.without_ipc("wayland-1", true));
+    assert_eq!(
+        session::select_displayed(&rt.dir, Some("wayland-1"), None),
+        Err(SessionError::NotRunning("wayland-1".into()))
+    );
+    assert_eq!(
+        session::select_displayed(&rt.dir, None, None),
+        Err(SessionError::NoneRunning)
+    );
 }
