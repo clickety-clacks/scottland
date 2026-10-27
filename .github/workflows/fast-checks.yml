@@ -1,0 +1,211 @@
+name: Scottland 0.3 fast checks
+
+on:
+  pull_request:
+    branches:
+      - '0.3'
+  merge_group:
+    branches:
+      - '0.3'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Scottland 0.3 build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Prepare build environment
+        run: |
+          printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
+          docker build --pull \
+            --build-arg CI_UID="$(id -u)" \
+            --tag scottland-checks:phase1 - <<'DOCKERFILE'
+          FROM archlinux:base-devel
+          ARG CI_UID
+          RUN pacman -Syu --noconfirm --needed \
+                archlinux-keyring base-devel bubblewrap dbus gdk-pixbuf2 git glm grim inotify-tools jq \
+                libinput mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
+                quickshell rust shadow wayfire wayland wayland-protocols wlroots0.20 xkbcommon cairo \
+            && useradd --uid "$CI_UID" --gid 0 --create-home ci
+          DOCKERFILE
+          printf 'Container base image: %s\n' "$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
+          printf 'Prepared container image: %s\n' "$(docker image inspect scottland-checks:phase1 --format '{{.Id}}')"
+
+      - name: Report toolchain versions
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/home/ci \
+            scottland-checks:phase1 \
+            bash -euo pipefail -c '
+              printf "Container operating system: "
+              . /etc/os-release
+              printf "%s %s\n" "$NAME" "$VERSION_ID"
+              pacman -Q wayfire wlroots0.20 meson gcc rust python
+              printf "C++ compiler: "
+              g++ --version | sed -n "1p"
+              rustc --version
+              cargo --version
+              python3 --version
+              pkg-config --modversion wlroots-0.20
+            '
+
+      - name: Build plugin and command tools
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/home/ci \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            scottland-checks:phase1 \
+            bash -euo pipefail -c '
+              git rev-parse HEAD
+              make test-hooks
+            '
+
+  unit:
+    name: Scottland 0.3 unit
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Prepare build environment
+        run: |
+          printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
+          docker build --pull \
+            --build-arg CI_UID="$(id -u)" \
+            --tag scottland-checks:phase1 - <<'DOCKERFILE'
+          FROM archlinux:base-devel
+          ARG CI_UID
+          RUN pacman -Syu --noconfirm --needed \
+                archlinux-keyring base-devel bubblewrap dbus gdk-pixbuf2 git glm grim inotify-tools jq \
+                libinput mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
+                quickshell rust shadow wayfire wayland wayland-protocols wlroots0.20 xkbcommon cairo \
+            && useradd --uid "$CI_UID" --gid 0 --create-home ci
+          DOCKERFILE
+          printf 'Container base image: %s\n' "$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
+          printf 'Prepared container image: %s\n' "$(docker image inspect scottland-checks:phase1 --format '{{.Id}}')"
+
+      - name: Report toolchain versions
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/home/ci \
+            scottland-checks:phase1 \
+            bash -euo pipefail -c '
+              printf "Container operating system: "
+              . /etc/os-release
+              printf "%s %s\n" "$NAME" "$VERSION_ID"
+              pacman -Q wayfire wlroots0.20 meson gcc rust python
+              printf "C++ compiler: "
+              g++ --version | sed -n "1p"
+              rustc --version
+              cargo --version
+              python3 --version
+              pkg-config --modversion wlroots-0.20
+            '
+
+      - name: Run the unit suite
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/home/ci \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            scottland-checks:phase1 \
+            bash -euo pipefail -c '
+              git rev-parse HEAD
+              make tools-test
+              tests/inertia-unit.sh
+              tests/navigation-unit.sh
+              tests/pairing-unit.sh
+              tests/peek-unit.sh
+              tests/rail-make-room-unit.sh
+              tests/spread-unit.sh
+              tests/windowing-unit.sh
+              python3 tests/output-scale-unit.py
+              mkdir -p build
+              g++ -std=c++17 -Wall -Wextra -Werror -O2 -Icore/plugin/src \
+                tests/cycle-spring-unit.cpp -o build/cycle-spring-unit
+              build/cycle-spring-unit
+            '
+
+  headless:
+    name: Scottland 0.3 headless
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Prepare build environment
+        run: |
+          printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
+          docker build --pull \
+            --build-arg CI_UID="$(id -u)" \
+            --tag scottland-checks:phase1 - <<'DOCKERFILE'
+          FROM archlinux:base-devel
+          ARG CI_UID
+          RUN pacman -Syu --noconfirm --needed \
+                archlinux-keyring base-devel bubblewrap dbus gdk-pixbuf2 git glm grim inotify-tools jq \
+                libinput mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
+                quickshell rust shadow wayfire wayland wayland-protocols wlroots0.20 xkbcommon cairo \
+            && useradd --uid "$CI_UID" --gid 0 --create-home ci
+          DOCKERFILE
+          printf 'Container base image: %s\n' "$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
+          printf 'Prepared container image: %s\n' "$(docker image inspect scottland-checks:phase1 --format '{{.Id}}')"
+
+      - name: Report toolchain versions
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/home/ci \
+            scottland-checks:phase1 \
+            bash -euo pipefail -c '
+              printf "Container operating system: "
+              . /etc/os-release
+              printf "%s %s\n" "$NAME" "$VERSION_ID"
+              pacman -Q wayfire wlroots0.20 meson gcc rust python bubblewrap quickshell
+              printf "C++ compiler: "
+              g++ --version | sed -n "1p"
+              rustc --version
+              cargo --version
+              python3 --version
+              pkg-config --modversion wlroots-0.20
+              bwrap --version
+            '
+
+      - name: Run the headless check
+        run: |
+          docker run --rm --privileged \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/home/ci \
+            --env XDG_RUNTIME_DIR=/tmp/ci-runtime \
+            --env SCOTTLAND_HEADLESS_ISOLATION=1 \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            scottland-checks:phase1 \
+            bash -euo pipefail -c '
+              mkdir -m 700 -p "$XDG_RUNTIME_DIR"
+              git rev-parse HEAD
+              make test-hooks
+              mkdir -m 700 build/queue-headless-scratch
+              SCOTTLAND_TEST_SCRATCH="$PWD/build/queue-headless-scratch" \
+                SCOTTLAND_HEADLESS_DIR="$PWD/build/queue-headless-scratch/session" \
+                tests/transparency-toggle-test.sh "$PWD/build/queue-headless-evidence"
+              rmdir -- build/queue-headless-scratch
+            '
