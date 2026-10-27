@@ -10,6 +10,9 @@ use std::io::Write;
 use std::os::unix::fs::{symlink, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_STORE_RESTORE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
 pub struct System {
@@ -609,7 +612,13 @@ impl System {
                 .retain(|name, _| available_tools.contains(name));
         }
         if let Some(workspace) = workspace.as_ref() {
-            if self.store_complete(commit, workspace)? {
+            let store_complete = self.store_complete(commit, workspace)?;
+            let active_store = if !store_complete || available_tools.is_some() {
+                self.switch_target()?.as_deref() == Some(destination.as_path())
+            } else {
+                false
+            };
+            if store_complete {
                 if let Some(expected) = expected_workspace {
                     if expected.bin_names() != workspace.bin_names() {
                         return Err(Error::new(
@@ -619,21 +628,42 @@ impl System {
                 }
                 if available_tools.is_some() {
                     let available_names: BTreeSet<_> = workspace.bin_names().into_iter().collect();
-                    let stored_names = self.bin_names_from_store(&destination)?;
-                    let disabled_names: Vec<_> = stored_names
-                        .difference(&available_names)
-                        .cloned()
-                        .collect();
-                    for name in &disabled_names {
-                        fs::remove_file(self.paths.build_bin(commit).join(name))?;
-                    }
-                    if !disabled_names.is_empty()
-                        && self.switch_target()?.as_deref() == Some(destination.as_path())
-                    {
+                    let disabled_names =
+                        self.remove_unavailable_store_tools(commit, &available_names)?;
+                    if active_store && !disabled_names.is_empty() {
                         self.reconcile_tool_links(&available_names, &mut Vec::new())?;
                     }
                 }
                 return Ok(workspace.clone());
+            }
+            if active_store && self.store_source_complete(commit)? {
+                if let Some(expected) = expected_workspace {
+                    if expected.bin_names() != workspace.bin_names() {
+                        return Err(Error::new(
+                            "working clone and fetched source have different tool manifests",
+                        ));
+                    }
+                }
+                let restored_names = self.restore_missing_store_tools(
+                    commit,
+                    workspace,
+                    binary_directory,
+                    origin,
+                )?;
+                if self.store_complete(commit, workspace)? {
+                    let available_names: BTreeSet<_> = workspace.bin_names().into_iter().collect();
+                    let disabled_names = if available_tools.is_some() {
+                        self.remove_unavailable_store_tools(commit, &available_names)?
+                    } else {
+                        Vec::new()
+                    };
+                    if available_tools.is_some()
+                        && (!restored_names.is_empty() || !disabled_names.is_empty())
+                    {
+                        self.reconcile_tool_links(&available_names, &mut Vec::new())?;
+                    }
+                    return Ok(workspace.clone());
+                }
             }
         }
         if self.switch_target()?.as_deref() == Some(destination.as_path()) {
@@ -702,7 +732,105 @@ impl System {
         Ok(workspace)
     }
 
+    fn restore_missing_store_tools(
+        &self,
+        commit: &str,
+        workspace: &Workspace,
+        binary_directory: &Path,
+        origin: BinaryOrigin,
+    ) -> Result<Vec<String>> {
+        let bin = self.paths.build_bin(commit);
+        fs::create_dir_all(&bin)?;
+        let mut staged = Vec::<(String, PathBuf, PathBuf)>::new();
+        let stage_result = (|| -> Result<()> {
+            for name in workspace.bins.keys() {
+                let installed = bin.join(name);
+                if installed.is_file() && is_executable(&installed) {
+                    continue;
+                }
+                match fs::symlink_metadata(&installed) {
+                    Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                        return Err(Error::new(format!(
+                            "cached build-store tool path {} is a directory; it was left untouched",
+                            installed.display()
+                        )));
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+
+                let built = binary_directory.join(name);
+                let sequence = NEXT_STORE_RESTORE.fetch_add(1, Ordering::Relaxed);
+                let temporary = bin.join(format!(
+                    ".{name}.restore-{}-{sequence}",
+                    std::process::id()
+                ));
+                staged.push((name.clone(), temporary.clone(), installed));
+                match origin {
+                    BinaryOrigin::Package => {
+                        require_executable_regular_file(&built, "packaged tool")?;
+                        fs::copy(&built, &temporary).map_err(|error| {
+                            Error::new(format!(
+                                "could not copy packaged tool {}: {error}",
+                                built.display()
+                            ))
+                        })?;
+                    }
+                    BinaryOrigin::UserBuild => copy_user_binary(&built, &temporary)?,
+                }
+                fs::set_permissions(&temporary, fs::Permissions::from_mode(0o755))?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = stage_result {
+            for (_, temporary, _) in &staged {
+                let _ = fs::remove_file(temporary);
+            }
+            return Err(error);
+        }
+
+        for (index, (_, temporary, installed)) in staged.iter().enumerate() {
+            if let Err(error) = fs::rename(temporary, installed) {
+                for (_, remaining, _) in &staged[index..] {
+                    let _ = fs::remove_file(remaining);
+                }
+                return Err(error.into());
+            }
+        }
+        Ok(staged.into_iter().map(|(name, _, _)| name).collect())
+    }
+
+    fn remove_unavailable_store_tools(
+        &self,
+        commit: &str,
+        available_tools: &BTreeSet<String>,
+    ) -> Result<Vec<String>> {
+        let stored_names = self.bin_names_from_store(&self.paths.build_dir(commit))?;
+        let disabled_names: Vec<_> = stored_names
+            .difference(available_tools)
+            .cloned()
+            .collect();
+        for name in &disabled_names {
+            fs::remove_file(self.paths.build_bin(commit).join(name))?;
+        }
+        Ok(disabled_names)
+    }
+
     fn store_complete(&self, commit: &str, workspace: &Workspace) -> Result<bool> {
+        if !self.store_source_complete(commit)? {
+            return Ok(false);
+        }
+        for name in workspace.bins.keys() {
+            let path = self.paths.build_bin(commit).join(name);
+            if !path.is_file() || !is_executable(&path) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn store_source_complete(&self, commit: &str) -> Result<bool> {
         let directory = self.paths.build_dir(commit);
         let source = self.paths.build_source(commit);
         let commit_file = self.paths.switch_commit_for(commit);
@@ -731,12 +859,6 @@ impl System {
         .is_ok_and(|output| output.status.success())
         {
             return Ok(false);
-        }
-        for name in workspace.bins.keys() {
-            let path = self.paths.build_bin(commit).join(name);
-            if !path.is_file() || !is_executable(&path) {
-                return Ok(false);
-            }
         }
         Ok(true)
     }

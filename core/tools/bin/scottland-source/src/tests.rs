@@ -561,7 +561,7 @@ fn adopt_prepares_received_release_when_local_commits_prevent_activation() {
 }
 
 #[test]
-fn package_adoption_disables_unavailable_tools_in_a_cached_build() {
+fn package_adoption_disables_and_restores_tools_in_a_cached_build() {
     let scratch = Scratch::new();
     let source = scratch.0.join("source");
     let (release, _) = create_workspace_repository(&source);
@@ -666,6 +666,32 @@ fn package_adoption_disables_unavailable_tools_in_a_cached_build() {
     assert_eq!(
         String::from_utf8(output.stdout).unwrap().trim(),
         "example-available-tool available"
+    );
+
+    fs::copy(
+        binaries.join("example-tool"),
+        paths.base_tools.join("example-tool"),
+    )
+    .unwrap();
+    let (restored_tools, warnings) = system.available_packaged_tools(&expected_tools).unwrap();
+    assert!(warnings.is_empty());
+    assert_eq!(restored_tools, all_tools);
+    assert!(
+        system
+            .adopt_release(&release, &binaries, &restored_tools)
+            .unwrap()
+            .is_none(),
+        "restoring a packaged tool for the active release should not fail"
+    );
+    assert_eq!(system.installed_tool_names().unwrap(), restored_tools);
+    assert!(paths.tool_link("example-tool").is_file());
+    let output = Command::new(paths.tool_link("example-tool"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        "example-tool available"
     );
 }
 
