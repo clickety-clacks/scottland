@@ -206,18 +206,20 @@ jobs:
               git rev-parse HEAD
               make test-hooks
               mkdir -m 700 build/fast-checks-headless-scratch
+              console_log="$PWD/build/hint-background-opacity-console.log"
+              result_log="$PWD/build/hint-background-opacity-evidence/results.log"
               if SCOTTLAND_WIDGET_SCOPE=0 \
                 SCOTTLAND_TEST_SCRATCH="$PWD/build/fast-checks-headless-scratch" \
                 SCOTTLAND_HEADLESS_DIR="$PWD/build/fast-checks-headless-scratch/session" \
-                timeout --signal=TERM --kill-after=30s 6m tests/hint-background-opacity-test.sh; then
-                :
+                timeout --signal=TERM --kill-after=30s 6m tests/hint-background-opacity-test.sh >"$console_log" 2>&1; then
+                cat "$console_log"
               else
                 test_status=$?
-                result_log="$PWD/build/hint-background-opacity-evidence/results.log"
+                cat "$console_log"
                 expected_failure="RuntimeError: timed out waiting for Cancel restores opening backing; last=False"
                 expected_summary="20 passed, 1 failed"
                 if [[ "$test_status" -eq 1 ]] \
-                  && [[ "$(grep -Fxc "$expected_failure" "$result_log")" -eq 1 ]] \
+                  && [[ "$(grep -Fxc "$expected_failure" "$console_log")" -eq 1 ]] \
                   && [[ "$(grep -Fxc "$expected_summary" "$result_log")" -eq 1 ]]; then
                   echo "::warning title=Cancel restore case::The Cancel restores opening backing case timed out; 20 other checks passed. This case is warn-only for 0.4. Other headless failures remain blocking."
                 else
