@@ -254,17 +254,15 @@ impl Picker {
         }
     }
 
-    /// The one output rectangle among `outputs` that contains `point`, or how many do.
+    /// The one output rectangle among `outputs` that contains `point`, or `Err(0)` when none
+    /// does and `Err(2)` when more than one does. Runs on every pointer move, so it stops at the
+    /// second match and allocates nothing.
     fn output_at(&self, point: Point) -> Result<Rect, usize> {
-        let containing: Vec<Rect> = self
-            .outputs
-            .iter()
-            .copied()
-            .filter(|output| output.contains(point))
-            .collect();
-        match containing.as_slice() {
-            [only] => Ok(*only),
-            _ => Err(containing.len()),
+        let mut containing = self.outputs.iter().filter(|output| output.contains(point));
+        match (containing.next(), containing.next()) {
+            (Some(only), None) => Ok(*only),
+            (None, _) => Err(0),
+            (Some(_), Some(_)) => Err(2),
         }
     }
 
