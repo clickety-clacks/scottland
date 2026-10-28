@@ -6,6 +6,7 @@
 #include "wlr-data-control-unstable-v1-client-protocol.h"
 #include "virtual-keyboard-unstable-v1-client-protocol.h"
 #include "keymap-relay.hpp"
+#include "paste-shortcut.hpp"
 
 #include <algorithm>
 #include <array>
@@ -126,6 +127,7 @@ class Service {
     uint32_t depressed_mods_ = 0;
     uint32_t locked_mods_ = 0;
     uint32_t latched_mods_ = 0;
+    uint32_t control_mask_ = 0;
     uint32_t shift_mask_ = 0;
     uint64_t next_entry_id_ = 1;
     uint64_t next_snapshot_id_ = 1;
@@ -383,6 +385,13 @@ class Service {
             return;
         }
 
+        auto control = xkb_keymap_mod_get_index(new_keymap.get(), XKB_MOD_NAME_CTRL);
+        auto new_control_mask = control == XKB_MOD_INVALID || control >= 32 ? 0 : (1u << control);
+        if (!new_control_mask) {
+            std::cerr << "scottland-clipboardd: ignoring a keyboard keymap without Control\n";
+            return;
+        }
+
         auto shift = xkb_keymap_mod_get_index(new_keymap.get(), XKB_MOD_NAME_SHIFT);
         auto new_shift_mask = shift == XKB_MOD_INVALID || shift >= 32 ? 0 : (1u << shift);
         if (!new_shift_mask) {
@@ -417,6 +426,7 @@ class Service {
         if (xkb_context_) xkb_context_unref(xkb_context_);
         xkb_context_ = new_context.release();
         xkb_keymap_ = new_keymap.release();
+        control_mask_ = new_control_mask;
         shift_mask_ = new_shift_mask;
         keymap_ready_ = true;
         zwp_virtual_keyboard_v1_modifiers(virtual_keyboard_, 0, latched_mods_, locked_mods_, keymap_group_);
@@ -647,14 +657,15 @@ class Service {
         transfer_seen_ = false;
         uint32_t now = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
-        constexpr uint32_t key_leftshift = 42;
-        constexpr uint32_t key_insert = 110;
-        zwp_virtual_keyboard_v1_key(virtual_keyboard_, now, key_leftshift, WL_KEYBOARD_KEY_STATE_PRESSED);
-        zwp_virtual_keyboard_v1_modifiers(virtual_keyboard_, depressed_mods_ | shift_mask_, latched_mods_, locked_mods_, keymap_group_);
-        zwp_virtual_keyboard_v1_key(virtual_keyboard_, now + 1, key_insert, WL_KEYBOARD_KEY_STATE_PRESSED);
-        zwp_virtual_keyboard_v1_key(virtual_keyboard_, now + 2, key_insert, WL_KEYBOARD_KEY_STATE_RELEASED);
-        zwp_virtual_keyboard_v1_key(virtual_keyboard_, now + 3, key_leftshift, WL_KEYBOARD_KEY_STATE_RELEASED);
-        zwp_virtual_keyboard_v1_modifiers(virtual_keyboard_, depressed_mods_, latched_mods_, locked_mods_, keymap_group_);
+        const auto sequence = scottland::clipboard::regular_clipboard_paste_sequence(
+            depressed_mods_, control_mask_, shift_mask_);
+        for (size_t i = 0; i < sequence.size; ++i) {
+            const auto &event = sequence.events[i];
+            zwp_virtual_keyboard_v1_key(virtual_keyboard_, now + static_cast<uint32_t>(i), event.key,
+                event.pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED);
+            zwp_virtual_keyboard_v1_modifiers(virtual_keyboard_, event.modifiers_after,
+                latched_mods_, locked_mods_, keymap_group_);
+        }
         if (wl_display_flush(display_) < 0 && errno != EAGAIN) return false;
         auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
         const int wayland_fd = wl_display_get_fd(display_);
