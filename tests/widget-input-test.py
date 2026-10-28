@@ -734,12 +734,58 @@ def modes():
     check("WG16 leaving returns it to its strip", settled(lambda: link("mode-right")["place"] == "peeking"))
     # Full screen wins (FS1, tenet 6): attention waits; it peeks in again afterwards.
     fs = app("mode-focus")
-    ipc.call("window-rules/focus-view", {"id": fs["id"]})
-    key("LEFTMETA", True); key("F", True); key("F", False); key("LEFTMETA", False)
-    check("WG16 full screen sends a peeking widget away", placed("mode-right", "away"), link("mode-right"))
-    key("LEFTMETA", True); key("F", True); key("F", False); key("LEFTMETA", False)
-    check("WG16 leaving full screen, it peeks in again", settled(lambda: link("mode-right")["place"] == "peeking"),
-          link("mode-right"))
+    def fullscreen_view():
+        return next(v for v in ipc.call("window-rules/list-views") if v["id"] == fs["id"])
+
+    # The standalone config does not bind Super+F. Install a fixture binding so this
+    # exercises real input, then restore it without changing the desktop's defaults.
+    option = "wm-actions/toggle_fullscreen"
+    binding = ipc.call("wayfire/get-config-option", {"option": option})["value"]
+    geometry = fullscreen_view()["geometry"]
+    f = card("mode-right")["frame"]
+    sample_y = round(f["y"] + f["height"] / 2)
+
+    def strip_pixels():
+        raw = subprocess.check_output(["grim", "-t", "ppm", "-"])
+        header = re.match(rb"P6\s+(\d+)\s+(\d+)\s+255\s", raw)
+        width, pixels = int(header[1]), raw[header.end():]
+        at = lambda x: tuple(pixels[(sample_y * width + x) * 3:(sample_y * width + x) * 3 + 3])
+        content = at(width // 2)  # the blank terminal's interior, away from its cursor
+        return {"edge": at(width - 1), "content": content,
+                "difference": max(sum(abs(a - b) for a, b in zip(at(x), content))
+                                  for x in range(width - round(strip) - 40, width))}
+
+    before_pixels = strip_pixels()
+    shot("attention-before-fullscreen")
+    last_pixels = {}
+    def strip_gone():
+        nonlocal last_pixels
+        last_pixels = strip_pixels()
+        # The card and terminal can share a background color. The visible strip/halo
+        # must contrast somewhere in this band before it becomes uniform app content.
+        return before_pixels["difference"] > 6 and last_pixels["difference"] <= 6
+
+    ipc.call("wayfire/set-config-options", {option: "<super> KEY_F"})
+    try:
+        ipc.call("window-rules/focus-view", {"id": fs["id"]})
+        wait_for(lambda: ipc.call("window-rules/get-focused-view")["info"]["id"] == fs["id"])
+        key("LEFTMETA", True); key("F", True); key("F", False); key("LEFTMETA", False)
+        check("WG16 the shortcut enters full screen at the output geometry",
+              settled(lambda: fullscreen_view()["fullscreen"] and fullscreen_view()["geometry"] == screen),
+              fullscreen_view())
+        check("WG16 full screen sends a peeking widget away", placed("mode-right", "away"), link("mode-right"))
+        check("WG16 full screen replaces the attention strip and halo with app pixels",
+              settled(strip_gone), {"before": before_pixels, "after": last_pixels})
+        shot("attention-fullscreen")
+        key("LEFTMETA", True); key("F", True); key("F", False); key("LEFTMETA", False)
+        check("WG16 the shortcut leaves full screen and restores the app geometry",
+              settled(lambda: not fullscreen_view()["fullscreen"] and fullscreen_view()["geometry"] == geometry),
+              fullscreen_view())
+        check("WG16 leaving full screen, it peeks in again", settled(lambda: link("mode-right")["place"] == "peeking"),
+              link("mode-right"))
+        shot("attention-after-fullscreen")
+    finally:
+        ipc.call("wayfire/set-config-options", {option: binding})
     attention(False)
     check("WG16 answered attention sends it away", placed("mode-right", "away"), link("mode-right"))
 
