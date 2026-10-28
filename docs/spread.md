@@ -24,7 +24,7 @@ in Window mode or a three-finger hold on the focused window solos it (WK35, comm
 undo, P5). Pressing Space in Window mode gathers every screen. Present, card clicks, zone cycling
 and ordinary drops never spread, and neither does pausing during a drag: the
 drag audition that offered a solo there is removed, with its pause setting (ruling 10-05: the
-three-finger hold does the job). Its hotspot setting, `solo_audition_hotspot` (50 pt), stays: moving
+three-finger hold does the job). Its hotspot setting, `solo_audition_hotspot` (28 pt), stays: moving
 the pointer beyond it is what counts as starting to drag, which cancels a pointer hold's audition
 (ruling 10-05; WK39). Pointer-hold auditions are not built on this branch, so nothing reads the
 setting yet; its metadata and Settings help say so until they land.

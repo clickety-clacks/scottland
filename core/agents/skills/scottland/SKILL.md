@@ -81,7 +81,7 @@ Common `[scottland]` settings:
 | `alt_hold_delay = 300` | How long Alt alone must be held before Window mode shows hints. |
 | `minimize_hold_delay = 300` | Super+M: shorter is a tap (cycle widget mode), longer is a momentary hold. |
 | `goo = true` | One liquid surface around all windows; `false` gives each window its own halo band. |
-| `window_avoidance_always = false` | Keep covered windows peeking out even outside Window mode. |
+| `window_avoidance_always = true` | Keep covered windows peeking out even outside Window mode. |
 | `touch_scroll_<name>`, `touch_scroll_wheel` | Touchscreen scrolling for apps that ignore touch ([`control.md`](control.md)). |
 | `remap_apps_<name>`, `remap_from_<name>`, `remap_to_<name>` | Per-app key remaps ([`control.md`](control.md)). |
 
