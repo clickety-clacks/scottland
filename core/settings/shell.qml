@@ -581,11 +581,16 @@ ShellRoot {
     const r=testRect(item)
     return Object.assign(r,{endpoint:{x:r.x+item.endpointX,y:r.y+item.endpointY},
       duration:item.duration,distance:item.distance,
+      openingImpulse:item.openingImpulse,openingFriction:item.openingFriction,
       plot:{x:r.x+item.plotLeft,y:r.y+item.plotTop,width:item.plotWidth,height:item.plotHeight}})
   }
   IpcHandler {
     target: "settings-test"
     // Observations only, and only when explicitly enabled by an isolated test.
+    function clearOriginalMotion() {
+      if(Quickshell.env("SCOTTLAND_SETTINGS_TEST") !== "1" || !root.loaded)return
+      root.original=Object.assign({},root.original,{motion:null})
+    }
     function snapshot(): string {
       if(Quickshell.env("SCOTTLAND_SETTINGS_TEST") !== "1" || !root.loaded)return "{}"
       return JSON.stringify({title:Qt.application.name,heading:heading.text,screen:settingsWindow.screen.name,tab:root.tab,
@@ -601,13 +606,13 @@ ShellRoot {
       editor:root.curveProbe(editor), movement:root.coastProbe(movementEditor),resize:root.coastProbe(resizeEditor),
       playground:Object.assign(root.testRect(playground),{distance:playground.distance,velocity:playground.vx,
         widgetized:playground.widgetized,widgetSide:playground.widgetSide,edgeStops:playground.edgeStops.length}),
-      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),hintHoldTiming:root.testRect(hintHoldTiming),soloHotspot:root.testRect(soloHotspot),
+      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),hintHoldTiming:root.testRect(hintHoldTiming),soloHotspot:Object.assign(root.testRect(soloHotspot),{opening:soloHotspot.opening}),
       alwaysAvoidance:root.testRect(alwaysAvoidance),
       opacitySettings:root.testRect(opacitySettings),windowOpacitySettings:root.testRect(windowOpacitySettings),
       windowTintSettings:Object.assign(root.testRect(windowTintSettings),{rowHeight:windowTintSettings.rowHeight}),
       widgetSettings:root.testRect(widgetSettings),solarSettings:root.testRect(solarSettings),
       solarEnable:root.testRect(solarEnable),solarNetwork:root.testRect(solarNetwork),
-      motion:root.motionValues,opacity:root.opacityValues,widgets:root.widgetValues,solar:root.solarValues,values:root.gooValues,palette:root.palette})
+      motion:root.motionValues,motionDefaults:root.motionDefaults,motionRecordPresent:!!root.original?.motion,opacity:root.opacityValues,widgets:root.widgetValues,solar:root.solarValues,values:root.gooValues,palette:root.palette})
     }
   }
 
@@ -1102,8 +1107,8 @@ ShellRoot {
             explanation:"Drag the endpoint. Right means a longer coast; up means farther travel. The graph shows window position after one arrow push; released drags use the same deceleration."
             design: theme; title: "Movement · position over time"
             impulse:root.motionValues.key_impulse;friction:root.motionValues.key_friction
-            openingImpulse:root.original?.motion?.key_impulse ?? 335
-            openingFriction:root.original?.motion?.key_friction ?? 608
+            openingImpulse:root.original?.motion?.key_impulse ?? root.motionDefaults.key_impulse
+            openingFriction:root.original?.motion?.key_friction ?? root.motionDefaults.key_friction
             onEdited:(impulse,friction)=>root.setMotionPair("key_impulse","key_friction",impulse,friction)
           }
           CoastGraph {
@@ -1113,8 +1118,8 @@ ShellRoot {
             explanation:"Drag the endpoint. Right means resizing continues longer; up means the window grows or shrinks farther after one Ctrl + arrow push."
             design: theme; title: "Resize · position over time"
             impulse:root.motionValues.resize_impulse;friction:root.motionValues.resize_friction
-            openingImpulse:root.original?.motion?.resize_impulse ?? 335
-            openingFriction:root.original?.motion?.resize_friction ?? 608
+            openingImpulse:root.original?.motion?.resize_impulse ?? root.motionDefaults.resize_impulse
+            openingFriction:root.original?.motion?.resize_friction ?? root.motionDefaults.resize_friction
             onEdited:(impulse,friction)=>root.setMotionPair("resize_impulse","resize_friction",impulse,friction)
           }
           ParameterStack {
@@ -1187,7 +1192,7 @@ ShellRoot {
             minimum:8;maximum:400;step:1;bigStep:10;unit:"pt";endLabel:"400 pt"
             explanation:"Not used yet: pointer-hold auditions are not built. Once they are, moving the pointer this far from where a hold fired, while it shows its solo or pair, will count as starting to drag and cancel the audition. Smaller movements will keep it."
             footer:"no effect until pointer-hold auditions are built"
-            value:root.motionValues.solo_audition_hotspot;opening:root.original?.motion?.solo_audition_hotspot ?? 50
+            value:root.motionValues.solo_audition_hotspot;opening:root.original?.motion?.solo_audition_hotspot ?? root.motionDefaults.solo_audition_hotspot
             onEdited:value=>root.setMotion("solo_audition_hotspot",value)
           }
         }
