@@ -359,6 +359,11 @@ if ((inside == 0)); then
   fi
   bwrap_args+=(--bind "$runtime_scratch" "$runtime" --bind "$tmp_scratch" /tmp
     --setenv XDG_RUNTIME_DIR "$runtime" --setenv TMPDIR "$tmp_scratch")
+  # Widget scopes belong to the login's user manager. Keep the rest of the runtime private,
+  # but make its manager socket reachable from this test's runtime view.
+  if [[ -S $runtime/systemd/private ]]; then
+    bwrap_args+=(--dir "$runtime/systemd" --bind "$runtime/systemd/private" "$runtime/systemd/private")
+  fi
   finish_start() {
     status=$?
     trap - EXIT INT TERM HUP
@@ -662,7 +667,8 @@ case ${1:-} in
         echo 'isolated headless directory is not fresh; refusing to reuse or remove it' >&2; exit 2;
       }
       if [[ -n $(find "$dir" -mindepth 1 -maxdepth 1 ! -name .scottland-headless-owner ! -name runtime ! -name tmp -print -quit) || \
-            -n $(find "$runtime_scratch" -mindepth 1 -print -quit) || \
+            -n $(find "$runtime_scratch" -mindepth 1 ! -path "$runtime_scratch/systemd" \
+                    ! -path "$runtime_scratch/systemd/private" -print -quit) || \
             -n $(find "$tmp_scratch" -mindepth 1 -print -quit) ]]; then
         echo 'isolated headless scratch is not fresh; preserving it for inspection' >&2
         exit 2
@@ -882,6 +888,29 @@ PY
     # can reap the owned subtree even if neither env nor shim markers appeared.
     # Never fall back to bare-PID cleanup after a guardian receipt/refusal.
     if [[ -e $dir/launch-owner.json || -L $dir/launch-owner.json || -S $dir/owner.sock ]]; then
+      if [[ -f $dir/display ]]; then
+        name=$(cat "$dir/display")
+        pid_file="$session_dir/$name.color-scheme.pid"
+        helper=$(sed -n 1p "$pid_file" 2>/dev/null || true)
+        if [[ $helper =~ ^[0-9]+$ ]] && process_owns_session "$helper" "$name" "$session_dir" scottland-color-scheme; then
+          if [[ $(ps -o pgid= -p "$helper" | tr -d ' ') == "$helper" ]]; then
+            kill -- "-$helper" 2>/dev/null || true
+          else
+            kill "$helper" 2>/dev/null || true
+          fi
+          for _ in $(seq 20); do
+            kill -0 "$helper" 2>/dev/null || break
+            sleep 0.1
+          done
+          if kill -0 "$helper" 2>/dev/null; then
+            kill -9 "$helper" 2>/dev/null || true
+            for _ in $(seq 20); do
+              kill -0 "$helper" 2>/dev/null || break
+              sleep 0.1
+            done
+          fi
+        fi
+      fi
       python3 "$repo/tests/headless-owner.py" stop "$dir" || exit 2
       echo 'stopped recorded headless launch subtree; retaining scratch for outer cleanup'
       exit 0
@@ -1129,7 +1158,8 @@ PY
       [[ -z $compositor ]] || kill -9 "$compositor" 2>/dev/null || true
     fi
     if [[ $isolation == 1 ]]; then
-      rm -f -- "$session_dir/$name.env" "$session_dir/$name.lua.fifo" "$session_dir/$name.widget-bus.pid"
+      rm -f -- "$session_dir/$name.env" "$session_dir/$name.lua.fifo" \
+        "$session_dir/$name.color-scheme.pid" "$session_dir/$name.widget-bus.pid"
     else
       rm -f -- "$session_dir/$name.env" "$session_dir/$name.lua.fifo" \
         "$session_dir/$name.hyprland-started"
