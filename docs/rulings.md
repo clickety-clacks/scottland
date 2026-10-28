@@ -1,7 +1,7 @@
 # Mike's rulings
 
 A dated log of the decisions Mike has made, in his terms, with where each one is specified. Use it to
-review behavior: every ruling here should be true of the desktop, and the linked row says how. When Mike
+review product policy; the linked row records implementation and acceptance for its target. When Mike
 rules on something, add it here in the same change that updates the spec. Principles (P-rows) live in
 [core/INVARIANTS.md](../core/INVARIANTS.md); feature rows in the docs named below.
 
@@ -133,6 +133,12 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-03 | Watercolor wallpaper: local pickup and spread, in all of the goo (stronger where thick), persistent after motion settles. | GO24 |
 | 10-04 | Pre-computed breath frames: a ceiling (about 50) and widen spacing above it; never fall off a cliff to the expensive path silently. | GO26 |
 
+## Settings
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-07 | The managed settings files are the source of truth: direct file edits update the running desktop and Settings, and Settings changes write back to the files. This is the settled file-wins policy and remains a 0.4 feature target, not a claim of availability on 0.3. The 0.4 Settings specification marks file-wins implemented but not yet tested. | 0.4 Settings S4 |
+
 ## Omarchy adapter, distro and flavorings
 
 | Date | Ruling | Where |
@@ -204,7 +210,8 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-05 | Watercolor goo is one dye, not segregated kinds. Focus and attention color dye all of a window's goo, not a band at its wall. Dye density, swirl and spread are settings. The goo picks up the color of whatever is under it (wallpaper or window content) and mixes it into the dye already there, like mixing watercolors; picked-up color spreads and swirls like any dye, smearing the material beneath. Supersedes the wall-band and wallpaper-only parts of GO15/GO24. | GO28 |
 | 10-05 | Dye release is the rate at which dye enters the goo. The setting called dye strength is dye density, and is named that. | GO23, GO28 |
 | 10-05 | Remove the drag audition (pausing during a drag to solo) altogether, with its timeout setting in Settings: the three-finger hold does the job. (Supersedes the two 10-05 re-arm entries.) | SP7 |
-| 10-05 | Peeking is temporary and never moves a window's true location, so it never violates "stays put". Soloed, paired, audition-dropped and focused windows get no special anchoring in the peek engine: any window that is covered peeks like any other. **Pending for focused windows:** this conflicts with WK13's 10-02 rule that the focused window never moves for avoidance, and Mike has not yet said which wins; until he does, the focused window keeps its anchoring and only the solo, pair and audition parts are in effect. | WK13, WK36, spread |
+| 10-05 | Peeking is temporary and never moves a window's true location, so it never violates "stays put". Soloed, paired, audition-dropped and focused windows get no special anchoring in the peek engine: any window that is covered peeks like any other. **Resolved 10-07 (see below):** the focused window is the exception, not the rule. WK13's 10-02 anchoring stands; only the solo, pair and audition parts of this entry are in effect. | WK13, WK36, spread |
+| 10-07 | Stay-still rule: "the active window NEVER moves  automatically without the user explicitely doing it." This settles the 10-05 entry above in WK13's favor: the focused window's 10-02 anchoring was never limited to avoidance, so it keeps that anchoring against peeking too, with no exception for solo, pair or audition. WK13 states the settled policy. The 0.4 focused-window source change and its unit results are complete; that evidence does not establish current 0.3 behavior. The current 0.3 source contains the focused anchor, but no current-target runtime acceptance is recorded. | WK13 |
 | 10-05 | Entering Window mode, a hint appears only once it has settled: never drawn, removed, then drawn again while placement and window avoidance run. | WK41 |
 | 10-05 | Window mode works with all windows across all screens. You can pair with a window on another screen: the window whose hint you are manipulating moves to the screen where its partner is. | WK, WK36 |
 | 10-05 | A solo or pair from a hold is an audition. Starting to drag cancels it, as does Esc. During a pair audition the pointer may not be over where the held window is drawn; that's fine, since nothing really moved. When the cursor moves again, the held window returns to its position under the cursor and drags as normal. | WK35, WK36, WK39 |
