@@ -115,6 +115,10 @@ class Service {
     std::deque<Entry> history_;
     Bundle current_clipboard_;
     bool current_clipboard_complete_ = true;
+    Bundle current_primary_;
+    bool current_primary_owned_ = false;
+    bool primary_selection_supported_ = false;
+    uint64_t primary_selection_revision_ = 0;
     std::unordered_map<uint64_t, Bundle> snapshots_;
     std::vector<fs::path> temp_files_;
     fs::path runtime_dir_;
@@ -513,7 +517,31 @@ class Service {
             offers_.erase(previous);
         }
         previous = proxy;
-        if (primary) return; // the contract treats Ctrl+C's regular selection only
+        if (primary) {
+            primary_selection_supported_ = true;
+            if (!proxy) {
+                ++primary_selection_revision_;
+                current_primary_.formats.clear();
+                current_primary_owned_ = false;
+                return;
+            }
+            auto found = offers_.find(proxy);
+            if (found == offers_.end()) {
+                ++primary_selection_revision_;
+                current_primary_.formats.clear();
+                current_primary_owned_ = false;
+                return;
+            }
+            const auto &mimes = found->second.mimes;
+            if (std::find(mimes.begin(), mimes.end(), std::string(kOwnerMime)) != mimes.end()) {
+                current_primary_owned_ = true;
+                return;
+            }
+            ++primary_selection_revision_;
+            current_primary_.formats.clear();
+            current_primary_owned_ = false;
+            return;
+        }
         if (!proxy) {
             current_clipboard_.formats.clear();
             current_clipboard_complete_ = true;
@@ -652,13 +680,82 @@ class Service {
         }
     }
 
+    std::optional<Bundle> snapshot_primary_selection() {
+        if (!primary_offer_) return Bundle{};
+        auto found = offers_.find(primary_offer_);
+        if (found == offers_.end()) return std::nullopt;
+        const auto &mimes = found->second.mimes;
+        if (std::find(mimes.begin(), mimes.end(), std::string(kOwnerMime)) != mimes.end()) {
+            if (!current_primary_owned_) return std::nullopt;
+            return current_primary_;
+        }
+
+        Bundle bundle;
+        for (const auto &mime : mimes) {
+            if (mime == kOwnerMime) continue;
+            auto data = receive(primary_offer_, mime);
+            if (!data) return std::nullopt;
+            bundle.formats.push_back({mime, std::move(*data)});
+        }
+        return bundle;
+    }
+
+    bool set_primary_selection(const Bundle &bundle) {
+        if (!primary_selection_supported_ ||
+            wl_proxy_get_version(reinterpret_cast<wl_proxy *>(data_device_)) < 2) {
+            return false;
+        }
+        if (bundle.formats.empty()) {
+            zwlr_data_control_device_v1_set_primary_selection(data_device_, nullptr);
+            if (wl_display_flush(display_) < 0 && errno != EAGAIN) return false;
+            current_primary_.formats.clear();
+            current_primary_owned_ = false;
+            ++primary_selection_revision_;
+            return true;
+        }
+
+        Bundle owned = bundle;
+        owned.formats.push_back({std::string(kOwnerMime), {}});
+        auto *source = zwlr_data_control_manager_v1_create_data_source(data_manager_);
+        if (!source) return false;
+        auto object = std::make_unique<Source>();
+        object->owner = this;
+        object->bundle = std::move(owned);
+        auto *state = object.get();
+        sources_[source] = std::move(object);
+        zwlr_data_control_source_v1_add_listener(source, &source_listener_, state);
+        for (const auto &format : state->bundle.formats) zwlr_data_control_source_v1_offer(source, format.mime.c_str());
+        zwlr_data_control_device_v1_set_primary_selection(data_device_, source);
+        if (wl_display_flush(display_) < 0 && errno != EAGAIN) {
+            zwlr_data_control_source_v1_destroy(source);
+            sources_.erase(source);
+            return false;
+        }
+        current_primary_ = bundle;
+        current_primary_owned_ = true;
+        ++primary_selection_revision_;
+        return true;
+    }
+
     bool paste_and_wait() {
         if (!keymap_ready_ || !virtual_keyboard_) return false;
+
+        const uint64_t primary_revision_before_snapshot = primary_selection_revision_;
+        auto previous_primary = snapshot_primary_selection();
+        bool use_shift_insert = false;
+        if (previous_primary && !current_clipboard_.formats.empty() &&
+            wl_display_roundtrip(display_) >= 0 &&
+            primary_selection_revision_ == primary_revision_before_snapshot) {
+            use_shift_insert = set_primary_selection(current_clipboard_);
+        }
+        const uint64_t temporary_primary_revision = primary_selection_revision_;
         transfer_seen_ = false;
         uint32_t now = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
-        const auto sequence = scottland::clipboard::regular_clipboard_paste_sequence(
-            depressed_mods_, control_mask_, shift_mask_);
+        const auto sequence = use_shift_insert ?
+            scottland::clipboard::shift_insert_paste_sequence(depressed_mods_, shift_mask_) :
+            scottland::clipboard::regular_clipboard_paste_sequence(
+                depressed_mods_, control_mask_, shift_mask_);
         for (size_t i = 0; i < sequence.size; ++i) {
             const auto &event = sequence.events[i];
             zwp_virtual_keyboard_v1_key(virtual_keyboard_, now + static_cast<uint32_t>(i), event.key,
@@ -666,19 +763,32 @@ class Service {
             zwp_virtual_keyboard_v1_modifiers(virtual_keyboard_, event.modifiers_after,
                 latched_mods_, locked_mods_, keymap_group_);
         }
-        if (wl_display_flush(display_) < 0 && errno != EAGAIN) return false;
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
-        const int wayland_fd = wl_display_get_fd(display_);
-        while (std::chrono::steady_clock::now() < deadline) {
-            wl_display_dispatch_pending(display_);
-            if (transfer_seen_) return true;
-            pollfd fd{wayland_fd, POLLIN, 0};
-            int ready;
-            do { ready = poll(&fd, 1, 25); } while (ready < 0 && errno == EINTR);
-            if (ready < 0 || (fd.revents & (POLLERR | POLLHUP | POLLNVAL))) return false;
-            if (fd.revents & POLLIN) if (wl_display_dispatch(display_) < 0) return false;
+        bool pasted = false;
+        const bool input_flushed = wl_display_flush(display_) >= 0 || errno == EAGAIN;
+        if (input_flushed) {
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+            const int wayland_fd = wl_display_get_fd(display_);
+            while (std::chrono::steady_clock::now() < deadline) {
+                wl_display_dispatch_pending(display_);
+                if (transfer_seen_) {
+                    pasted = true;
+                    break;
+                }
+                pollfd fd{wayland_fd, POLLIN, 0};
+                int ready;
+                do { ready = poll(&fd, 1, 25); } while (ready < 0 && errno == EINTR);
+                if (ready < 0 || (fd.revents & (POLLERR | POLLHUP | POLLNVAL))) break;
+                if (fd.revents & POLLIN) if (wl_display_dispatch(display_) < 0) break;
+            }
         }
-        return false;
+        if (use_shift_insert) {
+            if (wl_display_roundtrip(display_) < 0) return false;
+            if (primary_selection_revision_ == temporary_primary_revision &&
+                !set_primary_selection(*previous_primary)) {
+                return false;
+            }
+        }
+        return pasted;
     }
 
     static uint32_t read_u32(const Bytes &data, size_t &offset) {

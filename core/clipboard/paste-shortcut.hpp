@@ -48,4 +48,25 @@ inline constexpr PasteKeySequence regular_clipboard_paste_sequence(
     return sequence;
 }
 
+inline constexpr PasteKeySequence shift_insert_paste_sequence(
+    uint32_t depressed_modifiers, uint32_t shift_mask) {
+    PasteKeySequence sequence;
+    uint32_t modifiers = depressed_modifiers;
+    const bool add_shift = (modifiers & shift_mask) == 0;
+
+    if (add_shift) {
+        modifiers |= shift_mask;
+        sequence.events[sequence.size++] = {KEY_LEFTSHIFT, true, modifiers};
+    }
+
+    sequence.events[sequence.size++] = {KEY_INSERT, true, modifiers};
+    sequence.events[sequence.size++] = {KEY_INSERT, false, modifiers};
+
+    if (add_shift) {
+        modifiers &= ~shift_mask;
+        sequence.events[sequence.size++] = {KEY_LEFTSHIFT, false, modifiers};
+    }
+    return sequence;
+}
+
 } // namespace scottland::clipboard

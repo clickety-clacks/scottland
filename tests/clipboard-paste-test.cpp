@@ -8,6 +8,7 @@ namespace {
 using scottland::clipboard::PasteKeyEvent;
 using scottland::clipboard::PasteKeySequence;
 using scottland::clipboard::regular_clipboard_paste_sequence;
+using scottland::clipboard::shift_insert_paste_sequence;
 
 int check_sequence(const PasteKeySequence &actual, const PasteKeyEvent *expected,
                   std::size_t expected_size, const char *message) {
@@ -84,6 +85,28 @@ int main() {
         return 1;
     }
 
-    std::cout << "PASS regular clipboard paste key sequence and modifier restoration\n";
+    constexpr std::array<PasteKeyEvent, 4> shift_insert{ {
+        {KEY_LEFTSHIFT, true, base_modifiers | shift_mask},
+        {KEY_INSERT, true, base_modifiers | shift_mask},
+        {KEY_INSERT, false, base_modifiers | shift_mask},
+        {KEY_LEFTSHIFT, false, base_modifiers},
+    } };
+    if (check_sequence(shift_insert_paste_sequence(base_modifiers, shift_mask),
+                       shift_insert.data(), shift_insert.size(),
+                       "Shift+Insert adds and restores Shift")) {
+        return 1;
+    }
+
+    constexpr std::array<PasteKeyEvent, 2> shift_already_held_for_insert{ {
+        {KEY_INSERT, true, base_modifiers | shift_mask},
+        {KEY_INSERT, false, base_modifiers | shift_mask},
+    } };
+    if (check_sequence(shift_insert_paste_sequence(base_modifiers | shift_mask, shift_mask),
+                       shift_already_held_for_insert.data(), shift_already_held_for_insert.size(),
+                       "Shift+Insert preserves an already-held Shift modifier")) {
+        return 1;
+    }
+
+    std::cout << "PASS clipboard paste key sequences and modifier restoration\n";
     return 0;
 }
