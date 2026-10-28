@@ -5,6 +5,7 @@
 
 #include "wlr-data-control-unstable-v1-client-protocol.h"
 #include "virtual-keyboard-unstable-v1-client-protocol.h"
+#include "keymap-relay.hpp"
 
 #include <algorithm>
 #include <array>
@@ -133,6 +134,7 @@ class Service {
     std::string wayland_display_;
     xkb_context *xkb_context_ = nullptr;
     xkb_keymap *xkb_keymap_ = nullptr;
+    scottland::clipboard::KeymapRelay keymap_relay_;
 
     static void registry_global(void *data, wl_registry *registry, uint32_t name,
                                 const char *interface, uint32_t version) {
@@ -168,7 +170,12 @@ class Service {
         }
         close(fd);
         if (offset != size) return;
-        self->set_virtual_keymap(text);
+        try {
+            self->set_virtual_keymap(text);
+        } catch (const std::exception &error) {
+            std::cerr << "scottland-clipboardd: could not update the virtual keyboard keymap: "
+                      << error.what() << '\n';
+        }
     }
 
     static void keyboard_enter(void *, wl_keyboard *, uint32_t, wl_surface *, wl_array *) {}
@@ -356,25 +363,61 @@ class Service {
 
     void set_virtual_keymap(const std::string &text) {
         if (!virtual_keyboard_) return;
+
+        if (!scottland::clipboard::is_nul_terminated_keymap(text)) {
+            std::cerr << "scottland-clipboardd: ignoring a malformed keyboard keymap payload\n";
+            return;
+        }
+
+        std::unique_ptr<xkb_context, decltype(&xkb_context_unref)> new_context(
+            xkb_context_new(XKB_CONTEXT_NO_FLAGS), xkb_context_unref);
+        if (!new_context) {
+            throw std::runtime_error("could not create an XKB context for the keyboard keymap");
+        }
+        std::unique_ptr<xkb_keymap, decltype(&xkb_keymap_unref)> new_keymap(
+            xkb_keymap_new_from_string(new_context.get(), text.c_str(), XKB_KEYMAP_FORMAT_TEXT_V1,
+                                       XKB_KEYMAP_COMPILE_NO_FLAGS),
+            xkb_keymap_unref);
+        if (!new_keymap) {
+            std::cerr << "scottland-clipboardd: ignoring an invalid keyboard keymap\n";
+            return;
+        }
+
+        auto shift = xkb_keymap_mod_get_index(new_keymap.get(), XKB_MOD_NAME_SHIFT);
+        auto new_shift_mask = shift == XKB_MOD_INVALID || shift >= 32 ? 0 : (1u << shift);
+        if (!new_shift_mask) {
+            std::cerr << "scottland-clipboardd: ignoring a keyboard keymap without Shift\n";
+            return;
+        }
+
+        std::unique_ptr<char, decltype(&std::free)> serialized_keymap(
+            xkb_keymap_get_as_string(new_keymap.get(), XKB_KEYMAP_FORMAT_TEXT_V1), std::free);
+        if (!serialized_keymap) {
+            throw std::runtime_error("could not serialize the keyboard keymap");
+        }
+        std::string canonical_keymap(serialized_keymap.get());
+        canonical_keymap.push_back('\0');
+
+        if (!keymap_relay_.should_send(canonical_keymap)) return;
+
         int fd = memfd_create("scottland-keymap", MFD_CLOEXEC);
         if (fd < 0) throw std::runtime_error("could not create the virtual keyboard keymap");
-        if (!write_all(fd, reinterpret_cast<const uint8_t *>(text.data()), text.size())) {
+        if (!write_all(fd, reinterpret_cast<const uint8_t *>(canonical_keymap.data()),
+                       canonical_keymap.size())) {
             close(fd);
             throw std::runtime_error("could not write the virtual keyboard keymap");
         }
         if (lseek(fd, 0, SEEK_SET) < 0) { close(fd); throw std::runtime_error("could not rewind the keyboard keymap"); }
         zwp_virtual_keyboard_v1_keymap(virtual_keyboard_, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,
-                                       fd, static_cast<uint32_t>(text.size()));
+                                       fd, static_cast<uint32_t>(canonical_keymap.size()));
         close(fd);
+
+        keymap_relay_.remember_sent(std::move(canonical_keymap));
         if (xkb_keymap_) xkb_keymap_unref(xkb_keymap_);
         if (xkb_context_) xkb_context_unref(xkb_context_);
-        xkb_context_ = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-        xkb_keymap_ = xkb_keymap_new_from_string(xkb_context_, text.c_str(),
-                                                 XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
-        if (!xkb_keymap_) throw std::runtime_error("the compositor sent an invalid keyboard keymap");
-        auto shift = xkb_keymap_mod_get_index(xkb_keymap_, XKB_MOD_NAME_SHIFT);
-        shift_mask_ = shift == XKB_MOD_INVALID || shift >= 32 ? 0 : (1u << shift);
-        if (!shift_mask_) throw std::runtime_error("the session keymap has no Shift modifier");
+        xkb_context_ = new_context.release();
+        xkb_keymap_ = new_keymap.release();
+        shift_mask_ = new_shift_mask;
         keymap_ready_ = true;
         zwp_virtual_keyboard_v1_modifiers(virtual_keyboard_, 0, latched_mods_, locked_mods_, keymap_group_);
         wl_display_flush(display_);
