@@ -654,13 +654,13 @@ sleep 1.5
 read -r ax ay aw ah <<<"$(view_field cover-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 on_top() { ipc window-rules/list-views | python3 -c "import json,sys; print([v['always-on-top'] for v in json.load(sys.stdin) if v['title']=='cover-app'][0])"; }
 pixel() { tests/headless.sh run grim -g "$ux,$uy 1x1" -t ppm - 2>/dev/null | tail -c 3 | od -An -tu1 | tr -s ' '; }
-# The card is translucent. Put the red window beneath the sampled point before taking the
-# baseline, so the pixel has the same underlay when the card returns above it.
-h window-rules/configure-view "{\"id\": $(view_field cover-app "v['id']"), \"geometry\": {\"x\": $((ux - aw + 30)), \"y\": $((uy - ah / 2)), \"width\": $aw, \"height\": $ah}}"
+# The card is translucent. Put red behind the sampled point before the baseline. Its wide
+# fixture frame still leaves a strip exposed for the real drag after rail scaling.
+h window-rules/configure-view "{\"id\": $(view_field cover-app "v['id']"), \"geometry\": {\"x\": $((ux - 330)), \"y\": $((uy - 80)), \"width\": 660, \"height\": 160}}"
 sleep 0.2
 card_pixel=$(pixel)
 read -r ax ay aw ah <<<"$(view_field cover-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
-super_drag $((ax + 15)) $((ay + ah / 2)) $((ax + 65)) $((ay + ah / 2))
+super_drag $((ax + 5)) $((ay + ah / 2)) $((ax + 35)) $((ay + ah / 2))
 sleep 0.6
 check "L29 a window just let go of stays above the widgets" [ "$(on_top)/$([ "$(pixel)" != "$card_pixel" ] && echo covered)" = "True/covered" ]
 sleep 2.6
