@@ -208,6 +208,7 @@ jobs:
               mkdir -m 700 build/main-headless-scratch
               SCOTTLAND_WIDGET_SCOPE=0 \
                 SCOTTLAND_TEST_SCRATCH="$PWD/build/main-headless-scratch" \
-                SCOTTLAND_HEADLESS_DIR="$PWD/build/main-headless-session" \
-                timeout --signal=TERM --kill-after=30s 6m tests/hint-style-test.sh
+                SCOTTLAND_HEADLESS_DIR="$PWD/build/main-headless-scratch/session" \
+                timeout --signal=TERM --kill-after=30s 6m tests/hint-background-opacity-test.sh
+              rmdir -- build/main-headless-scratch
             '
