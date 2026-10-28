@@ -66,6 +66,11 @@ def snapshot():
             ["qs","ipc","--pid",str(probe_instance_pid),"call","settings-test","snapshot"],text=True,timeout=5))
     return last_snapshot
 
+def clear_original_motion():
+    subprocess.run(
+        ["qs","ipc","--pid",str(probe_instance_pid),"call","settings-test","clearOriginalMotion"],
+        check=True,capture_output=True,text=True,timeout=5)
+
 def screen_point(p):
     return panel_x+p["x"]-panel_output_origin, panel_y+p["y"]
 
@@ -319,6 +324,33 @@ def close_panel(panel, save=False, via_button=False):
     time.sleep(.15)
 
 
+def check_opening_fallbacks():
+    open_panel()
+    clear_original_motion()
+    q = snapshot(); defaults = q["motionDefaults"]
+    check("Settings test can remove the loaded motion record", not q["motionRecordPresent"])
+    check("movement opening falls back to shipped impulse and friction",
+          abs(q["movement"]["openingImpulse"]-defaults["key_impulse"]) < .01 and
+          abs(q["movement"]["openingFriction"]-defaults["key_friction"]) < .01)
+    check("resize opening falls back to shipped impulse and friction",
+          abs(q["resize"]["openingImpulse"]-defaults["resize_impulse"]) < .01 and
+          abs(q["resize"]["openingFriction"]-defaults["resize_friction"]) < .01)
+    check("hold hotspot opening falls back to its shipped default",
+          abs(q["soloHotspot"]["opening"]-defaults["solo_audition_hotspot"]) < .01)
+    scale = q["scaleFallbacks"]
+    curve = scale["defaultCurve"]
+    minimum = curve[-1]["y"]
+    maximum = curve[0]["y"]
+    check("screen-zone opening falls back to shipped scale limits and default curve",
+          abs(scale["screen"]["min_scale"]-minimum) < .001 and
+          abs(scale["screen"]["max_scale"]-maximum) < .001 and
+          scale["screen"]["curve"] == curve)
+    check("global opening falls back to shipped scale limits and default curve",
+          abs(scale["global"]["min_scale"]-minimum) < .001 and
+          abs(scale["global"]["max_scale"]-maximum) < .001 and
+          scale["global"]["curve"] == curve)
+
+
 def motion_trial(resize=False):
     name="SettingsMotion"+str(time.monotonic_ns())
     fixture=subprocess.Popen(["python3",str(repo/"tests/windowing-key-recorder.py"),name,str(art/(name+".keys"))],stdout=log,stderr=log)
@@ -383,6 +415,10 @@ def bands(name):
                       sum(abs(a-b) for a,b in zip(pixels.pixel(mid, 20), pixels.pixel(adjacent, 20))) > 20)
 
 
+class FocusComplete(Exception):
+    pass
+
+
 try:
     # Private runtimes can reuse wayland-1. Check the owned runtime and display record.
     headless_dir = Path(os.environ["SCOTTLAND_HEADLESS_DIR"])
@@ -404,6 +440,9 @@ try:
     check("GO22 defaults to Mike's cool attention color", initial_attention_family == "cool")
     palette_path = art / "palette.json"
     palette_path.write_text(json.dumps(dict(scheme="dark",background="#1c1d22",foreground="#e6e6e9",accent="#7aa2f7")))
+    if os.environ.get("SCOTTLAND_SETTINGS_FALLBACKS_ONLY") == "1":
+        check_opening_fallbacks()
+        raise FocusComplete
     baseline_motion=motion_trial()
     baseline_resize=motion_trial(True)
     panel = open_panel()
@@ -1220,6 +1259,11 @@ try:
     # Restore caller's session settings; the saved fixture remains evidence.
     ipc("wayfire/set-config-options", {"scottland/"+k:v for k,v in {**initial_zone_options,**initial_edge}.items()})
     ipc("wayfire/set-config-options", {"scottland/attention_color_family":initial_attention_family})
+
+    # Force the missing-record path and inspect the actual opening values passed to the controls.
+    check_opening_fallbacks()
+except FocusComplete:
+    pass
 finally:
     for proc in clients:
         if proc.poll() is None:
