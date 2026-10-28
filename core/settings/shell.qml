@@ -234,12 +234,25 @@ ShellRoot {
 
   function profileFromEntry(entry) {
     const minimum = Number(entry.min_scale), maximum = Number(entry.max_scale)
-    const low = isFinite(minimum) ? minimum : 0.2
-    const high = isFinite(maximum) ? maximum : 1
+    const hasMinimum = isFinite(minimum), hasMaximum = isFinite(maximum)
+    const low = hasMinimum ? minimum : root.defaults.curve[root.defaults.curve.length - 1].y
+    const high = hasMaximum ? maximum : root.defaults.curve[0].y
     return { center_width: Number(entry.center_width), rail_width: Number(entry.rail_width),
       blend_width: Number(entry.blend_width), min_scale: low, max_scale: high,
       scale_curve: String(entry.scale_curve || ""),
-      curve: parseCurve(entry.scale_curve) || [{ x: 0, y: high }, { x: 1, y: low }] }
+      curve: parseCurve(entry.scale_curve) || (hasMinimum || hasMaximum
+        ? [{ x: 0, y: high }, { x: 1, y: low }] : root.defaults.curve) }
+  }
+
+  function globalOpeningCurve(values) {
+    const hasMinimum = values.min_scale !== null && values.min_scale !== undefined && isFinite(Number(values.min_scale))
+    const hasMaximum = values.max_scale !== null && values.max_scale !== undefined && isFinite(Number(values.max_scale))
+    const low = hasMinimum ? Number(values.min_scale) : root.defaults.curve[root.defaults.curve.length - 1].y
+    const high = hasMaximum ? Number(values.max_scale) : root.defaults.curve[0].y
+    const parsed = parseCurve(values.scale_curve)
+    if (parsed) return parsed
+    if (!hasMinimum && !hasMaximum) return root.defaults.curve
+    return [{ x: 0, y: Math.max(high, low || 0.05) }, { x: 1, y: low }]
   }
 
   function profileForOutput(output) {
@@ -414,9 +427,7 @@ ShellRoot {
         for (const name of ["center_width", "rail_width", "min_scale", "max_scale", "blend_width"])
           if (values[name] === undefined) values[name] = root.savedValue(name, null)
         if (values.scale_curve === undefined) values.scale_curve = root.savedText("scale_curve")
-        const points = root.parseCurve(values.scale_curve) || [
-          { x: 0, y: values.max_scale !== null ? Math.max(values.max_scale, values.min_scale || 0.05) : 1 },
-          { x: 1, y: values.min_scale !== null ? values.min_scale : 0.2 }]
+        const points = root.globalOpeningCurve(values)
         const globalZones = { center_width: values.center_width ?? root.defaults.center_width,
           rail_width: values.rail_width ?? root.defaults.rail_width,
           blend_width: values.blend_width ?? root.defaults.blend_width,
@@ -584,9 +595,17 @@ ShellRoot {
       openingImpulse:item.openingImpulse,openingFriction:item.openingFriction,
       plot:{x:r.x+item.plotLeft,y:r.y+item.plotTop,width:item.plotWidth,height:item.plotHeight}})
   }
+  function scaleFallbackProbe() {
+    const screen = root.profileFromEntry({})
+    const globalCurve = root.globalOpeningCurve({ min_scale: null, max_scale: null, scale_curve: "" })
+    return { defaultCurve: root.defaults.curve,
+      screen: { min_scale: screen.min_scale, max_scale: screen.max_scale, curve: screen.curve },
+      global: { min_scale: globalCurve[globalCurve.length - 1].y,
+        max_scale: globalCurve[0].y, curve: globalCurve } }
+  }
   IpcHandler {
     target: "settings-test"
-    // Observations only, and only when explicitly enabled by an isolated test.
+    // Test-only inspection and setup hooks, enabled only for an isolated test.
     function clearOriginalMotion() {
       if(Quickshell.env("SCOTTLAND_SETTINGS_TEST") !== "1" || !root.loaded)return
       root.original=Object.assign({},root.original,{motion:null})
@@ -597,6 +616,7 @@ ShellRoot {
       panel:{x:settingsWindow.x,y:settingsWindow.y,width:settingsWindow.width,height:settingsWindow.height},
       viewport:root.testRect(gooScroll), scroll:gooScroll.contentY,touchpadSpeed:root.touchpadScrollSpeed,wheelVelocity:gooScroll.wheelVelocity,flicking:gooScroll.flicking,touchVelocity:gooScroll.verticalVelocity, contentHeight:gooScroll.contentHeight,
       zoneScope:Object.assign(root.testRect(zoneScope),{all:root.testRect(allScreensChoice),this:root.testRect(thisScreenChoice),reset:root.testRect(resetTargetZones),scope:root.editScope,note:zoneScopeNote.text}),
+      scaleFallbacks:root.scaleFallbackProbe(),
       target:{output:root.targetOutputName,identity:root.targetIdentity,own:root.targetHasOwnZones,available:root.thisScreenAvailable},
       zoneProfile:root.editorProfile(),screenZones:root.screenZones,outputs:root.outputs,
       zones:Object.assign(root.testRect(zoneSettings),{hinted:zoneSettings.hinted,hint:zoneSettings.visibleHint}),

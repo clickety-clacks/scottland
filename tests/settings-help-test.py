@@ -337,6 +337,18 @@ def check_opening_fallbacks():
           abs(q["resize"]["openingFriction"]-defaults["resize_friction"]) < .01)
     check("hold hotspot opening falls back to its shipped default",
           abs(q["soloHotspot"]["opening"]-defaults["solo_audition_hotspot"]) < .01)
+    scale = q["scaleFallbacks"]
+    curve = scale["defaultCurve"]
+    minimum = curve[-1]["y"]
+    maximum = curve[0]["y"]
+    check("screen-zone opening falls back to shipped scale limits and default curve",
+          abs(scale["screen"]["min_scale"]-minimum) < .001 and
+          abs(scale["screen"]["max_scale"]-maximum) < .001 and
+          scale["screen"]["curve"] == curve)
+    check("global opening falls back to shipped scale limits and default curve",
+          abs(scale["global"]["min_scale"]-minimum) < .001 and
+          abs(scale["global"]["max_scale"]-maximum) < .001 and
+          scale["global"]["curve"] == curve)
 
 
 def motion_trial(resize=False):
