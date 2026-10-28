@@ -19,7 +19,7 @@ hint inside its window.
 
 ## Spread, solo and gather
 
-**Triggers (P4).** Only explicit requests arrange other windows: a focused window's hint hold or a three-finger hold solos it (WK35), and plain Space in Window mode gathers the periphery on each output (WK43). These actions commit outright, with no undo (P5). Presenting, card clicks, zone cycling and ordinary drops never spread, and pausing during a drag does not spread either. The drag audition and its pause were removed (ruling 10-05); its `solo_audition_hotspot` setting (50 pt) remains so moving beyond it cancels a pointer hold's audition if that behavior is introduced (WK39). Pointer-hold auditions are not built on this branch, so nothing reads the setting yet; its metadata and Settings help say so until they land.
+**Triggers (P4).** Only explicit requests arrange other windows: a focused window's hint hold or a three-finger hold solos it (WK35), and plain Space in Window mode gathers the periphery on each output (WK43). These actions commit outright, with no undo (P5). Presenting, card clicks, zone cycling and ordinary drops never spread, and pausing during a drag does not spread either. The drag audition and its pause were removed (ruling 10-05); its `solo_audition_hotspot` setting (28 pt) remains so moving beyond it cancels a pointer hold's audition if that behavior is introduced (WK39). Pointer-hold auditions are not built on this branch, so nothing reads the setting yet; its metadata and Settings help say so until they land.
 
 **The solo window.** Already in the center zone: it stays where it is (P2, P14). Otherwise it goes
 to its remembered center spot (WP2), else the middle of the screen, padded on screen (WP7), at full
