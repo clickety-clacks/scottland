@@ -24,7 +24,10 @@ assert os.environ.get('SCOTTLAND_HEADLESS_ISOLATION') == '1', 'isolated headless
 repo = Path(__file__).resolve().parents[1]
 art = Path(sys.argv[1]).resolve(); art.mkdir(parents=True, exist_ok=True)
 log = (art / 'clients.log').open('w')
-layout = art / 'settings/scottland/layout.ini'; layout.parent.mkdir(parents=True, exist_ok=True)
+# The headless runner omits the config watcher. Keep Settings' file in the same
+# isolated config tree that the compositor's assembled config reads.
+layout = Path(os.environ['XDG_CONFIG_HOME']) / 'scottland/layout.ini'
+layout.parent.mkdir(parents=True, exist_ok=True)
 layout.unlink(missing_ok=True)
 sock = socket.socket(socket.AF_UNIX); sock.settimeout(8); sock.connect(os.environ['WAYFIRE_SOCKET'])
 clients, held, observations = [], set(), []
@@ -371,8 +374,16 @@ try:
     set_slider(37); close_panel(save=True)
     check('Save persists hint backing separately',layout.exists() and 'hint_background_opacity = 37\n' in layout.read_text() and option()==37)
     saved=layout.read_bytes()
-    consumed=subprocess.check_output([str(repo/'core/config.d/20-layout-settings')],env=dict(os.environ,XDG_CONFIG_HOME=str(art/'settings')),text=True,timeout=5)
-    check('next config generation consumes the saved hint opacity', 'hint_background_opacity = 37\n' in consumed)
+    session = Path(os.environ['SCOTTLAND_HEADLESS_DIR'])
+    assembled = session / 'wayfire.ini'
+    build_env = dict(os.environ, SCOTTLAND_CONFIG_OUTPUT=str(assembled),
+                     SCOTTLAND_CONFIG_EDIT=str(session/'config-edit.sed'))
+    subprocess.run([str(repo/'core/session/scottland-build-config')], check=True,
+                   capture_output=True, text=True, timeout=10, env=build_env)
+    check('next config generation consumes the saved hint opacity',
+          'hint_background_opacity = 37\n' in assembled.read_text())
+    ipc('wayfire/reload-config-metadata')
+    wait(lambda: option()==37, 'saved backing in the reloaded config')
     q=open_panel()
     check('reopen reads saved/current 37%',q['motion']['hint_background_opacity']==37)
     set_slider(80); close_panel()
