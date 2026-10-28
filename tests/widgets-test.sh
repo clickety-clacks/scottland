@@ -558,6 +558,7 @@ sleep 1
 sleep 1.5
 read -r ax ay aw ah <<<"$(view_field mini-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+h stipc/move_cursor "{\"x\":$((screen_w / 2)),\"y\":20}"
 sleep 2.5
 card_width() { views | python3 -c "import json,sys; print([round(v['frame']['width']) for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('mini-app')][0])"; }
 wide=$(card_width)
@@ -576,6 +577,7 @@ sys.exit(0 if v['x'] + v['width'] >= $screen_w - 40 else 1)"
 sleep 1.5
 read -r ax ay aw ah <<<"$(view_field mini2-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+h stipc/move_cursor "{\"x\":$((screen_w / 2)),\"y\":20}"
 sleep 2.5
 card2_width() { views | python3 -c "import json,sys; print([round(v['frame']['width']) for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('mini2-app')][0])"; }
 check "WG16 a window widgetized while widgets are collapsed is collapsed too" \
@@ -652,8 +654,13 @@ sleep 1.5
 read -r ax ay aw ah <<<"$(view_field cover-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 on_top() { ipc window-rules/list-views | python3 -c "import json,sys; print([v['always-on-top'] for v in json.load(sys.stdin) if v['title']=='cover-app'][0])"; }
 pixel() { tests/headless.sh run grim -g "$ux,$uy 1x1" -t ppm - 2>/dev/null | tail -c 3 | od -An -tu1 | tr -s ' '; }
+# The card is translucent. Put red behind the sampled point before the baseline. Its wide
+# fixture frame still leaves a strip exposed for the real drag after rail scaling.
+h window-rules/configure-view "{\"id\": $(view_field cover-app "v['id']"), \"geometry\": {\"x\": $((ux - 330)), \"y\": $((uy - 80)), \"width\": 660, \"height\": 160}}"
+sleep 0.2
 card_pixel=$(pixel)
-super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((ux - 30)) $uy
+read -r ax ay aw ah <<<"$(view_field cover-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + 5)) $((ay + ah / 2)) $((ax + 35)) $((ay + ah / 2))
 sleep 0.6
 check "L29 a window just let go of stays above the widgets" [ "$(on_top)/$([ "$(pixel)" != "$card_pixel" ] && echo covered)" = "True/covered" ]
 sleep 2.6
