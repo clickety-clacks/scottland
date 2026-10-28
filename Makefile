@@ -5,7 +5,7 @@ RELEASES := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/releases
 # Portal selection for Scottland sessions (xdg-desktop-portal also reads $XDG_DATA_HOME).
 PORTALS := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/xdg-desktop-portal
 
-.PHONY: plugin tools tools-test clipboard-test emoji-test dev-install link-dev test-hooks hooks dev-uninstall package clean
+.PHONY: plugin tools tools-test clipboard-test clipboard-keymap-test emoji-test dev-install link-dev test-hooks hooks dev-uninstall package clean
 
 # Optimized with debug info, asserts and frame pointers: unoptimized builds ran the plugin's CPU
 # paths 7-9x slower and froze the pointer (docs/compositor-hangs.md); cores and stacks stay readable.
@@ -32,6 +32,12 @@ tools-test:
 
 clipboard-test:
 	python3 tests/clipboard-list-test.py
+	$(MAKE) --no-print-directory clipboard-keymap-test
+
+clipboard-keymap-test:
+	mkdir -p build
+	$(CXX) -std=c++17 -Wall -Wextra -Werror -Icore/clipboard tests/clipboard-keymap-test.cpp -o build/clipboard-keymap-test
+	./build/clipboard-keymap-test
 
 emoji-test:
 	python3 tests/emoji-test.py
