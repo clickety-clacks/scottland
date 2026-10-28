@@ -669,9 +669,19 @@ def modes():
     alt_hold()
     check("WG16 Alt in hidden mode brings widgets in expanded",
           all(placed(t, "in") and settled(lambda t=t: wide(t)) for t in titles), [link(t) for t in titles])
+    # WK41 can defer hint creation beyond the widgets' expansion.
+    hint_windows = [link(t)["window"] for t in titles]
+    last_hints = {}
+
+    def hints_visible():
+        nonlocal last_hints
+        last_hints = ipc.call("scottland/hints")
+        return last_hints["active"] and all(
+            any(h["window"] == window and h["visible"] for h in last_hints["hints"])
+            for window in hint_windows)
+
     check("WG16 widgets brought in by Alt have their hints",
-          all(any(h["window"] == link(t)["window"] and h["visible"] for h in ipc.call("scottland/hints")["hints"])
-              for t in titles), ipc.call("scottland/hints")["hints"])
+          settled(hints_visible), last_hints)
     shot("alt-hidden")
     key("LEFTALT", False)
     check("WG16 Alt release hides them again", mode() == "hidden" and all(placed(t, "away") for t in titles))
