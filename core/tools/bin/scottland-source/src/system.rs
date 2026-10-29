@@ -7,7 +7,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
+use std::os::unix::fs::{symlink, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -30,6 +30,12 @@ pub struct ReconcileReport {
 pub struct RemovalReport {
     pub old_installed: Option<String>,
     pub removed: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BinaryOrigin {
+    Package,
+    UserBuild,
 }
 
 impl System {
@@ -279,6 +285,7 @@ impl System {
         if !git::valid_object_id(&release) {
             return Err(Error::new("base.commit must contain a full commit id"));
         }
+        self.verify_packaged_source_identity(&release)?;
 
         self.ensure_source_repository()?;
         if self.paths.switch.exists() {
@@ -293,10 +300,18 @@ impl System {
         self.fetch_from_path(&self.paths.package_bundle, &release)?;
         set_tree_readable(&self.paths.source_repo)?;
         let release = self.resolve_commit(&release)?;
+        let expected_tools =
+            crate::workspace::bin_names_at(&self.paths.source_repo, &self.paths.product, &release)?;
+        let (available_tools, warnings) = self.available_packaged_tools(&expected_tools)?;
+        for warning in warnings {
+            eprintln!("warning: {warning}");
+        }
         self.set_ref("release", &release)?;
 
         let before = self.installed()?;
-        let Some(changed) = self.adopt_release(&release, &self.paths.base_tools)? else {
+        let Some(changed) =
+            self.adopt_release(&release, &self.paths.base_tools, &available_tools)?
+        else {
             return Ok(());
         };
         let after = self.installed()?.unwrap_or_else(|| release.clone());
@@ -328,8 +343,21 @@ impl System {
         &self,
         release: &str,
         binary_directory: &Path,
+        available_tools: &BTreeSet<String>,
     ) -> Result<Option<Vec<String>>> {
-        let workspace = self.prepare_store_from_binaries(release, None, binary_directory, true)?;
+        let source_cli = format!("{}-source", self.paths.product);
+        if !available_tools.contains(&source_cli) {
+            return Err(Error::new(format!(
+                "packaged source CLI {source_cli} is unavailable; the package was not adopted"
+            )));
+        }
+        let workspace = self.prepare_store_from_binaries(
+            release,
+            None,
+            binary_directory,
+            BinaryOrigin::Package,
+            Some(available_tools),
+        )?;
         let current = self.installed()?;
         let base = self.base()?;
         let mut update_base = false;
@@ -422,7 +450,13 @@ impl System {
         }
 
         let workspace = Workspace::discover(working_clone, &self.paths.product)?;
-        self.prepare_store_from_binaries(&commit, Some(&workspace), binary_directory, false)?;
+        self.prepare_store_from_binaries(
+            &commit,
+            Some(&workspace),
+            binary_directory,
+            BinaryOrigin::UserBuild,
+            None,
+        )?;
         if before.is_none() {
             let release = release_commit.as_deref().unwrap_or(&commit);
             self.set_ref("release", release)?;
@@ -559,17 +593,29 @@ impl System {
         commit: &str,
         expected_workspace: Option<&Workspace>,
         binary_directory: &Path,
-        verify_binaries: bool,
+        origin: BinaryOrigin,
+        available_tools: Option<&BTreeSet<String>>,
     ) -> Result<Workspace> {
         let destination = self.paths.build_dir(commit);
         let source = self.paths.build_source(commit);
-        let workspace = if source.is_dir() {
+        let mut workspace = if source.is_dir() {
             Some(Workspace::discover(&source, &self.paths.product)?)
         } else {
             None
         };
+        if let (Some(workspace), Some(available_tools)) = (workspace.as_mut(), available_tools) {
+            workspace
+                .bins
+                .retain(|name, _| available_tools.contains(name));
+        }
         if let Some(workspace) = workspace.as_ref() {
-            if self.store_complete(commit, workspace)? {
+            let store_complete = self.store_complete(commit, workspace)?;
+            let active_store = if !store_complete || available_tools.is_some() {
+                self.switch_target()?.as_deref() == Some(destination.as_path())
+            } else {
+                false
+            };
+            if store_complete {
                 if let Some(expected) = expected_workspace {
                     if expected.bin_names() != workspace.bin_names() {
                         return Err(Error::new(
@@ -577,7 +623,44 @@ impl System {
                         ));
                     }
                 }
+                if available_tools.is_some() {
+                    let available_names: BTreeSet<_> = workspace.bin_names().into_iter().collect();
+                    let disabled_names =
+                        self.remove_unavailable_store_tools(commit, &available_names)?;
+                    if active_store && !disabled_names.is_empty() {
+                        self.reconcile_tool_links(&available_names, &mut Vec::new())?;
+                    }
+                }
                 return Ok(workspace.clone());
+            }
+            if active_store && self.store_source_complete(commit)? {
+                if let Some(expected) = expected_workspace {
+                    if expected.bin_names() != workspace.bin_names() {
+                        return Err(Error::new(
+                            "working clone and fetched source have different tool manifests",
+                        ));
+                    }
+                }
+                let restored_names = self.restore_missing_store_tools(
+                    commit,
+                    workspace,
+                    binary_directory,
+                    origin,
+                )?;
+                if self.store_complete(commit, workspace)? {
+                    let available_names: BTreeSet<_> = workspace.bin_names().into_iter().collect();
+                    let disabled_names = if available_tools.is_some() {
+                        self.remove_unavailable_store_tools(commit, &available_names)?
+                    } else {
+                        Vec::new()
+                    };
+                    if available_tools.is_some()
+                        && (!restored_names.is_empty() || !disabled_names.is_empty())
+                    {
+                        self.reconcile_tool_links(&available_names, &mut Vec::new())?;
+                    }
+                    return Ok(workspace.clone());
+                }
             }
         }
         if self.switch_target()?.as_deref() == Some(destination.as_path()) {
@@ -602,7 +685,7 @@ impl System {
             ],
         )?;
         set_tree_readable(&source)?;
-        let workspace = Workspace::discover(&source, &self.paths.product)?;
+        let mut workspace = Workspace::discover(&source, &self.paths.product)?;
         if let Some(expected) = expected_workspace {
             if expected.bin_names() != workspace.bin_names() {
                 return Err(Error::new(
@@ -610,24 +693,28 @@ impl System {
                 ));
             }
         }
+        if let Some(available_tools) = available_tools {
+            workspace
+                .bins
+                .retain(|name, _| available_tools.contains(name));
+        }
         self.write_commit_file(commit)?;
         let bin = self.paths.build_bin(commit);
         fs::create_dir_all(&bin)?;
         for name in workspace.bins.keys() {
             let built = binary_directory.join(name);
-            if verify_binaries {
-                self.verify_binary_commit(&built, commit)?;
-            }
             let installed = bin.join(name);
-            if verify_binaries {
-                fs::copy(&built, &installed).map_err(|error| {
-                    Error::new(format!(
-                        "could not copy built tool {}: {error}",
-                        built.display()
-                    ))
-                })?;
-            } else {
-                copy_user_binary(&built, &installed)?;
+            match origin {
+                BinaryOrigin::Package => {
+                    require_executable_regular_file(&built, "packaged tool")?;
+                    fs::copy(&built, &installed).map_err(|error| {
+                        Error::new(format!(
+                            "could not copy packaged tool {}: {error}",
+                            built.display()
+                        ))
+                    })?;
+                }
+                BinaryOrigin::UserBuild => copy_user_binary(&built, &installed)?,
             }
             fs::set_permissions(&installed, fs::Permissions::from_mode(0o755))?;
         }
@@ -642,7 +729,71 @@ impl System {
         Ok(workspace)
     }
 
+    fn restore_missing_store_tools(
+        &self,
+        commit: &str,
+        workspace: &Workspace,
+        binary_directory: &Path,
+        origin: BinaryOrigin,
+    ) -> Result<Vec<String>> {
+        let bin = self.paths.build_bin(commit);
+        fs::create_dir_all(&bin)?;
+        let mut restored = Vec::new();
+        for name in workspace.bins.keys() {
+            let installed = bin.join(name);
+            if installed.is_file() && is_executable(&installed) {
+                continue;
+            }
+
+            let built = binary_directory.join(name);
+            match origin {
+                BinaryOrigin::Package => {
+                    require_executable_regular_file(&built, "packaged tool")?;
+                    fs::copy(&built, &installed).map_err(|error| {
+                        Error::new(format!(
+                            "could not copy packaged tool {}: {error}",
+                            built.display()
+                        ))
+                    })?;
+                }
+                BinaryOrigin::UserBuild => copy_user_binary(&built, &installed)?,
+            }
+            fs::set_permissions(&installed, fs::Permissions::from_mode(0o755))?;
+            restored.push(name.clone());
+        }
+        Ok(restored)
+    }
+
+    fn remove_unavailable_store_tools(
+        &self,
+        commit: &str,
+        available_tools: &BTreeSet<String>,
+    ) -> Result<Vec<String>> {
+        let stored_names = self.bin_names_from_store(&self.paths.build_dir(commit))?;
+        let disabled_names: Vec<_> = stored_names
+            .difference(available_tools)
+            .cloned()
+            .collect();
+        for name in &disabled_names {
+            fs::remove_file(self.paths.build_bin(commit).join(name))?;
+        }
+        Ok(disabled_names)
+    }
+
     fn store_complete(&self, commit: &str, workspace: &Workspace) -> Result<bool> {
+        if !self.store_source_complete(commit)? {
+            return Ok(false);
+        }
+        for name in workspace.bins.keys() {
+            let path = self.paths.build_bin(commit).join(name);
+            if !path.is_file() || !is_executable(&path) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn store_source_complete(&self, commit: &str) -> Result<bool> {
         let directory = self.paths.build_dir(commit);
         let source = self.paths.build_source(commit);
         let commit_file = self.paths.switch_commit_for(commit);
@@ -671,12 +822,6 @@ impl System {
         .is_ok_and(|output| output.status.success())
         {
             return Ok(false);
-        }
-        for name in workspace.bins.keys() {
-            let path = self.paths.build_bin(commit).join(name);
-            if !path.is_file() || !is_executable(&path) {
-                return Ok(false);
-            }
         }
         Ok(true)
     }
@@ -734,24 +879,64 @@ impl System {
             .output()
             .map_err(|error| {
                 Error::new(format!(
-                    "cannot run {} --version: {error}",
+                    "cannot run packaged source CLI {} --version: {error}",
                     binary.display()
                 ))
             })?;
         if !output.status.success() {
             return Err(Error::new(format!(
-                "{} --version failed; the build store was not activated",
+                "packaged source CLI {} --version failed; the package was not adopted",
                 binary.display()
             )));
         }
         let version = String::from_utf8_lossy(&output.stdout);
         if version.split_whitespace().last() != Some(commit) {
             return Err(Error::new(format!(
-                "{} does not report build commit {commit}; the build store was not activated",
+                "packaged source CLI {} does not report source commit {commit}; the package was not adopted",
                 binary.display()
             )));
         }
         Ok(())
+    }
+
+    pub(crate) fn verify_packaged_source_identity(&self, commit: &str) -> Result<()> {
+        let binary = self
+            .paths
+            .base_tools
+            .join(format!("{}-source", self.paths.product));
+        require_executable_regular_file(&binary, "packaged source CLI")?;
+        self.verify_binary_commit(&binary, commit)
+    }
+
+    pub(crate) fn available_packaged_tools(
+        &self,
+        expected: &BTreeSet<String>,
+    ) -> Result<(BTreeSet<String>, Vec<String>)> {
+        let source_cli = format!("{}-source", self.paths.product);
+        if !expected.contains(&source_cli) {
+            return Err(Error::new(format!(
+                "packaged source bundle does not define {source_cli}"
+            )));
+        }
+        let mut available = BTreeSet::new();
+        let mut warnings = Vec::new();
+        for name in expected {
+            let path = self.paths.base_tools.join(name);
+            if name == &source_cli {
+                require_executable_regular_file(&path, "packaged source CLI")?;
+                available.insert(name.clone());
+                continue;
+            }
+            match packaged_tool_unavailability(&path)? {
+                Some(reason) => warnings.push(format!(
+                    "packaged tool {name} {reason}; it will be disabled"
+                )),
+                None => {
+                    available.insert(name.clone());
+                }
+            }
+        }
+        Ok((available, warnings))
     }
 
     fn ensure_links_before_activation(
@@ -1339,6 +1524,44 @@ fn is_product_binary(name: &str, product: &str) -> bool {
 fn is_executable(path: &Path) -> bool {
     fs::metadata(path)
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+fn require_executable_regular_file(path: &Path, description: &str) -> Result<()> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        Error::new(format!(
+            "cannot inspect {description} {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.file_type().is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err(Error::new(format!(
+            "{description} {} is not an executable regular file",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn packaged_tool_unavailability(path: &Path) -> Result<Option<&'static str>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Some("is missing"));
+        }
+        Err(error) => {
+            return Err(Error::new(format!(
+                "cannot inspect packaged tool {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    if !metadata.file_type().is_file() {
+        return Ok(Some("is not an executable regular file"));
+    }
+    if metadata.permissions().mode() & 0o111 == 0 {
+        return Ok(Some("is not executable"));
+    }
+    Ok(None)
 }
 
 fn set_tree_readable(root: &Path) -> Result<()> {
