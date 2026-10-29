@@ -4,11 +4,13 @@ use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 #[derive(Clone, Debug)]
 pub struct Workspace {
+    pub source_cli: String,
     pub relative_root: PathBuf,
     pub manifest: PathBuf,
     pub bins: BTreeMap<String, PathBuf>,
@@ -63,6 +65,7 @@ impl Workspace {
                     .map_err(|_| Error::new("workspace is outside the product repository"))?
                     .to_path_buf();
                 matches.push(Self {
+                    source_cli: format!("{product}-source"),
                     relative_root,
                     manifest,
                     bins,
@@ -180,6 +183,11 @@ impl Workspace {
                 output_dir.display()
             )));
         }
+        self.verify_build_outputs(&output_dir, commit)?;
+        Ok(output_dir)
+    }
+
+    pub(crate) fn verify_build_outputs(&self, output_dir: &Path, commit: &str) -> Result<()> {
         for name in self.bins.keys() {
             let binary = output_dir.join(name);
             if !binary.is_file() {
@@ -189,26 +197,37 @@ impl Workspace {
                     output_dir.display()
                 )));
             }
-            let output = Command::new(&binary)
-                .arg("--version")
-                .output()
-                .map_err(|error| {
-                    Error::new(format!(
-                        "could not verify {} --version: {error}; compiler output directory: {}",
-                        binary.display(),
-                        output_dir.display()
-                    ))
-                })?;
-            let version = String::from_utf8_lossy(&output.stdout);
-            if !output.status.success() || version.split_whitespace().last() != Some(commit) {
+            if !fs::metadata(&binary)
+                .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            {
                 return Err(Error::new(format!(
-                    "{} --version did not report build commit {commit}; compiler output directory: {}",
+                    "workspace build produced non-executable {}; compiler output directory: {}",
                     binary.display(),
                     output_dir.display()
                 )));
             }
         }
-        Ok(output_dir)
+
+        let source_cli = output_dir.join(&self.source_cli);
+        let output = Command::new(&source_cli)
+            .arg("--version")
+            .output()
+            .map_err(|error| {
+                Error::new(format!(
+                    "could not verify source CLI {} --version: {error}; compiler output directory: {}",
+                    source_cli.display(),
+                    output_dir.display()
+                ))
+            })?;
+        let version = String::from_utf8_lossy(&output.stdout);
+        if !output.status.success() || version.split_whitespace().last() != Some(commit) {
+            return Err(Error::new(format!(
+                "source CLI {} --version did not report build commit {commit}; compiler output directory: {}",
+                source_cli.display(),
+                output_dir.display()
+            )));
+        }
+        Ok(())
     }
 
     pub fn relative_tool_directory(&self, repository: &Path, tool: &str) -> Result<PathBuf> {
