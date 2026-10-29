@@ -67,6 +67,26 @@ super_drag() {  # super_drag x1 y1 x2 y2
   h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'
   h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
 }
+cover_drag() {  # cover_drag x1 y1 x2 y2 expected-view-id; don't move a different hit target
+  h stipc/move_cursor "{\"x\":$1,\"y\":$2}"; sleep 0.2
+  h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'
+  h stipc/feed_button '{"combo":"BTN_LEFT","mode":"press"}'
+  local selected
+  selected=$(ipc scottland/desktop-model | python3 -c 'import json,sys; print((json.load(sys.stdin).get("drag") or {}).get("window",-1))')
+  if [ "$selected" != "$5" ]; then
+    h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'
+    h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
+    echo "$selected"
+    return 1
+  fi
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    h stipc/move_cursor "{\"x\":$(( $1 + ($3 - $1) * i / 10 )),\"y\":$(( $2 + ($4 - $2) * i / 10 ))}"; sleep 0.03
+  done
+  sleep 0.3
+  h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'
+  h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
+  echo "$selected"
+}
 
 # A test widget that never shows a window (for the launch timeout), found via SCOTTLAND_WIDGET_PATH.
 headless_dir=${SCOTTLAND_HEADLESS_DIR:-$PWD/build/headless}
@@ -612,6 +632,7 @@ sleep 1
 sleep 1.5
 read -r ax ay aw ah <<<"$(view_field mini-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+h stipc/move_cursor "{\"x\":$((screen_w / 2)),\"y\":20}"
 sleep 2.5
 card_width() { views | python3 -c "import json,sys; print([round(v['frame']['width']) for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('mini-app')][0])"; }
 wide=$(card_width)
@@ -630,6 +651,7 @@ sys.exit(0 if v['x'] + v['width'] >= $screen_w - 40 else 1)"
 sleep 1.5
 read -r ax ay aw ah <<<"$(view_field mini2-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+h stipc/move_cursor "{\"x\":$((screen_w / 2)),\"y\":20}"
 sleep 2.5
 card2_width() { views | python3 -c "import json,sys; print([round(v['frame']['width']) for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('mini2-app')][0])"; }
 check "WG16 a window widgetized while widgets are collapsed is collapsed too" \
@@ -706,8 +728,32 @@ sleep 1.5
 read -r ax ay aw ah <<<"$(view_field cover-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 on_top() { ipc window-rules/list-views | python3 -c "import json,sys; print([v['always-on-top'] for v in json.load(sys.stdin) if v['title']=='cover-app'][0])"; }
 pixel() { tests/headless.sh run grim -g "$ux,$uy 1x1" -t ppm - 2>/dev/null | tail -c 3 | od -An -tu1 | tr -s ' '; }
+# The card is translucent. Keep the cover centered behind the sampled point, and widen it enough
+# to expose a real grab strip beside the card.
+h window-rules/configure-view "{\"id\": $(view_field cover-app "v['id']"), \"geometry\": {\"x\": $((ux - 380)), \"y\": $((uy - 80)), \"width\": 760, \"height\": 160}}"
+sleep 0.2
 card_pixel=$(pixel)
-super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((ux - 30)) $uy
+read -r ax ay aw ah <<<"$(view_field cover-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+cover_id=$(view_field cover-app "v['id']")
+read -r cx cy cw ch <<<"$(views | python3 -c "import json,sys; f=[v for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('under-app')][0]['frame']; print(round(f['x']), round(f['y']), round(f['width']), round(f['height']))")"
+drag_top=$(( ay > cy ? ay : cy ))
+drag_bottom=$(( ay + ah < cy + ch ? ay + ah : cy + ch ))
+drag_y=$(((drag_top + drag_bottom) / 2))
+drag_x=
+for offset in 40 30 20 10 50 60 70 80 90 100 110 120 130 140 145; do
+  candidate_x=$((cx - offset))
+  [ "$candidate_x" -ge "$((ax + 5))" ] || break
+  h stipc/move_cursor "{\"x\":$candidate_x,\"y\":$drag_y}"
+  sleep 0.05
+  cursor_id=$(views | python3 -c 'import json,sys; print(json.load(sys.stdin).get("cursor_view",-1))')
+  if [ "$cursor_id" = "$cover_id" ]; then drag_x=$candidate_x; break; fi
+done
+strip_ok=no
+if [ -n "$drag_x" ] && (( drag_x <= cx - 5 && drag_y >= ay && drag_y < ay + ah && drag_y >= cy && drag_y < cy + ch && ux >= ax && ux < ax + aw && uy >= ay && uy < ay + ah )); then strip_ok=yes; fi
+check "L29 cover grab starts in an exposed strip" [ "$strip_ok" = yes ]
+dragged_id=-1
+if [ "$strip_ok" = yes ]; then dragged_id=$(cover_drag "$drag_x" "$drag_y" $((drag_x + 30)) "$drag_y" "$cover_id"); fi
+check "L29 Super-drag selects the cover window" [ "$dragged_id" = "$cover_id" ]
 sleep 0.6
 check "L29 a window just let go of stays above the widgets" [ "$(on_top)/$([ "$(pixel)" != "$card_pixel" ] && echo covered)" = "True/covered" ]
 sleep 2.6

@@ -2,7 +2,8 @@
 """P12 with real input: a window completely covered by another one peeks, whatever happened to either
 window before (focus, solo, pairing, a grab of the peeking window, a coasting drop, a click after the
 drop) and wherever it is (center, periphery, under a widget card). The focused window does not move
-for avoidance (WK13); FOCUSED_PEEKS states the policy under test for a focused window under a card.
+for avoidance (WK13), including when a card is in front; the focused-under-card cases exercise this
+settled rule.
 
 Each client is one solid color. Fixture geometry and focus are set over IPC (window-rules
 configure/focus: they bypass input); every cover is a real Super+drag and every solo and pairing a
@@ -31,7 +32,7 @@ sys.argv = [sys.argv[0], str(art)]
 src = open(here / 'pairing-test.py').read()
 exec(src[:src.index('\ntry:\n')])  # its helpers: ipc, wait, check, setup, press_hint, alt, hint, layout, ...
 results = []
-FOCUSED_PEEKS = False  # WK13: the focused window never moves for avoidance (not yet decided otherwise)
+FOCUSED_PEEKS = False  # WK13: focused no-peek is settled (10-07); the active window stays anchored.
 STRIP_D, STRIP_L, EDGE = 24, 100, 2   # EDGE: the frame's own antialiased outline
 COLORS = {'Small': '#e02828', 'Big': '#2850c8', 'Other': '#28b450', 'Cover': '#c8a028', 'Probe': '#c828b4'}
 NEUTRALS = ['#181818', '#2a2a2a', '#505058', '#6e6e78', '#8c8c96', '#b4b4be', '#e6e6ee']
