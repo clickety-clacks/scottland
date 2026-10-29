@@ -15,15 +15,22 @@ Opening an entry creates a mode-0600 temporary file under that same runtime dire
 default application can read it; the service removes those files when it exits. No clipboard
 history is written under the user's home directory.
 
-The helper uses the compositor's wlr data-control protocol to observe and set the selection and
-the wlr virtual-keyboard protocol to paste with Shift+Insert. It adds no package dependency.
+The helper uses the compositor's wlr data-control protocol to observe and set the regular clipboard
+selection and the wlr virtual-keyboard protocol to paste with Shift+Insert. For that single paste,
+it saves the current primary selection, temporarily offers the same content there, and restores the
+saved primary selection if it was not changed while the paste was in progress. This lets terminals
+that paste from the primary selection and text widgets that paste from the regular clipboard use the
+same input. If primary selection cannot be read safely or is unavailable, the helper falls back to
+Ctrl+Shift+V without changing it. It adds no package dependency.
 The session build must confirm both protocols are available before this feature can be considered
 usable.
 
 The same service exposes private, session-memory snapshot/release/type-text operations for the
-emoji feature. They preserve every readable clipboard format, temporarily set selected UTF-8 text,
-use the same Shift+Insert path, restore the saved clipboard, and do not add the temporary text to
-history. If any offered format cannot be read completely, snapshot refuses before the picker opens.
+emoji feature. They preserve every readable regular clipboard format, temporarily set selected
+UTF-8 text, use the same clipboard-paste path, restore the saved regular clipboard, and do not add
+the temporary text to history. The paste path also restores the primary selection as described
+above. If any offered regular clipboard format cannot be read completely, snapshot refuses before
+the picker opens.
 
 ## Commands
 
