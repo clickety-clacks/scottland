@@ -96,8 +96,36 @@ pub fn is_alive(env: &Environment) -> bool {
     }
 }
 
+/// True when the environment's Wayland display answers, whether or not Wayfire IPC does. A
+/// relative `WAYLAND_DISPLAY` is a socket in the environment's own `XDG_RUNTIME_DIR`, never the
+/// caller's.
+pub fn is_displayed(env: &Environment) -> bool {
+    let Some(display) = env
+        .get(OsStr::new("WAYLAND_DISPLAY"))
+        .filter(|d| !d.is_empty())
+    else {
+        return false;
+    };
+    let socket = if Path::new(display).is_absolute() {
+        PathBuf::from(display)
+    } else {
+        match env
+            .get(OsStr::new("XDG_RUNTIME_DIR"))
+            .filter(|d| !d.is_empty())
+        {
+            Some(dir) => Path::new(dir).join(display),
+            None => return false,
+        }
+    };
+    UnixStream::connect(socket).is_ok()
+}
+
 /// Every running session recorded in `runtime`, by display name.
 pub fn running(runtime: &Path) -> Vec<Session> {
+    running_where(runtime, is_alive)
+}
+
+fn running_where(runtime: &Path, alive: fn(&Environment) -> bool) -> Vec<Session> {
     let Ok(entries) = fs::read_dir(runtime) else {
         return Vec::new();
     };
@@ -117,7 +145,7 @@ pub fn running(runtime: &Path) -> Vec<Session> {
         .into_iter()
         .filter_map(|(name, path)| {
             let env = read_env(&path).ok()?;
-            is_alive(&env).then_some(Session { name, env })
+            alive(&env).then_some(Session { name, env })
         })
         .collect()
 }
@@ -131,12 +159,34 @@ pub fn select(
     display: Option<&str>,
     caller_socket: Option<&OsStr>,
 ) -> Result<Session, SessionError> {
+    select_where(runtime, display, caller_socket, is_alive)
+}
+
+/// [`select`], counting a session as running when its Wayland display answers even though its
+/// Wayfire IPC does not. For commands that still have work to do without Wayfire IPC. Such a
+/// session counts toward "several running", so it is never passed over for another one.
+pub fn select_displayed(
+    runtime: &Path,
+    display: Option<&str>,
+    caller_socket: Option<&OsStr>,
+) -> Result<Session, SessionError> {
+    select_where(runtime, display, caller_socket, |env| {
+        is_alive(env) || is_displayed(env)
+    })
+}
+
+fn select_where(
+    runtime: &Path,
+    display: Option<&str>,
+    caller_socket: Option<&OsStr>,
+    alive: fn(&Environment) -> bool,
+) -> Result<Session, SessionError> {
     if let Some(name) = display {
         if name.is_empty() || name.contains('/') || name == "." || name == ".." {
             return Err(SessionError::InvalidDisplay(name.to_string()));
         }
         let env = read_env(&runtime.join(format!("{name}.env"))).unwrap_or_default();
-        return if is_alive(&env) {
+        return if alive(&env) {
             Ok(Session {
                 name: name.to_string(),
                 env,
@@ -145,7 +195,7 @@ pub fn select(
             Err(SessionError::NotRunning(name.to_string()))
         };
     }
-    let mut live = running(runtime);
+    let mut live = running_where(runtime, alive);
     if let Some(caller) = caller_socket.filter(|socket| !socket.is_empty()) {
         if let Some(index) = live
             .iter()
@@ -167,6 +217,12 @@ pub fn select(
 pub fn current(display: Option<&str>) -> Result<Session, SessionError> {
     let caller = std::env::var_os("WAYFIRE_SOCKET");
     select(&crate::dirs::runtime_dir(), display, caller.as_deref())
+}
+
+/// [`select_displayed`] in the standard runtime directory, honouring the caller's `WAYFIRE_SOCKET`.
+pub fn current_displayed(display: Option<&str>) -> Result<Session, SessionError> {
+    let caller = std::env::var_os("WAYFIRE_SOCKET");
+    select_displayed(&crate::dirs::runtime_dir(), display, caller.as_deref())
 }
 
 #[cfg(test)]
@@ -193,5 +249,13 @@ mod tests {
     fn missing_or_empty_socket_is_not_alive() {
         assert!(!is_alive(&parse_env(b"WAYLAND_DISPLAY=wayland-1\0")));
         assert!(!is_alive(&parse_env(b"WAYFIRE_SOCKET=\0")));
+    }
+
+    #[test]
+    fn a_display_without_its_runtime_dir_is_not_displayed() {
+        assert!(!is_displayed(&parse_env(b"WAYLAND_DISPLAY=wayland-1\0")));
+        assert!(!is_displayed(&parse_env(
+            b"WAYLAND_DISPLAY=\0XDG_RUNTIME_DIR=/run/user/1000\0"
+        )));
     }
 }

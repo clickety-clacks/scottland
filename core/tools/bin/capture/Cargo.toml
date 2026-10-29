@@ -1,0 +1,13 @@
+[package]
+name = "scottland-capture"
+description = "Pick, screenshot, record, and read QR codes and text from the screen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+scottland.workspace = true
+libc = "0.2"
+serde_json = "1"
