@@ -64,6 +64,13 @@ ShellRoot {
         }
     }
 
+    Connections {
+        target: Quickshell
+        function onLastWindowClosed() {
+            Qt.quit()
+        }
+    }
+
     FloatingWindow {
         id: window
         title: "System Stats"
@@ -71,7 +78,6 @@ ShellRoot {
         width: 440 * root.textScale
         height: 280 * root.textScale
         color: root.background
-        onClosing: Qt.quit()
 
         Rectangle {
             anchors.fill: parent
