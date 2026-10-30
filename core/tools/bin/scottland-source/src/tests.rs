@@ -34,6 +34,7 @@ fn package_system(root: &Path) -> System {
 #[test]
 fn tool_names_accept_workspace_suffixes_and_binary_names() {
     let workspace = Workspace {
+        source_cli: "example-source".to_owned(),
         relative_root: PathBuf::from("core/tools"),
         manifest: PathBuf::from("core/tools/Cargo.toml"),
         bins: BTreeMap::from([
@@ -57,6 +58,51 @@ fn tool_names_accept_workspace_suffixes_and_binary_names() {
         "example-source"
     );
     assert!(workspace.resolve_tool("example", "missing").is_err());
+}
+
+#[test]
+fn source_build_checks_all_outputs_and_only_source_cli_identity() {
+    let scratch = Scratch::new();
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    let source_cli = scratch.0.join("example-source");
+    write_executable(
+        &source_cli,
+        &format!("#!/bin/sh\nprintf 'example-source {commit}\\n'\n"),
+    );
+    let tool = scratch.0.join("example-tool");
+    write_executable(&tool, "#!/bin/sh\necho 'unknown option: --version' >&2\nexit 2\n");
+
+    let workspace = Workspace {
+        source_cli: "example-source".to_owned(),
+        relative_root: PathBuf::from("core/tools"),
+        manifest: PathBuf::from("core/tools/Cargo.toml"),
+        bins: BTreeMap::from([
+            ("example-source".to_owned(), PathBuf::from("source")),
+            ("example-tool".to_owned(), PathBuf::from("tool")),
+        ]),
+    };
+
+    workspace
+        .verify_build_outputs(&scratch.0, commit)
+        .expect("a source-built tool without a commit-bearing --version should be accepted");
+
+    let error = workspace
+        .verify_build_outputs(&scratch.0, "abcdef0123456789abcdef0123456789abcdef01")
+        .expect_err("the source CLI must still identify the exact build commit");
+    assert!(error.to_string().contains("source CLI"));
+    assert!(error.to_string().contains("did not report build commit"));
+
+    fs::remove_file(&tool).unwrap();
+    let error = workspace
+        .verify_build_outputs(&scratch.0, commit)
+        .expect_err("every declared binary must still be present in the build output");
+    assert!(error.to_string().contains("did not produce"));
+
+    fs::write(&tool, "not executable").unwrap();
+    let error = workspace
+        .verify_build_outputs(&scratch.0, commit)
+        .expect_err("every declared binary must still be executable");
+    assert!(error.to_string().contains("non-executable"));
 }
 
 struct Scratch(PathBuf);
