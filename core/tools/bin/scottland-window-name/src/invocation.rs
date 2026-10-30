@@ -86,10 +86,11 @@ impl Invocation {
         let service_exit_ns = start_ns
             .checked_add(budget_ns)
             .ok_or_else(|| "service exit deadline overflows".to_string())?;
-        // A very small positive budget can place Dw before T0. Saturate the
-        // absolute monotonic timestamp at zero; the entry-time check below
-        // then expires the invocation before it starts naming work.
-        let work_stop_ns = service_exit_ns.saturating_sub(WORK_STOP_MARGIN_NS);
+        let work_stop_ns = service_exit_ns
+            .checked_sub(WORK_STOP_MARGIN_NS)
+            .ok_or_else(|| {
+                "invalid invocation budget: work-stop deadline underflows".to_string()
+            })?;
         let inner = Arc::new(Inner {
             work_stop_ns,
             service_exit_ns,
@@ -368,4 +369,19 @@ pub fn monotonic_ns() -> io::Result<u64> {
         .checked_mul(1_000_000_000)
         .and_then(|seconds| seconds.checked_add(nanoseconds))
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "monotonic time overflows"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Invocation;
+
+    #[test]
+    fn rejects_work_stop_deadline_underflow() {
+        let result = Invocation::new(1, 0, 0);
+
+        assert_eq!(
+            result.err().as_deref(),
+            Some("invalid invocation budget: work-stop deadline underflows")
+        );
+    }
 }
