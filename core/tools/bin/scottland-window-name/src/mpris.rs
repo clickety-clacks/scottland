@@ -1,3 +1,4 @@
+use crate::invocation::Invocation;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::time::{Duration, Instant};
@@ -21,28 +22,63 @@ pub struct Player {
 }
 
 pub fn read(address: Option<&OsStr>, timeout_ms: u64) -> Result<Vec<Player>, String> {
+    read_inner(address, timeout_ms, None)
+}
+
+pub fn read_with_invocation(
+    address: Option<&OsStr>,
+    timeout_ms: u64,
+    invocation: &Invocation,
+) -> Result<Vec<Player>, String> {
+    read_inner(address, timeout_ms, Some(invocation))
+}
+
+fn read_inner(
+    address: Option<&OsStr>,
+    timeout_ms: u64,
+    invocation: Option<&Invocation>,
+) -> Result<Vec<Player>, String> {
     let address = address
         .and_then(OsStr::to_str)
         .filter(|address| !address.is_empty())
         .ok_or_else(|| "the selected session has no D-Bus address".to_string())?;
     let started = Instant::now();
-    let timeout = Duration::from_millis(timeout_ms);
-    if timeout.is_zero() {
+    let configured_timeout = Duration::from_millis(timeout_ms);
+    if configured_timeout.is_zero() {
         return Err("MPRIS query timed out after 0 ms".to_string());
     }
+    if let Some(invocation) = invocation {
+        invocation.ensure_work()?;
+    }
+    let timeout = match invocation {
+        Some(invocation) => configured_timeout.min(invocation.remaining_work()?),
+        None => configured_timeout,
+    };
     let connection = ConnectionBuilder::address(address)
         .map_err(|error| format!("cannot create D-Bus connection: {error}"))?
         .method_timeout(METHOD_TIMEOUT.min(timeout))
         .build()
         .map_err(|error| format!("cannot connect to the session bus: {error}"))?;
+    if let Some(invocation) = invocation {
+        invocation.ensure_work()?;
+    }
     check_deadline(started, timeout_ms, timeout)?;
+    if let Some(invocation) = invocation {
+        invocation.ensure_work()?;
+    }
     let bus = DBusProxy::new(&connection)
         .map_err(|error| format!("cannot create D-Bus daemon proxy: {error}"))?;
     check_deadline(started, timeout_ms, timeout)?;
+    if let Some(invocation) = invocation {
+        invocation.ensure_work()?;
+    }
     let names = bus
         .list_names()
         .map_err(|error| format!("cannot list D-Bus names: {error}"))?;
     check_deadline(started, timeout_ms, timeout)?;
+    if let Some(invocation) = invocation {
+        invocation.ensure_work()?;
+    }
     let mut names: Vec<String> = names
         .into_iter()
         .map(|name| name.to_string())
@@ -52,17 +88,26 @@ pub fn read(address: Option<&OsStr>, timeout_ms: u64) -> Result<Vec<Player>, Str
 
     let mut players = Vec::new();
     for name in names {
+        if let Some(invocation) = invocation {
+            invocation.ensure_work()?;
+        }
         check_deadline(started, timeout_ms, timeout)?;
         let bus_name = BusName::try_from(name.as_str())
             .map_err(|error| format!("invalid MPRIS bus name: {error}"))?;
         let owner_pid = match bus.get_connection_unix_process_id(bus_name) {
             Ok(pid) => pid,
             Err(_) => {
+                if let Some(invocation) = invocation {
+                    invocation.ensure_work()?;
+                }
                 check_deadline(started, timeout_ms, timeout)?;
                 continue;
             }
         };
         check_deadline(started, timeout_ms, timeout)?;
+        if let Some(invocation) = invocation {
+            invocation.ensure_work()?;
+        }
         let root = match Proxy::new(&connection, name.as_str(), OBJECT_PATH, ROOT_INTERFACE) {
             Ok(proxy) => proxy,
             Err(_) => continue,
@@ -71,6 +116,9 @@ pub fn read(address: Option<&OsStr>, timeout_ms: u64) -> Result<Vec<Player>, Str
             .get_property::<String>("DesktopEntry")
             .unwrap_or_default();
         check_deadline(started, timeout_ms, timeout)?;
+        if let Some(invocation) = invocation {
+            invocation.ensure_work()?;
+        }
         let player = match Proxy::new(&connection, name.as_str(), OBJECT_PATH, PLAYER_INTERFACE) {
             Ok(proxy) => proxy,
             Err(_) => continue,
@@ -79,8 +127,14 @@ pub fn read(address: Option<&OsStr>, timeout_ms: u64) -> Result<Vec<Player>, Str
             .get_property::<HashMap<String, OwnedValue>>("Metadata")
             .unwrap_or_default();
         check_deadline(started, timeout_ms, timeout)?;
+        if let Some(invocation) = invocation {
+            invocation.ensure_work()?;
+        }
         let status = player.get_property::<String>("PlaybackStatus").ok();
         check_deadline(started, timeout_ms, timeout)?;
+        if let Some(invocation) = invocation {
+            invocation.ensure_work()?;
+        }
         let mut fields = BTreeMap::new();
         if let Some(track) = metadata.get("xesam:title").and_then(string_value) {
             if !track.is_empty() {

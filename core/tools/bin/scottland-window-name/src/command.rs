@@ -1,3 +1,4 @@
+use crate::invocation::Invocation;
 use scottland::session::Environment;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -27,13 +28,43 @@ impl Cache {
         timeout_ms: u64,
         environment: &Environment,
     ) -> Result<ResultData, String> {
+        self.run_inner(argv, input, timeout_ms, environment, None)
+    }
+
+    pub fn run_with_invocation(
+        &mut self,
+        argv: &[String],
+        input: &Value,
+        timeout_ms: u64,
+        environment: &Environment,
+        invocation: &Invocation,
+    ) -> Result<ResultData, String> {
+        self.run_inner(argv, input, timeout_ms, environment, Some(invocation))
+    }
+
+    fn run_inner(
+        &mut self,
+        argv: &[String],
+        input: &Value,
+        timeout_ms: u64,
+        environment: &Environment,
+        invocation: Option<&Invocation>,
+    ) -> Result<ResultData, String> {
+        if let Some(invocation) = invocation {
+            invocation.ensure_work()?;
+        }
         let input_bytes = serde_json::to_vec(input)
             .map_err(|error| format!("cannot encode command input: {error}"))?;
         let key = (argv.to_vec(), input_bytes, environment.clone());
         if let Some(result) = self.results.get(&key) {
             return result.clone();
         }
-        let result = run_once(argv, input, timeout_ms, environment);
+        let result = match invocation {
+            Some(invocation) => {
+                run_once_with_invocation(argv, input, timeout_ms, environment, invocation)
+            }
+            None => run_once(argv, input, timeout_ms, environment),
+        };
         self.results.insert(key, result.clone());
         result
     }
@@ -133,6 +164,169 @@ fn run_once(
         ));
     }
     Ok(ResultData { stdout })
+}
+
+fn run_once_with_invocation(
+    argv: &[String],
+    input: &Value,
+    timeout_ms: u64,
+    environment: &Environment,
+    invocation: &Invocation,
+) -> Result<ResultData, String> {
+    if timeout_ms == 0 {
+        return Err("command timed out after 0 ms".to_string());
+    }
+    invocation.ensure_work()?;
+    let program = argv
+        .first()
+        .filter(|program| !program.is_empty())
+        .ok_or_else(|| "command has no executable".to_string())?;
+    let stdin_bytes = serde_json::to_vec(input)
+        .map_err(|error| format!("cannot encode command input: {error}"))?;
+    let mut command = Command::new(program);
+    command
+        .env_clear()
+        .envs(environment.iter())
+        .args(&argv[1..])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+
+    let service_pid = unsafe { libc::getpid() };
+    let work_stop_ns = invocation.work_stop_ns();
+    let work_stop_seconds = (work_stop_ns / 1_000_000_000) as libc::time_t;
+    let work_stop_nanoseconds = (work_stop_ns % 1_000_000_000) as libc::c_long;
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != service_pid {
+                libc::_exit(127);
+            }
+            let mut now = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            if libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if now.tv_sec > work_stop_seconds
+                || (now.tv_sec == work_stop_seconds && now.tv_nsec >= work_stop_nanoseconds)
+            {
+                libc::_exit(125);
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = invocation.spawn_group(|| command.spawn())?;
+    let started = Instant::now();
+    let child_pid = child.id();
+    invocation.ensure_work()?;
+    let source_timeout = Duration::from_millis(timeout_ms).min(invocation.remaining_work()?);
+    if source_timeout.is_zero() {
+        return Err("invocation budget expired".to_string());
+    }
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "command stdout pipe is unavailable".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "command stderr pipe is unavailable".to_string())?;
+    let stdout_reader = thread::spawn(move || read_capped(stdout));
+    let stderr_reader = thread::spawn(move || read_capped(stderr));
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "command stdin pipe is unavailable".to_string())?;
+    let stdin_writer = thread::spawn(move || {
+        let mut stdin = stdin;
+        stdin.write_all(&stdin_bytes)
+    });
+
+    let status = loop {
+        invocation.ensure_work()?;
+        match child_exited_without_reaping(child_pid) {
+            Ok(true) => {
+                if let Err(error) = invocation.signal_group_before_reap(child_pid) {
+                    let _ = child.wait();
+                    return Err(error);
+                }
+                break child
+                    .wait()
+                    .map_err(|error| format!("cannot reap command: {error}"))?;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                let signal_error = invocation.signal_group_before_reap(child_pid).err();
+                let _ = child.kill();
+                if let Some(signal_error) = signal_error {
+                    return Err(signal_error);
+                }
+                return Err(format!("cannot wait for command: {error}"));
+            }
+        }
+
+        if started.elapsed() >= source_timeout {
+            if let Err(error) = invocation.signal_group_before_reap(child_pid) {
+                let _ = child.kill();
+                return Err(error);
+            }
+            let _ = child.kill();
+            loop {
+                invocation.ensure_work()?;
+                match child_exited_without_reaping(child_pid) {
+                    Ok(true) => {
+                        let _ = child.wait();
+                        let _ = join_reader(stdout_reader);
+                        let _ = join_reader(stderr_reader);
+                        let _ = stdin_writer.join();
+                        return Err(format!("command timed out after {timeout_ms} ms"));
+                    }
+                    Ok(false) => thread::sleep(Duration::from_millis(5)),
+                    Err(error) => return Err(format!("cannot wait for command: {error}")),
+                }
+            }
+        }
+        thread::sleep(
+            Duration::from_millis(10).min(source_timeout.saturating_sub(started.elapsed())),
+        );
+    };
+
+    let _ = stdin_writer.join();
+    let (stdout, stdout_overflow) = join_reader(stdout_reader)?;
+    let _ = join_reader(stderr_reader)?;
+    if !status.success() {
+        return Err(exit_reason(status));
+    }
+    if stdout_overflow {
+        return Err(format!(
+            "command output exceeds the {MAX_OUTPUT_BYTES}-byte limit"
+        ));
+    }
+    Ok(ResultData { stdout })
+}
+
+fn child_exited_without_reaping(pid: u32) -> std::io::Result<bool> {
+    let mut information = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid,
+            information.as_mut_ptr(),
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let information = unsafe { information.assume_init() };
+    Ok(unsafe { information.si_pid() } != 0)
 }
 
 fn read_capped(mut reader: impl Read) -> std::io::Result<(Vec<u8>, bool)> {

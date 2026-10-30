@@ -1,5 +1,6 @@
 use crate::command::{Cache as CommandCache, ResultData as CommandResult};
 use crate::desktop;
+use crate::invocation::Invocation;
 use crate::ipc::Window;
 use crate::mpris::{self, Player};
 use crate::process;
@@ -65,9 +66,78 @@ pub fn name(
     command_environment: &Environment,
     explain: bool,
 ) -> Vec<Output> {
+    let mut outputs = Vec::new();
+    let _ = name_inner(
+        requested,
+        windows,
+        desktop_index,
+        process_snapshot,
+        recipes,
+        bus_address,
+        command_environment,
+        explain,
+        None,
+        |output| {
+            outputs.push(output.clone());
+            Ok(())
+        },
+    );
+    outputs
+}
+
+pub fn name_with_invocation<F>(
+    requested: &[u64],
+    windows: &[Window],
+    desktop_index: &desktop::Index,
+    process_snapshot: &process::Snapshot,
+    recipes: &RecipeSet,
+    bus_address: Option<&OsStr>,
+    command_environment: &Environment,
+    explain: bool,
+    invocation: &Invocation,
+    emit: F,
+) -> Result<bool, String>
+where
+    F: FnMut(&Output) -> Result<(), String>,
+{
+    name_inner(
+        requested,
+        windows,
+        desktop_index,
+        process_snapshot,
+        recipes,
+        bus_address,
+        command_environment,
+        explain,
+        Some(invocation),
+        emit,
+    )
+}
+
+fn name_inner<F>(
+    requested: &[u64],
+    windows: &[Window],
+    desktop_index: &desktop::Index,
+    process_snapshot: &process::Snapshot,
+    recipes: &RecipeSet,
+    bus_address: Option<&OsStr>,
+    command_environment: &Environment,
+    explain: bool,
+    invocation: Option<&Invocation>,
+    mut emit: F,
+) -> Result<bool, String>
+where
+    F: FnMut(&Output) -> Result<(), String>,
+{
+    if let Some(invocation) = invocation {
+        invocation.ensure_work()?;
+    }
     let mut owner_counts = BTreeMap::<u32, usize>::new();
     let mut app_id_counts = BTreeMap::<String, usize>::new();
     for window in windows {
+        if let Some(invocation) = invocation {
+            invocation.ensure_work()?;
+        }
         *owner_counts.entry(window.pid).or_default() += 1;
         *app_id_counts
             .entry(window.app_id.to_lowercase())
@@ -76,6 +146,9 @@ pub fn name(
 
     let mut contexts = BTreeMap::new();
     for window in windows {
+        if let Some(invocation) = invocation {
+            invocation.ensure_work()?;
+        }
         let entry = desktop_index.find(&window.app_id);
         let title_content = title_content(&window.title, &window.app_id, &entry.name);
         let context = Context {
@@ -90,14 +163,38 @@ pub fn name(
     }
 
     let mut ids = requested.to_vec();
-    ids.sort_unstable();
-    ids.dedup();
+    if invocation.is_none() {
+        ids.sort_unstable();
+        ids.dedup();
+    }
     let mut command_cache = CommandCache::default();
     let mut mpris_cache: Option<(Vec<Player>, u64)> = None;
     let mut named = BTreeMap::new();
+    let mut missing = false;
     for id in ids {
+        if let Some(invocation) = invocation {
+            invocation.ensure_work()?;
+        }
         let Some(context) = contexts.get(&id) else {
-            named.insert(id, None);
+            let output = Output {
+                window: id,
+                missing: true,
+                name: None,
+                basis: String::new(),
+                recipe: None,
+                fields: BTreeMap::new(),
+                warnings: Vec::new(),
+                tried: None,
+            };
+            missing = true;
+            if invocation.is_some() {
+                if let Some(invocation) = invocation {
+                    invocation.ensure_work()?;
+                }
+                emit(&output)?;
+            } else {
+                named.insert(id, output);
+            }
             continue;
         };
         let owner_app_id_count = app_id_counts
@@ -113,26 +210,28 @@ pub fn name(
             &mut command_cache,
             &mut mpris_cache,
             explain,
-        );
-        named.insert(id, Some(output));
+            invocation,
+        )?;
+        missing |= output.missing;
+        if invocation.is_some() {
+            emit(&output)?;
+            if let Some(invocation) = invocation {
+                invocation.ensure_work()?;
+            }
+        } else {
+            named.insert(id, output);
+        }
     }
 
-    requested
-        .iter()
-        .map(|id| match named.get(id).and_then(Option::as_ref) {
-            Some(output) => output.clone(),
-            None => Output {
-                window: *id,
-                missing: true,
-                name: None,
-                basis: String::new(),
-                recipe: None,
-                fields: BTreeMap::new(),
-                warnings: Vec::new(),
-                tried: None,
-            },
-        })
-        .collect()
+    if invocation.is_none() {
+        for id in requested {
+            if let Some(output) = named.get(id) {
+                emit(output)?;
+            }
+        }
+    }
+
+    Ok(missing)
 }
 
 fn name_one(
@@ -144,9 +243,13 @@ fn name_one(
     command_cache: &mut CommandCache,
     mpris_cache: &mut Option<(Vec<Player>, u64)>,
     explain: bool,
-) -> Output {
+    invocation: Option<&Invocation>,
+) -> Result<Output, String> {
     let mut tried = Vec::new();
     for recipe in &recipes.recipes {
+        if let Some(invocation) = invocation {
+            invocation.ensure_work()?;
+        }
         let captures = match recipe.matches(
             &context.window.app_id,
             &context.window.title,
@@ -170,10 +273,14 @@ fn name_one(
             command_environment,
             command_cache,
             mpris_cache,
+            invocation,
         ) {
             Ok((name, basis, fields)) => {
+                if let Some(invocation) = invocation {
+                    invocation.ensure_work()?;
+                }
                 tried.push((recipe.id.clone(), "selected".to_string()));
-                return Output {
+                return Ok(Output {
                     window: context.window.id,
                     missing: false,
                     name: Some(name),
@@ -182,10 +289,19 @@ fn name_one(
                     fields,
                     warnings: recipes.warnings.clone(),
                     tried: explain.then_some(tried),
-                };
+                });
             }
-            Err(reason) => tried.push((recipe.id.clone(), reason)),
+            Err(reason) => {
+                if let Some(invocation) = invocation {
+                    invocation.ensure_work()?;
+                }
+                tried.push((recipe.id.clone(), reason));
+            }
         }
+    }
+
+    if let Some(invocation) = invocation {
+        invocation.ensure_work()?;
     }
 
     let title = normalize_name(&context.window.title);
@@ -200,7 +316,7 @@ fn name_one(
     } else {
         (None, "none")
     };
-    Output {
+    Ok(Output {
         window: context.window.id,
         missing: false,
         name,
@@ -209,7 +325,7 @@ fn name_one(
         fields: BTreeMap::new(),
         warnings: recipes.warnings.clone(),
         tried: explain.then_some(tried),
-    }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -222,6 +338,7 @@ fn evaluate(
     command_environment: &Environment,
     command_cache: &mut CommandCache,
     mpris_cache: &mut Option<(Vec<Player>, u64)>,
+    invocation: Option<&Invocation>,
 ) -> Result<(String, String, BTreeMap<String, String>), String> {
     let window_fields = context.window_fields();
     let mut values = window_fields.clone();
@@ -231,8 +348,16 @@ fn evaluate(
     match &recipe.source {
         None => {}
         Some(Source::Mpris { timeout_ms }) => {
+            if let Some(invocation) = invocation {
+                invocation.ensure_work()?;
+            }
             if !matches!(mpris_cache.as_ref(), Some((_, used)) if used >= timeout_ms) {
-                let players = mpris::read(bus_address, *timeout_ms)?;
+                let players = match invocation {
+                    Some(invocation) => {
+                        mpris::read_with_invocation(bus_address, *timeout_ms, invocation)?
+                    }
+                    None => mpris::read(bus_address, *timeout_ms)?,
+                };
                 *mpris_cache = Some((players, *timeout_ms));
             }
             let players = &mpris_cache
@@ -254,12 +379,19 @@ fn evaluate(
                 .iter()
                 .map(|argument| substitute(argument, &window_fields))
                 .collect::<Result<Vec<_>, _>>()?;
-            let result = command_cache.run(
-                &argv,
-                &context.command_input(),
-                *timeout_ms,
-                command_environment,
-            )?;
+            let command_input = context.command_input();
+            let result = match invocation {
+                Some(invocation) => command_cache.run_with_invocation(
+                    &argv,
+                    &command_input,
+                    *timeout_ms,
+                    command_environment,
+                    invocation,
+                )?,
+                None => {
+                    command_cache.run(&argv, &command_input, *timeout_ms, command_environment)?
+                }
+            };
             let (fields, basis) = decode_command_result(
                 &result,
                 *output,
