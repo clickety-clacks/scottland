@@ -132,7 +132,7 @@ def differing(a, b):
     return {'pixels_gt2': count, 'max_delta': worst}
 
 
-palette = Path(os.environ['XDG_RUNTIME_DIR']) / 'scottland' / (os.environ['WAYLAND_DISPLAY'] + '.palette.json')
+palette = Path(os.environ['SCOTTLAND_SESSION_DIR']) / (os.environ['WAYLAND_DISPLAY'] + '.palette.json')
 old_palette = palette.read_bytes() if palette.exists() else None
 try:
     ipc('wayfire/set-config-options', {'scottland/goo': False, 'scottland/window_avoidance_always': True,

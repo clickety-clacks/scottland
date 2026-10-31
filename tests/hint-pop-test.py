@@ -91,7 +91,7 @@ def capture_pop(label, entering):
     strip.savev(str(art/(label+'-strip.png')), 'png', [], [])
     return motion
 
-palette_path = Path(os.environ['XDG_RUNTIME_DIR'])/'scottland'/(os.environ['WAYLAND_DISPLAY']+'.palette.json')
+palette_path = Path(os.environ['SCOTTLAND_SESSION_DIR'])/(os.environ['WAYLAND_DISPLAY']+'.palette.json')
 palette = {'scheme':'dark','background':'#1f232c','foreground':'#d8deea','accent':'#81a1c1'}
 def theme(reduced=False):
     temporary = art/'palette.json'

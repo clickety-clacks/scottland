@@ -25,57 +25,57 @@ ShellRoot {
     || (Quickshell.env("HOME") + "/.config/scottland/layout.ini")
   property real touchpadScrollSpeed: 0.2
 
-  readonly property var defaults: ({ center_width: 33.333, rail_width: 2, blend_width: 40,
-    curve: [{ x: 0, y: 1 }, { x: 1, y: 0.2 }] })
+  readonly property var defaults: ({ center_width: 30.000, rail_width: 1.900, blend_width: 40.0,
+    curve: [{ x: 0, y: 0.997 }, { x: 0.041, y: 0.779 }, { x: 1, y: 0.255 }] })
   readonly property var gooControls: [
-    { name: "goo_thickness", hint: "Width of the resting goo border. Higher makes it thicker; lower makes it finer.", title: "Border thickness", initial: 13, low: 4, high: 40, step: 1 },
-    { name: "goo_reach", hint: "How far goo reaches toward nearby windows. Higher joins wider gaps; lower keeps it close.", title: "Reach", initial: 24, low: 6, high: 70, step: 1 },
-    { name: "goo_thinning", hint: "How much a bridge thins the borders feeding it. Higher thins more; lower keeps them fuller.", title: "Bridge draw", initial: 0.45, low: 0, high: 1, step: 0.01 },
+    { name: "goo_thickness", hint: "Width of the resting goo border. Higher makes it thicker; lower makes it finer.", title: "Border thickness", initial: 26, low: 4, high: 40, step: 1 },
+    { name: "goo_reach", hint: "How far goo reaches toward nearby windows. Higher joins wider gaps; lower keeps it close.", title: "Reach", initial: 35, low: 6, high: 70, step: 1 },
+    { name: "goo_thinning", hint: "How much a bridge thins the borders feeding it. Higher thins more; lower keeps them fuller.", title: "Bridge draw", initial: 0.27, low: 0, high: 1, step: 0.01 },
     { name: "goo_swell", hint: "How much goo grows when a window is revealed. Higher swells more; lower stays nearer its resting width.", title: "Swell", initial: 0.7, low: 0, high: 2, step: 0.01 },
-    { name: "goo_noise", hint: "Unevenness along the goo edge. Higher makes it lumpier; lower makes it smooth.", title: "Mess", initial: 0.32, low: 0, high: 0.9, step: 0.01 },
-    { name: "goo_lump", hint: "Size of the uneven patches. Higher makes broad lumps; lower makes small bumps.", title: "Lump size", initial: 190, low: 40, high: 500, step: 5 },
-    { name: "goo_drift", hint: "How fast lumps wander while goo is awake. Higher moves faster; zero holds them still.", title: "Drift", initial: 0.12, low: 0, high: 0.6, step: 0.01 },
-    { name: "goo_wave_speed", hint: "How fast ripples travel through connected goo. Higher travels faster; lower moves slowly.", title: "Wave speed", initial: 0.28, low: 0.05, high: 0.5, step: 0.01 },
-    { name: "goo_wave_damp", hint: "How long ripples linger. Higher fades slowly; lower settles sooner.", title: "Wave persistence", initial: 0.985, low: 0.9, high: 0.998, step: 0.001 },
-    { name: "goo_wave_height", hint: "How much ripples move the goo edge. Higher makes bigger waves; zero hides their motion.", title: "Wave height", initial: 0.55, low: 0, high: 1.5, step: 0.01 },
-    { name: "goo_spread", hint: "How quickly nearby dye colors mix. Higher blends faster; lower keeps colors more local.", title: "Dye spread", initial: 0.45, low: 0, high: 0.9, step: 0.01 },
-    { name: "goo_swirl", hint: "How strongly dye flows around in goo. Higher stirs more; zero stops the swirling.", title: "Dye swirl", initial: 0.9, low: 0, high: 3, step: 0.05 },
-    { name: "goo_release", hint: "How quickly windows release state color and goo picks up color from beneath. Higher renews dye sooner; lower lets old colors linger.", title: "Dye release", initial: 0.06, low: 0.005, high: 0.3, step: 0.005 },
-    { name: "goo_shine", hint: "Brightness of reflected highlights. Higher looks glossier; zero removes the shine.", title: "Shine", initial: 0.75, low: 0, high: 1.5, step: 0.01 },
-    { name: "goo_relief", hint: "Apparent depth and background bending. Higher looks more rounded; lower looks flatter.", title: "Relief", initial: 5, low: 0.5, high: 12, step: 0.1 },
-    { name: "goo_depth", hint: "Height of the rounded liquid above the screen, in logical pixels. Higher makes a deeper lens; zero flattens it.", title: "Liquid depth", initial: 6, low: 0, high: 20, step: 0.1 },
-    { name: "goo_profile", hint: "How strongly the rounded bead climbs the window wall. Higher raises the inner meniscus; zero leaves a free rounded bead.", title: "Wall wetting", initial: 0.65, low: 0, high: 1, step: 0.01 },
-    { name: "goo_soak", hint: "How strongly the goo picks up the colors beneath it (wallpaper, or windows under the film) and mixes them into its dye. Zero turns pickup off.", title: "Wallpaper pickup", initial: 0.12, low: 0, high: 1, step: 0.01 },
-    { name: "goo_pickup_balance", hint: "Share of picked-up color in the goo at full Wallpaper pickup. Zero keeps a window's own color (focus, attention); one shows only what is picked up from beneath.", title: "Pickup balance", initial: 0.45, low: 0, high: 1, step: 0.01 },
-    { name: "goo_overlap_film", hint: "Width of goo over windows behind. Higher covers a wider strip; zero hides the film.", title: "Overlap film", initial: 4, low: 0, high: 20, step: 0.5 },
-    { name: "goo_hover_cloudiness", hint: "Milkiness of a nearby corner or side. Higher makes the whole control denser; zero keeps it clear.", title: "Control cloudiness", initial: 0.65, low: 0, high: 1, step: 0.01 },
-    { name: "goo_hover_emissivity", hint: "Light from inside a nearby corner or side. Higher glows brighter; zero turns the glow off.", title: "Control glow", initial: 0.35, low: 0, high: 1.5, step: 0.01 },
+    { name: "goo_noise", hint: "Unevenness along the goo edge. Higher makes it lumpier; lower makes it smooth.", title: "Mess", initial: 0.38, low: 0, high: 0.9, step: 0.01 },
+    { name: "goo_lump", hint: "Size of the uneven patches. Higher makes broad lumps; lower makes small bumps.", title: "Lump size", initial: 315, low: 40, high: 500, step: 5 },
+    { name: "goo_drift", hint: "How fast lumps wander while goo is awake. Higher moves faster; zero holds them still.", title: "Drift", initial: 0.39, low: 0, high: 0.6, step: 0.01 },
+    { name: "goo_wave_speed", hint: "How fast ripples travel through connected goo. Higher travels faster; lower moves slowly.", title: "Wave speed", initial: 0.22, low: 0.05, high: 0.5, step: 0.01 },
+    { name: "goo_wave_damp", hint: "How long ripples linger. Higher fades slowly; lower settles sooner.", title: "Wave persistence", initial: 0.958, low: 0.9, high: 0.998, step: 0.001 },
+    { name: "goo_wave_height", hint: "How much ripples move the goo edge. Higher makes bigger waves; zero hides their motion.", title: "Wave height", initial: 0.76, low: 0, high: 1.5, step: 0.01 },
+    { name: "goo_spread", hint: "How quickly nearby dye colors mix. Higher blends faster; lower keeps colors more local.", title: "Dye spread", initial: 0.9, low: 0, high: 0.9, step: 0.01 },
+    { name: "goo_swirl", hint: "How strongly dye flows around in goo. Higher stirs more; zero stops the swirling.", title: "Dye swirl", initial: 2.9, low: 0, high: 3, step: 0.05 },
+    { name: "goo_release", hint: "How quickly a window renews its dye. Higher shows state colors sooner; lower lets old colors linger.", title: "Dye release", initial: 0.155, low: 0.005, high: 0.3, step: 0.005 },
+    { name: "goo_shine", hint: "Brightness of reflected highlights. Higher looks glossier; zero removes the shine.", title: "Shine", initial: 0.62, low: 0, high: 1.5, step: 0.01 },
+    { name: "goo_relief", hint: "Apparent depth and background bending. Higher looks more rounded; lower looks flatter.", title: "Relief", initial: 3.5, low: 0.5, high: 12, step: 0.1 },
+    { name: "goo_depth", hint: "Height of the rounded liquid above the screen, in logical pixels. Higher makes a deeper lens; zero flattens it.", title: "Liquid depth", initial: 4, low: 0, high: 20, step: 0.1 },
+    { name: "goo_profile", hint: "How strongly the rounded bead climbs the window wall. Higher raises the inner meniscus; zero leaves a free rounded bead.", title: "Wall wetting", initial: 0.52, low: 0, high: 1, step: 0.01 },
+    { name: "goo_soak", hint: "How strongly the goo picks up the colors beneath it (wallpaper, or windows under the film) and mixes them into its dye. Zero turns pickup off.", title: "Wallpaper pickup", initial: 1, low: 0, high: 1, step: 0.01 },
+    { name: "goo_pickup_balance", hint: "Share of picked-up color in the goo at full Wallpaper pickup. Zero keeps a window's own color (focus, attention); one shows only what is picked up from beneath.", title: "Pickup balance", initial: 0.5, low: 0, high: 1, step: 0.01 },
+    { name: "goo_overlap_film", hint: "Width of goo over windows behind. Higher covers a wider strip; zero hides the film.", title: "Overlap film", initial: 10, low: 0, high: 20, step: 0.5 },
+    { name: "goo_hover_cloudiness", hint: "Milkiness of a nearby corner or side. Higher makes the whole control denser; zero keeps it clear.", title: "Control cloudiness", initial: 0, low: 0, high: 1, step: 0.01 },
+    { name: "goo_hover_emissivity", hint: "Light from inside a nearby corner or side. Higher glows brighter; zero turns the glow off.", title: "Control glow", initial: 0.46, low: 0, high: 1.5, step: 0.01 },
     { name: "goo_hover_distance", hint: "How far away a control starts highlighting. Higher responds sooner; zero responds only over it.", title: "Control proximity", initial: 48, low: 0, high: 150, step: 1 },
-    { name: "goo_dye_density", hint: "How much dye the goo holds: its window colors and the colors it picks up alike (focus, attention and hint colors in fallback halos). Higher is denser, capped at full opacity; zero leaves clear liquid.", title: "Dye density", initial: 1, low: 0, high: 1.5, step: 0.01 }]
+    { name: "goo_dye_density", hint: "How much dye the goo holds: its window colors and the colors it picks up alike (focus, attention and hint colors in fallback halos). Higher is denser, capped at full opacity; zero leaves clear liquid.", title: "Dye density", initial: 1.5, low: 0, high: 1.5, step: 0.01 }]
   readonly property var edgeControls: [
     { name: root.lightScheme ? "unfocused_edge_tone_light" : "unfocused_edge_tone_dark",
       hint: "Gray of an unfocused edge in the active color scheme. Lower is black; higher is white.",
-      title: "Unfocused edge tone", initial: root.lightScheme ? 0.08 : 0.92, low: 0, high: 1, step: 0.01 },
+      title: "Unfocused edge tone", initial: root.lightScheme ? 0.08 : 0.42, low: 0, high: 1, step: 0.01 },
     { name: "unfocused_edge_strength",
       hint: "How strongly an unfocused gray tint shows on the edge. Zero leaves clear glass; one uses the full tint.",
-      title: "Unfocused edge strength", initial: 1, low: 0, high: 1, step: 0.01 }]
+      title: "Unfocused edge strength", initial: 0.6, low: 0, high: 1, step: 0.01 }]
   function gooDefaults() {
-    const values = { goo: true, goo_falloff: "", attention_color_family: "theme", unfocused_edge_tone_light: 0.08,
-      unfocused_edge_tone_dark: 0.92, unfocused_edge_strength: 1 }
+    const values = { goo: true, goo_falloff: "0.000:1.000 0.063:0.779 0.125:0.607 0.188:0.472 0.250:0.368 0.313:0.287 0.375:0.223 0.395:0.223 0.500:0.135 0.569:0.113 0.625:0.082 0.688:0.064 0.750:0.050 0.813:0.039 0.875:0.030 0.938:0.024 1.000:0.018", attention_color_family: "cool", unfocused_edge_tone_light: 0.08,
+      unfocused_edge_tone_dark: 0.42, unfocused_edge_strength: 0.6 }
     for (const c of gooControls) values[c.name] = c.initial
     return values
   }
   property var gooValues: gooDefaults()
   property int tab: 0
   readonly property bool gooTab: tab === 1
-  readonly property var motionDefaults: ({key_impulse:335, key_friction:608,
-    resize_impulse:335, resize_friction:608, key_max_velocity:6000,
-    cycle_overshoot:3, alt_hold_delay:300, window_double_tap_delay:300, window_hold_delay:500,
-    window_avoidance_always:false, window_mode_tint:7, hint_background_opacity:21, solo_audition_hotspot:50})
+  readonly property var motionDefaults: ({key_impulse:924.76516, key_friction:3375.209086,
+    resize_impulse:1928.766078, resize_friction:8360.332425, key_max_velocity:6000,
+    cycle_overshoot:5.8, alt_hold_delay:300, window_double_tap_delay:300, window_hold_delay:500,
+    window_avoidance_always:true, window_mode_tint:17.5, hint_background_opacity:80, solo_audition_hotspot:28})
   property var motionValues: Object.assign({}, motionDefaults)
-  readonly property var opacityDefaults: ({center_opacity_focused:1,center_opacity_unfocused:1,
-    side_opacity_focused:1,side_opacity_unfocused:1,widget_opacity_focused:1,widget_opacity_unfocused:1,
-    window_mode_opacity_focused:1,window_mode_opacity_unfocused:1})
+  readonly property var opacityDefaults: ({center_opacity_focused:1,center_opacity_unfocused:0.91,
+    side_opacity_focused:1,side_opacity_unfocused:0.91,widget_opacity_focused:1,widget_opacity_unfocused:0.83,
+    window_mode_opacity_focused:1,window_mode_opacity_unfocused:0.8})
   property var opacityValues: Object.assign({},opacityDefaults)
   readonly property var widgetDefaults: ({widget_bounce:0.04,widget_peek_enter_delay:150,
     widget_peek_leave_delay:100,widget_attention_peek_duration:5000,widget_make_room_dwell:350,minimize_hold_delay:300})
@@ -99,8 +99,8 @@ ShellRoot {
   }
   onMotionValuesChanged: if (loaded && !push.running) push.start()
   Design { id: theme; palette: root.palette }
-  readonly property var exponentialPoints: Array.from({ length: 17 }, (_, i) => ({ x: i / 16, y: Math.exp(-i / 4) }))
-  property var gooPoints: exponentialPoints
+  readonly property var defaultGooPoints: parseCurve(gooDefaults().goo_falloff, 0)
+  property var gooPoints: defaultGooPoints
   readonly property var editorPoints: gooTab ? gooPoints : curvePoints
   function setEditorPoints(points) {
     if (gooTab) {
@@ -125,7 +125,8 @@ ShellRoot {
   property real blendWidth: defaults.blend_width
   property var curvePoints: defaults.curve
   property var globalZoneValues: ({ center_width: defaults.center_width, rail_width: defaults.rail_width,
-    blend_width: defaults.blend_width, min_scale: 0.2, max_scale: 1, scale_curve: "", curve: defaults.curve })
+    blend_width: defaults.blend_width, min_scale: 0.255, max_scale: 0.997,
+    scale_curve: curveText(defaults.curve), curve: defaults.curve })
   property var screenZones: []
   property var outputs: []
   property var targetOutput: null
@@ -234,12 +235,25 @@ ShellRoot {
 
   function profileFromEntry(entry) {
     const minimum = Number(entry.min_scale), maximum = Number(entry.max_scale)
-    const low = isFinite(minimum) ? minimum : 0.2
-    const high = isFinite(maximum) ? maximum : 1
+    const hasMinimum = isFinite(minimum), hasMaximum = isFinite(maximum)
+    const low = hasMinimum ? minimum : root.defaults.curve[root.defaults.curve.length - 1].y
+    const high = hasMaximum ? maximum : root.defaults.curve[0].y
     return { center_width: Number(entry.center_width), rail_width: Number(entry.rail_width),
       blend_width: Number(entry.blend_width), min_scale: low, max_scale: high,
       scale_curve: String(entry.scale_curve || ""),
-      curve: parseCurve(entry.scale_curve) || [{ x: 0, y: high }, { x: 1, y: low }] }
+      curve: parseCurve(entry.scale_curve) || (hasMinimum || hasMaximum
+        ? [{ x: 0, y: high }, { x: 1, y: low }] : root.defaults.curve) }
+  }
+
+  function globalOpeningCurve(values) {
+    const hasMinimum = values.min_scale !== null && values.min_scale !== undefined && isFinite(Number(values.min_scale))
+    const hasMaximum = values.max_scale !== null && values.max_scale !== undefined && isFinite(Number(values.max_scale))
+    const low = hasMinimum ? Number(values.min_scale) : root.defaults.curve[root.defaults.curve.length - 1].y
+    const high = hasMaximum ? Number(values.max_scale) : root.defaults.curve[0].y
+    const parsed = parseCurve(values.scale_curve)
+    if (parsed) return parsed
+    if (!hasMinimum && !hasMaximum) return root.defaults.curve
+    return [{ x: 0, y: Math.max(high, low || 0.05) }, { x: 1, y: low }]
   }
 
   function profileForOutput(output) {
@@ -415,9 +429,7 @@ ShellRoot {
         root.captureTargetScreen()
         for (const name of ["center_width", "rail_width", "min_scale", "max_scale", "blend_width", "scale_curve"])
           if (values[name] === undefined) values[name] = file[name]
-        const points = root.parseCurve(values.scale_curve) || [
-          { x: 0, y: values.max_scale !== null ? Math.max(values.max_scale, values.min_scale || 0.05) : 1 },
-          { x: 1, y: values.min_scale !== null ? values.min_scale : 0.2 }]
+        const points = root.globalOpeningCurve(values)
         const globalZones = { center_width: values.center_width ?? root.defaults.center_width,
           rail_width: values.rail_width ?? root.defaults.rail_width,
           blend_width: values.blend_width ?? root.defaults.blend_width,
@@ -436,7 +448,7 @@ ShellRoot {
         for (const key of Object.keys(goo)) goo[key] = values[key] !== undefined ? values[key] : file[key]
         root.original = Object.assign({}, root.original, { goo: goo })
         root.gooValues = Object.assign({}, goo)
-        root.gooPoints = root.parseCurve(goo.goo_falloff, 0) || root.exponentialPoints
+        root.gooPoints = root.parseCurve(goo.goo_falloff, 0) || root.defaultGooPoints
         const motion = Object.assign({}, root.motionDefaults)
         for (const k of Object.keys(motion)) motion[k] = values[k] !== undefined ? values[k] : file[k]
         root.motionValues = motion
@@ -643,7 +655,7 @@ ShellRoot {
     original = Object.assign({}, original, { goo: Object.assign({}, original.goo, goo),
       motion: Object.assign({}, original.motion, motion), opacity: Object.assign({}, original.opacity, opacity),
       widgets: Object.assign({}, original.widgets, widgets) })
-    if ("goo_falloff" in goo) gooPoints = parseCurve(goo.goo_falloff, 0) || exponentialPoints
+    if ("goo_falloff" in goo) gooPoints = parseCurve(goo.goo_falloff, 0) || defaultGooPoints
     // Each change below pushes every value, so the running session follows the file too.
     if (Object.keys(goo).length) gooValues = Object.assign({}, gooValues, goo)
     if (Object.keys(motion).length) motionValues = Object.assign({}, motionValues, motion)
@@ -798,17 +810,31 @@ ShellRoot {
     const r=testRect(item)
     return Object.assign(r,{endpoint:{x:r.x+item.endpointX,y:r.y+item.endpointY},
       duration:item.duration,distance:item.distance,
+      openingImpulse:item.openingImpulse,openingFriction:item.openingFriction,
       plot:{x:r.x+item.plotLeft,y:r.y+item.plotTop,width:item.plotWidth,height:item.plotHeight}})
+  }
+  function scaleFallbackProbe() {
+    const screen = root.profileFromEntry({})
+    const globalCurve = root.globalOpeningCurve({ min_scale: null, max_scale: null, scale_curve: "" })
+    return { defaultCurve: root.defaults.curve,
+      screen: { min_scale: screen.min_scale, max_scale: screen.max_scale, curve: screen.curve },
+      global: { min_scale: globalCurve[globalCurve.length - 1].y,
+        max_scale: globalCurve[0].y, curve: globalCurve } }
   }
   IpcHandler {
     target: "settings-test"
-    // Observations only, and only when explicitly enabled by an isolated test.
+    // Test-only inspection and setup hooks, enabled only for an isolated test.
+    function clearOriginalMotion() {
+      if(Quickshell.env("SCOTTLAND_SETTINGS_TEST") !== "1" || !root.loaded)return
+      root.original=Object.assign({},root.original,{motion:null})
+    }
     function snapshot(): string {
       if(Quickshell.env("SCOTTLAND_SETTINGS_TEST") !== "1" || !root.loaded)return "{}"
       return JSON.stringify({title:Qt.application.name,heading:heading.text,screen:settingsWindow.screen.name,tab:root.tab,
       panel:{x:settingsWindow.x,y:settingsWindow.y,width:settingsWindow.width,height:settingsWindow.height},
       viewport:root.testRect(gooScroll), scroll:gooScroll.contentY,touchpadSpeed:root.touchpadScrollSpeed,wheelVelocity:gooScroll.wheelVelocity,flicking:gooScroll.flicking,touchVelocity:gooScroll.verticalVelocity, contentHeight:gooScroll.contentHeight,
       zoneScope:Object.assign(root.testRect(zoneScope),{all:root.testRect(allScreensChoice),this:root.testRect(thisScreenChoice),reset:root.testRect(resetTargetZones),scope:root.editScope,note:zoneScopeNote.text}),
+      scaleFallbacks:root.scaleFallbackProbe(),
       target:{output:root.targetOutputName,identity:root.targetIdentity,own:root.targetHasOwnZones,available:root.thisScreenAvailable},
       zoneProfile:root.editorProfile(),screenZones:root.screenZones,outputs:root.outputs,
       zones:Object.assign(root.testRect(zoneSettings),{hinted:zoneSettings.hinted,hint:zoneSettings.visibleHint}),
@@ -820,14 +846,16 @@ ShellRoot {
       editor:root.curveProbe(editor), movement:root.coastProbe(movementEditor),resize:root.coastProbe(resizeEditor),
       playground:Object.assign(root.testRect(playground),{distance:playground.distance,velocity:playground.vx,
         widgetized:playground.widgetized,widgetSide:playground.widgetSide,edgeStops:playground.edgeStops.length}),
-      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),hintHoldTiming:root.testRect(hintHoldTiming),soloHotspot:root.testRect(soloHotspot),
+      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),hintHoldTiming:root.testRect(hintHoldTiming),soloHotspot:Object.assign(root.testRect(soloHotspot),{opening:soloHotspot.opening}),
       alwaysAvoidance:root.testRect(alwaysAvoidance),
       opacitySettings:root.testRect(opacitySettings),windowOpacitySettings:root.testRect(windowOpacitySettings),
       windowTintSettings:Object.assign(root.testRect(windowTintSettings),{rowHeight:windowTintSettings.rowHeight}),
       widgetSettings:root.testRect(widgetSettings),solarSettings:root.testRect(solarSettings),
       solarEnable:root.testRect(solarEnable),solarNetwork:root.testRect(solarNetwork),
-      motion:root.motionValues,opacity:root.opacityValues,widgets:root.widgetValues,solar:root.solarValues,values:root.gooValues,palette:root.palette,
-      layout:{center_width:root.centerWidth,rail_width:root.railWidth,blend_width:root.blendWidth},original:root.original,originalSolar:root.originalSolar})
+      motion:root.motionValues,motionDefaults:root.motionDefaults,motionRecordPresent:!!root.original?.motion,
+      opacity:root.opacityValues,widgets:root.widgetValues,solar:root.solarValues,values:root.gooValues,palette:root.palette,
+      layout:{center_width:root.centerWidth,rail_width:root.railWidth,blend_width:root.blendWidth},
+      original:root.original,originalSolar:root.originalSolar})
     }
   }
 
@@ -1283,7 +1311,7 @@ ShellRoot {
           design: theme
           title: root.gooTab ? "Density falloff" : "Scale across the side zones"
           points: root.editorPoints
-          opening: root.gooTab ? root.parseCurve(root.original?.goo?.goo_falloff,0) || root.exponentialPoints
+          opening: root.gooTab ? root.parseCurve(root.original?.goo?.goo_falloff,0) || root.defaultGooPoints
             : root.zoneOpening?.curve || root.defaults.curve
           minimum: root.gooTab ? 0 : 0.05
           descending: root.gooTab
@@ -1322,8 +1350,8 @@ ShellRoot {
             explanation:"Drag the endpoint. Right means a longer coast; up means farther travel. The graph shows window position after one arrow push; released drags use the same deceleration."
             design: theme; title: "Movement · position over time"
             impulse:root.motionValues.key_impulse;friction:root.motionValues.key_friction
-            openingImpulse:root.original?.motion?.key_impulse ?? 335
-            openingFriction:root.original?.motion?.key_friction ?? 608
+            openingImpulse:root.original?.motion?.key_impulse ?? root.motionDefaults.key_impulse
+            openingFriction:root.original?.motion?.key_friction ?? root.motionDefaults.key_friction
             onEdited:(impulse,friction)=>root.setMotionPair("key_impulse","key_friction",impulse,friction)
           }
           CoastGraph {
@@ -1333,8 +1361,8 @@ ShellRoot {
             explanation:"Drag the endpoint. Right means resizing continues longer; up means the window grows or shrinks farther after one Ctrl + arrow push."
             design: theme; title: "Resize · position over time"
             impulse:root.motionValues.resize_impulse;friction:root.motionValues.resize_friction
-            openingImpulse:root.original?.motion?.resize_impulse ?? 335
-            openingFriction:root.original?.motion?.resize_friction ?? 608
+            openingImpulse:root.original?.motion?.resize_impulse ?? root.motionDefaults.resize_impulse
+            openingFriction:root.original?.motion?.resize_friction ?? root.motionDefaults.resize_friction
             onEdited:(impulse,friction)=>root.setMotionPair("resize_impulse","resize_friction",impulse,friction)
           }
           ParameterStack {
@@ -1374,7 +1402,7 @@ ShellRoot {
             hintFontFamily:root.hintFontFamily;textScale:root.textScale
             viewport:gooScroll;scrollOffset:gooScroll.contentY
             rows:[
-              {id:"window_mode_tint",label:"Hint color overlay",min:0,max:100,step:0.5,largeStep:1,decimals:1,suffix:"%",hint:"How strongly Window mode tints each window and widget card with its hint color. Higher is a stronger wash; zero turns the overlay off. Hint circles and outlines are unaffected."},
+               {id:"window_mode_tint",label:"Hint color overlay",min:0,max:100,step:0.5,largeStep:1,decimals:1,suffix:"%",hint:"How strongly Window mode tints each drawn window and widget card with its hint color. Higher is a stronger wash; zero turns the overlay off. Hint circles, letters, backgrounds, goo dye and press flashes are unaffected."},
               {id:"hint_background_opacity",label:"Hint background opacity",min:0,max:100,step:1,largeStep:10,decimals:0,suffix:"%",hint:"Opacity of the background behind hint letters, the same for window and widget hints. 100% is a solid background and 0% is none. Letters, hint rims and window opacity are unchanged."}
             ]
             values:root.motionValues;opening:root.original?.motion || ({})
@@ -1407,7 +1435,7 @@ ShellRoot {
             minimum:8;maximum:400;step:1;bigStep:10;unit:"pt";endLabel:"400 pt"
             explanation:"Not used yet: pointer-hold auditions are not built. Once they are, moving the pointer this far from where a hold fired, while it shows its solo or pair, will count as starting to drag and cancel the audition. Smaller movements will keep it."
             footer:"no effect until pointer-hold auditions are built"
-            value:root.motionValues.solo_audition_hotspot;opening:root.original?.motion?.solo_audition_hotspot ?? 50
+            value:root.motionValues.solo_audition_hotspot;opening:root.original?.motion?.solo_audition_hotspot ?? root.motionDefaults.solo_audition_hotspot
             onEdited:value=>root.setMotion("solo_audition_hotspot",value)
           }
         }
@@ -1494,14 +1522,16 @@ ShellRoot {
             text: "Defaults"
             onClicked: {
               if (root.tab === 2) { root.motionValues=Object.assign({},root.motionDefaults);
-                root.opacityValues=Object.assign({},root.opacityValues,{window_mode_opacity_focused:1,window_mode_opacity_unfocused:1});return }
+                root.opacityValues=Object.assign({},root.opacityValues,{
+                  window_mode_opacity_focused:root.opacityDefaults.window_mode_opacity_focused,
+                  window_mode_opacity_unfocused:root.opacityDefaults.window_mode_opacity_unfocused});return }
               if (root.tab === 3) {root.opacityValues=Object.assign({},root.opacityDefaults);return}
               if (root.tab === 4) {root.widgetValues=Object.assign({},root.widgetDefaults);return}
               if (root.tab === 5) {root.solarValues=Object.assign({},root.solarDefaults);
                 root.solarLatitudeEdited=false;root.solarLongitudeEdited=false;return}
               if (root.gooTab) {
                 root.gooValues = root.gooDefaults()
-                root.gooPoints = root.exponentialPoints
+                root.gooPoints = root.defaultGooPoints
                 return
               }
               root.centerWidth = root.defaults.center_width

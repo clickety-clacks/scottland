@@ -145,6 +145,26 @@ fn name_one(
     mpris_cache: &mut Option<(Vec<Player>, u64)>,
     explain: bool,
 ) -> Output {
+    if let Some(name) = context
+        .window
+        .provenance
+        .as_ref()
+        .and_then(|provenance| provenance.name.as_deref())
+        .map(normalize_name)
+        .filter(|name| !name.is_empty())
+    {
+        return Output {
+            window: context.window.id,
+            missing: false,
+            name: Some(name),
+            basis: "declared".to_string(),
+            recipe: None,
+            fields: BTreeMap::new(),
+            warnings: recipes.warnings.clone(),
+            tried: explain.then_some(Vec::new()),
+        };
+    }
+
     let mut tried = Vec::new();
     for recipe in &recipes.recipes {
         let captures = match recipe.matches(
@@ -577,12 +597,14 @@ mod tests {
                 pid: 40,
                 app_id: "org.example.writer".to_string(),
                 title: "  Draft\n  one  ".to_string(),
+                provenance: None,
             },
             Window {
                 id: 8,
                 pid: 41,
                 app_id: "org.example.reader".to_string(),
                 title: String::new(),
+                provenance: None,
             },
         ];
         let no_environment = |_: &str| -> Option<std::ffi::OsString> { None };
@@ -607,6 +629,57 @@ mod tests {
     }
 
     #[test]
+    fn declared_name_precedes_matching_recipes_and_uses_the_single_line_form() {
+        use crate::ipc::Provenance;
+        use crate::recipe::{Match, Recipe, Template, Token};
+        use regex::Regex;
+
+        let windows = vec![Window {
+            id: 7,
+            pid: 40,
+            app_id: "org.example.terminal".to_string(),
+            title: "A title that would otherwise win".to_string(),
+            provenance: Some(Provenance {
+                name: Some(" deploy\n prod ".to_string()),
+            }),
+        }];
+        let no_environment = |_: &str| -> Option<std::ffi::OsString> { None };
+        let recipes = Set {
+            recipes: vec![Recipe {
+                id: "matching-recipe".to_string(),
+                name: Template {
+                    tokens: vec![Token::Text("recipe name".to_string())],
+                    fields: BTreeSet::new(),
+                },
+                priority: 1,
+                matching: Match {
+                    app_id: Some(Regex::new(".*").unwrap()),
+                    ..Match::default()
+                },
+                source: None,
+                title_capture_names: BTreeSet::new(),
+            }],
+            warnings: Vec::new(),
+        };
+        let output = name(
+            &[7],
+            &windows,
+            &Index::read_from(&no_environment),
+            &Snapshot::default(),
+            &recipes,
+            None,
+            &Environment::default(),
+            true,
+        );
+
+        assert_eq!(output[0].name.as_deref(), Some("deploy prod"));
+        assert_eq!(output[0].basis, "declared");
+        assert!(output[0].recipe.is_none());
+        assert!(output[0].fields.is_empty());
+        assert!(output[0].tried.as_ref().is_some_and(Vec::is_empty));
+    }
+
+    #[test]
     fn mpris_uses_the_only_playing_associated_player() {
         let context = Context {
             window: Window {
@@ -614,6 +687,7 @@ mod tests {
                 pid: 40,
                 app_id: "org.example.player".to_string(),
                 title: "Track — Player".to_string(),
+                provenance: None,
             },
             app_name: "Player".to_string(),
             categories: Vec::new(),
@@ -650,6 +724,7 @@ mod tests {
                 pid: 40,
                 app_id: "org.example.player".to_string(),
                 title: "Player".to_string(),
+                provenance: None,
             },
             app_name: "Player".to_string(),
             categories: Vec::new(),

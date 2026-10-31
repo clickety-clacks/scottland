@@ -12,6 +12,14 @@ check() { local name=$1; shift; if "$@"; then pass "$name"; else fail "$name"; f
 
 h()    { tests/headless.sh ipc "$@" >/dev/null; }
 ipc()  { tests/headless.sh ipc "$@"; }
+# The canonical runner binds its private runtime inside each `run` invocation.
+# Access runtime records through that namespace, not from this outer shell.
+hrun() { tests/headless.sh run "$@"; }
+headless_json_field() {
+  hrun python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' "$1" "$2"
+}
+headless_first_line() { hrun sed -n '1p' "$1"; }
+headless_path_absent() { hrun sh -c 'test ! -e "$1"' sh "$1"; }
 views() { ipc scottland/layout-state; }
 view_field() {  # view_field <title-substring> <python expr over v (view) and f (frame)>
   views | python3 -c "
@@ -58,6 +66,26 @@ super_drag() {  # super_drag x1 y1 x2 y2
   sleep 0.3
   h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'
   h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
+}
+cover_drag() {  # cover_drag x1 y1 x2 y2 expected-view-id; don't move a different hit target
+  h stipc/move_cursor "{\"x\":$1,\"y\":$2}"; sleep 0.2
+  h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'
+  h stipc/feed_button '{"combo":"BTN_LEFT","mode":"press"}'
+  local selected
+  selected=$(ipc scottland/desktop-model | python3 -c 'import json,sys; print((json.load(sys.stdin).get("drag") or {}).get("window",-1))')
+  if [ "$selected" != "$5" ]; then
+    h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'
+    h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
+    echo "$selected"
+    return 1
+  fi
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    h stipc/move_cursor "{\"x\":$(( $1 + ($3 - $1) * i / 10 )),\"y\":$(( $2 + ($4 - $2) * i / 10 ))}"; sleep 0.03
+  done
+  sleep 0.3
+  h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'
+  h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
+  echo "$selected"
 }
 
 # A test widget that never shows a window (for the launch timeout), found via SCOTTLAND_WIDGET_PATH.
@@ -126,6 +154,8 @@ cleanup() {
 }
 trap cleanup EXIT
 display=$(cat "$headless_dir/display")
+session_dir=$(hrun sh -c 'printf "%s" "$SCOTTLAND_SESSION_DIR"')
+state_dir=$session_dir/widgets/$display
 signals=$artifacts/widget-signals.log
 tests/headless.sh run gdbus monitor --session --dest org.scottland.Widgets >"$signals" 2>&1 &
 monitor_pid=$!
@@ -175,14 +205,14 @@ check "WG9 its Title property is the window title" \
 
 # WG10: a badge announced the standard way (Unity launcher API, per .desktop id).
 unit=$(ipc scottland/widgets | python3 -c "import json,sys; print(json.load(sys.stdin)['widgets'][0]['widget_unit'])")
-desktop=$(session_read "widgets/$display/$unit.json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('desktop',''))")
+desktop=$(headless_json_field "$state_dir/$unit.json" desktop)
 bus emit /com/canonical/unity/launcherentry/1 com.canonical.Unity.LauncherEntry Update "sa{sv}" \
   "application://${desktop:-foot}.desktop" 2 count x 7 count-visible b true
 sleep 0.8
 check "WG10 a launcher badge reaches the widget (Badge property)" \
   [ "$(bus get-property org.scottland.Widgets "/org/scottland/widget/$id" org.scottland.Widget Badge)" = "x 7" ]
 check "WG10 ...and its state file (what the card shows)" \
-  [ "$(session_read "widgets/$display/$unit.json" | python3 -c "import json,sys; print(json.load(sys.stdin)['badge'])")" = 7 ]
+  [ "$(headless_json_field "$state_dir/$unit.json" badge)" = 7 ]
 bus emit /com/canonical/unity/launcherentry/1 com.canonical.Unity.LauncherEntry Update "sa{sv}" \
   "application://${desktop:-foot}.desktop" 1 progress d 0.5
 sleep 0.5
@@ -239,7 +269,7 @@ f=v['frame']; sys.exit(0 if abs(f['x']+f['width']/2 - $restore_x) < 30 and abs(f
 check "WG5 ...and the widget is gone (dismissed, not closed)" \
   [ "$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = 0 ]
 check "WG12 StateChanged told the app it's back (not widgetized)" grep -q "StateChanged (uint32 $app_pid, false" "$signals"
-check "WG9 the widget's state files are gone" session_absent "widgets/$display/$unit.json"
+check "WG9 the widget's state files are gone" headless_path_absent "$state_dir/$unit.json"
 
 # WG5: closing the widget closes the app's window.
 read -r ax ay aw ah <<<"$(view_field widget-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
@@ -395,23 +425,24 @@ sleep 1
 
 # A reload after an update replaces a widget service running older code (and keeps a current one).
 hooks_dir=$(tests/headless.sh run sh -c 'echo $SCOTTLAND_HOOKS')
-bus_pid_file=$display.widget-bus.pid
-old_bus=$(session_read "$bus_pid_file" | sed -n 1p)
+bus_pid_file=$session_dir/$display.widget-bus.pid
+old_bus=$(headless_first_line "$bus_pid_file")
 tests/headless.sh run "$hooks_dir/reload.d/08-widget-bus"; sleep 1
-check "reload keeps a widget service that runs the installed code" [ "$(session_read "$bus_pid_file" | sed -n 1p)" = "$old_bus" ]
-printf '%s\n%s\n' "$old_bus" "fingerprint-of-older-code" | session_write "$bus_pid_file"  # as if it predated an update
+check "reload keeps a widget service that runs the installed code" [ "$(headless_first_line "$bus_pid_file")" = "$old_bus" ]
+hrun sh -c 'printf "%s\n%s\n" "$1" "fingerprint-of-older-code" >"$2"' sh "$old_bus" "$bus_pid_file"  # as if it predated an update
 tests/headless.sh run "$hooks_dir/reload.d/08-widget-bus"; sleep 2
-new_bus=$(session_read "$bus_pid_file" | sed -n 1p)
+new_bus=$(headless_first_line "$bus_pid_file")
 printf 'pid_file=%s\nold_bus=%s\nnew_bus=%s\n' "$bus_pid_file" "$old_bus" "$new_bus" >"$artifacts/widget-bus-reload-readback.txt"
 check "reload replaces a widget service older than the installed code" \
   bash -c "[ '$new_bus' != '$old_bus' ] && ! kill -0 '$old_bus' 2>/dev/null && kill -0 '$new_bus' && tests/headless.sh run busctl --user status org.scottland.Widgets >/dev/null"
 
 # WG10: the session's palette file (what the card's colors follow).
-tests/headless.sh run "$hooks_dir/libexec/scottland-display" color-scheme watch >/dev/null 2>&1 &
-sleep 2
-watcher=$(session_read "$display.color-scheme.pid" | sed -n 1p)
+palette=$session_dir/$display.palette.json
+tests/headless.sh run "$hooks_dir/libexec/scottland-color-scheme" ensure; sleep 2
+watcher=$(headless_first_line "$session_dir/$display.color-scheme.pid")
 check "WG10 the session's palette file has every color" \
-  palette_complete
+  hrun python3 -c 'import json,re,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["scheme"] in ("light","dark") and all(re.fullmatch("#[0-9a-fA-F]{6}", p[k]) for k in ("background","foreground","muted","accent","alert")) else 1)' "$palette"
+hrun rm -f -- "$palette"
 
 # WG5: an app that hides its window while widgetized takes its widget away; shown again, the
 # window is an ordinary, visible window.
@@ -601,6 +632,7 @@ sleep 1
 sleep 1.5
 read -r ax ay aw ah <<<"$(view_field mini-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+h stipc/move_cursor "{\"x\":$((screen_w / 2)),\"y\":20}"
 sleep 2.5
 card_width() { views | python3 -c "import json,sys; print([round(v['frame']['width']) for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('mini-app')][0])"; }
 wide=$(card_width)
@@ -619,6 +651,7 @@ sys.exit(0 if v['x'] + v['width'] >= $screen_w - 40 else 1)"
 sleep 1.5
 read -r ax ay aw ah <<<"$(view_field mini2-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+h stipc/move_cursor "{\"x\":$((screen_w / 2)),\"y\":20}"
 sleep 2.5
 card2_width() { views | python3 -c "import json,sys; print([round(v['frame']['width']) for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('mini2-app')][0])"; }
 check "WG16 a window widgetized while widgets are collapsed is collapsed too" \
@@ -695,8 +728,32 @@ sleep 1.5
 read -r ax ay aw ah <<<"$(view_field cover-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 on_top() { ipc window-rules/list-views | python3 -c "import json,sys; print([v['always-on-top'] for v in json.load(sys.stdin) if v['title']=='cover-app'][0])"; }
 pixel() { tests/headless.sh run grim -g "$ux,$uy 1x1" -t ppm - 2>/dev/null | tail -c 3 | od -An -tu1 | tr -s ' '; }
+# The card is translucent. Keep the cover centered behind the sampled point, and widen it enough
+# to expose a real grab strip beside the card.
+h window-rules/configure-view "{\"id\": $(view_field cover-app "v['id']"), \"geometry\": {\"x\": $((ux - 380)), \"y\": $((uy - 80)), \"width\": 760, \"height\": 160}}"
+sleep 0.2
 card_pixel=$(pixel)
-super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((ux - 30)) $uy
+read -r ax ay aw ah <<<"$(view_field cover-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+cover_id=$(view_field cover-app "v['id']")
+read -r cx cy cw ch <<<"$(views | python3 -c "import json,sys; f=[v for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('under-app')][0]['frame']; print(round(f['x']), round(f['y']), round(f['width']), round(f['height']))")"
+drag_top=$(( ay > cy ? ay : cy ))
+drag_bottom=$(( ay + ah < cy + ch ? ay + ah : cy + ch ))
+drag_y=$(((drag_top + drag_bottom) / 2))
+drag_x=
+for offset in 40 30 20 10 50 60 70 80 90 100 110 120 130 140 145; do
+  candidate_x=$((cx - offset))
+  [ "$candidate_x" -ge "$((ax + 5))" ] || break
+  h stipc/move_cursor "{\"x\":$candidate_x,\"y\":$drag_y}"
+  sleep 0.05
+  cursor_id=$(views | python3 -c 'import json,sys; print(json.load(sys.stdin).get("cursor_view",-1))')
+  if [ "$cursor_id" = "$cover_id" ]; then drag_x=$candidate_x; break; fi
+done
+strip_ok=no
+if [ -n "$drag_x" ] && (( drag_x <= cx - 5 && drag_y >= ay && drag_y < ay + ah && drag_y >= cy && drag_y < cy + ch && ux >= ax && ux < ax + aw && uy >= ay && uy < ay + ah )); then strip_ok=yes; fi
+check "L29 cover grab starts in an exposed strip" [ "$strip_ok" = yes ]
+dragged_id=-1
+if [ "$strip_ok" = yes ]; then dragged_id=$(cover_drag "$drag_x" "$drag_y" $((drag_x + 30)) "$drag_y" "$cover_id"); fi
+check "L29 Super-drag selects the cover window" [ "$dragged_id" = "$cover_id" ]
 sleep 0.6
 check "L29 a window just let go of stays above the widgets" [ "$(on_top)/$([ "$(pixel)" != "$card_pixel" ] && echo covered)" = "True/covered" ]
 sleep 2.6
@@ -965,14 +1022,14 @@ read -r ax ay aw ah <<<"$(view_field carry-app "round(f['x']), round(f['y']), ro
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 sleep 2.5
 carry_before=$(ipc scottland/widgets | python3 -c "import json,sys; print([w['widget_view'] for w in json.load(sys.stdin)['widgets'] if w['title']=='carry-app'])")
-mark=$display.reloading
-session_touch "$mark"
+mark=$session_dir/$display.reloading
+hrun touch -- "$mark"
 fresh=$headless_dir/libscottland-test-$(date +%s%N).so
 cp build/libscottland.so "$fresh"
 plugins=$(ipc wayfire/get-config-option '{"option":"core/plugins"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['value'])")
 h wayfire/set-config-options "$(python3 -c "import json,sys; print(json.dumps({'core/plugins': ' '.join(sys.argv[2] if p == 'scottland' or '/libscottland-' in p else p for p in sys.argv[1].split())}))" "$plugins" "$fresh")"
 sleep 2
-session_remove "$mark"
+hrun rm -f -- "$mark"
 check "WG5 (marked reload) the widget stays, linked, its window still hidden" \
   [ "$(ipc scottland/widgets | python3 -c "import json,sys; print([w['widget_view'] for w in json.load(sys.stdin)['widgets'] if w['title']=='carry-app'])")/$(view_field carry-app "v['hidden'] and v['widgetized']")" = "$carry_before/True" ]
 h window-rules/close-view "{\"id\": $(view_field carry-app "v['id']")}"

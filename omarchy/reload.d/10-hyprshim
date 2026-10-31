@@ -1,6 +1,5 @@
 #!/bin/sh
-# Keep this session's Hyprland compatibility socket available after a reload, including when
-# an older shim exited because Wayfire closed its IPC connection.
+# Restart this session's Hyprland shim after Wayfire has loaded the refreshed config.
 set -eu
 signature=${HYPRLAND_INSTANCE_SIGNATURE:-}
 case "$signature" in
@@ -11,22 +10,104 @@ runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 display=${WAYLAND_DISPLAY:-wayland}
 directory=$runtime/hypr/$signature
 lock=$directory/hyprland.lock
-pid=$(sed -n 1p "$lock" 2>/dev/null || true)
-lock_display=$(sed -n 2p "$lock" 2>/dev/null || true)
-if [ "$lock_display" = "$display" ] && [ -n "$pid" ] &&
-   grep -q scottland-hyprshim "/proc/$pid/cmdline" 2>/dev/null; then
-  exit 0
-fi
+PATH="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec${PATH:+:$PATH}"
+export PATH
+pid=$(sed -n '1p' "$lock" 2>/dev/null || true)
+lock_display=$(sed -n '2p' "$lock" 2>/dev/null || true)
+
+shim_for_signature() {
+  candidate=$1
+  case "$candidate" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$candidate" ] && [ -r "/proc/$candidate/cmdline" ] &&
+    grep -aq scottland-hyprshim "/proc/$candidate/cmdline" 2>/dev/null &&
+    tr '\0' '\n' <"/proc/$candidate/environ" 2>/dev/null |
+      grep -Fxq "HYPRLAND_INSTANCE_SIGNATURE=$signature"
+}
+
+session_shim() {
+  candidate=$1
+  shim_for_signature "$candidate" &&
+    tr '\0' '\n' <"/proc/$candidate/environ" 2>/dev/null |
+      grep -Fxq "WAYLAND_DISPLAY=$display"
+}
 
 state=${XDG_STATE_HOME:-$HOME/.local/state}/scottland
 mkdir -p "$state"
 shim=${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-hyprshim
+old_pid=
+old_start=
+if shim_for_signature "$pid"; then
+  if [ "$lock_display" != "$display" ] || ! session_shim "$pid"; then
+    echo "$(date +%T) reload: shim lock belongs to a different display; refusing to restart it" >>"$state/hyprshim.log"
+    exit 1
+  fi
+  lock_status=0
+  omarchy-hyprland-session-locked >/dev/null 2>&1 || lock_status=$?
+  case "$lock_status" in
+    1) ;;
+    0)
+      echo "$(date +%T) reload: session is locked; preserving its shim and shell" >>"$state/hyprshim.log"
+      exit 1
+      ;;
+    *)
+      echo "$(date +%T) reload: cannot verify lock state; preserving its shim and shell" >>"$state/hyprshim.log"
+      exit 1
+      ;;
+  esac
+  old_pid=$pid
+  old_start=$(python3 - "$old_pid" <<'PY'
+from pathlib import Path
+import sys
+print(Path(f"/proc/{sys.argv[1]}/stat").read_text().rsplit(")", 1)[1].split()[19])
+PY
+)
+  # Pin and revalidate the process before signaling, so a recycled PID cannot target another app.
+  python3 - "$old_pid" "$signature" "$display" <<'PY'
+import os, signal, sys
+pid, signature, display = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+try:
+    pidfd = os.pidfd_open(pid)
+except ProcessLookupError:
+    raise SystemExit(0)
+try:
+    proc = f"/proc/{pid}"
+    if os.stat(proc).st_uid != os.getuid():
+        raise SystemExit("refusing to signal a shim owned by another user")
+    command = open(f"{proc}/cmdline", "rb").read().split(b"\0")
+    environment = open(f"{proc}/environ", "rb").read().split(b"\0")
+    expected = {f"HYPRLAND_INSTANCE_SIGNATURE={signature}".encode(),
+                f"WAYLAND_DISPLAY={display}".encode()}
+    if not any(b"scottland-hyprshim" in arg for arg in command) or not expected.issubset(environment):
+        raise SystemExit("shim identity changed before restart")
+    signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+finally:
+    os.close(pidfd)
+PY
+  echo "$(date +%T) reload: stopping Hyprland shim for $display" >>"$state/hyprshim.log"
+  stopped=0
+  for _ in $(seq 50); do
+    if ! session_shim "$old_pid"; then stopped=1; break; fi
+    sleep 0.1
+  done
+  if [ "$stopped" -ne 1 ]; then
+    echo "$(date +%T) reload: Hyprland shim did not stop for $display" >>"$state/hyprshim.log"
+    exit 1
+  fi
+fi
+
 echo "$(date +%T) reload: starting Hyprland shim for $display" >>"$state/hyprshim.log"
 setsid -f "$shim" </dev/null >/dev/null 2>>"$state/hyprshim.log"
 for _ in $(seq 50); do
-  new_pid=$(sed -n 1p "$lock" 2>/dev/null || true)
-  if [ -n "$new_pid" ] && [ "$new_pid" != "$pid" ] &&
-     grep -q scottland-hyprshim "/proc/$new_pid/cmdline" 2>/dev/null; then
+  new_pid=$(sed -n '1p' "$lock" 2>/dev/null || true)
+  new_display=$(sed -n '2p' "$lock" 2>/dev/null || true)
+  case "$new_pid" in ''|*[!0-9]*) new_pid= ;; esac
+  if [ -n "$new_pid" ] && [ "$new_display" = "$display" ] &&
+     { [ "$new_pid" != "$old_pid" ] || [ "$(python3 - "$new_pid" <<'PY'
+from pathlib import Path
+import sys
+print(Path(f"/proc/{sys.argv[1]}/stat").read_text().rsplit(")", 1)[1].split()[19])
+PY
+)" != "$old_start" ]; } && session_shim "$new_pid"; then
     exit 0
   fi
   sleep 0.1

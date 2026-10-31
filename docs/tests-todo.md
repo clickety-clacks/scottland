@@ -48,7 +48,7 @@ compositor counts do not measure native unit peak or establish PID headroom.
 | `tests/headless.sh start` trusts any live PID in `$dir/pid` as "already running", then the suite attaches to it; otherwise it `rm -rf`s the directory it was given | Ownership record (run token, PID start time, compositor command, build ID) checked before attach or stop; refuse directories outside the checkout's `build/` | Top 1 |
 | `tests/headless.sh` silently falls back from the checkout's hooks to the dev install, then the package | Verification runs use checkout-built helpers only, or fail | Top 1 |
 | `tests/state-regressions-test.sh`, `tests/upgrade-test.sh` compute a default directory that differs from `headless.sh`'s and don't export it | Pass one owned directory through | Top 1; suite rows |
-| `hint-outline-test`, `translucency-test` guard against the live session by guessing display names (`wayland-1`) | Replace with the ownership check above | Top 1; suite rows |
+| `translucency-test` guards against the live session by guessing a display name (`wayland-1`) | Replace with the ownership check above | Top 1; suite rows |
 | Cleanup is installed after startup in several wrappers, and `drag-test.py`/`resize-test.py` can leave a button or key held after an exception | Register cleanup before starting anything; release held input in `finally` | Top 15; harness table |
 | `tests/deploy.sh` dev-installs into a shared checkout by default and hardcodes its install directory; `tests/nested.sh` shares one runtime directory and hand-names sockets | Make test-only deployment the default path for tests; keep `nested.sh` manual only | harness table |
 
@@ -61,7 +61,8 @@ compositor counts do not measure native unit peak or establish PID headroom.
 | `tests/settings-coverage-test.py`: 24 source-text asserts removed, 2 trimmed (QML snippets, help prose, element ids, function names, the `CoastGraph` count, row literals matching metadata). Option membership and metadata checks stay | Open Settings and check at runtime that each Goo row shows its metadata title, hint, default and range verbatim (GO9, GO14, GO15, GO23); the attention-color choices (GO22) and the unfocused-edge tone row per scheme; that `window_mode_tint`, `widget_bounce` and both coast graphs are reachable and change their option | Top 10; suite row | Medium |
 | `tests/goo-shader-variants-test.sh`: 37 checks that grepped preprocessed shader text (the 39 compile checks stay) | Each variant (fast, cached, refraction, intrinsic, cache_both) renders what the general path renders: specialization equivalence by pixels, as `goo-exact-test` does for caches | Top 10; goo-release-review2 row | Low |
 | `tests/state-model-test.py`: "headless scene renders" was `check()` with no condition (the screenshot is still saved) | After the randomized inputs, the scene shows the windows the model says are mapped: pixel check against known window colors | Top 3; suite row | Medium |
-| Wall-clock gates: `windowing-unit` (50-window occlusion pass < 2 ms, whole block), `hint-outline-test` (occlusion pass < 2 ms), `hint-avoidance-hang-test` (solve < 4 ms; now printed), `peek-strip-test` G (every refresh ≤ 2 ms; now printed) | P8 as a performance lane: occlusion pass, avoidance refresh and slice cost under a real drag, with machine, renderer, build type, load, warm-up and sample count recorded. The functional checks that settled drags stop solving and IPC stays responsive remain | Top 5; suite rows | Medium |
+| `tests/solar-test.py`: "Geoclue has priority" was `check(..., True)` (the mock that raises on an IP lookup still guards it) | Assert the Geoclue location is what reached `apply` | suite row | Low |
+| Wall-clock gates: `hint-avoidance-hang-test` (solve < 4 ms; now printed), `peek-strip-test` G (every refresh ≤ 2 ms; now printed) | P8 as a performance lane: avoidance refresh and slice cost under a real drag, plus tint-layer render cost after r4 acceptance, with machine, renderer, build type, load, warm-up and sample count recorded. The functional checks that settled drags stop solving and IPC stays responsive remain | Top 5; suite rows | Medium |
 | `tests/peek-unit.cpp` slice calibration block (units per ms) | A benchmark that measures units/ms and reports what `peek_slice_units` costs on the machine, outside the unit run | peek-unit row | Low |
 | `tests/rail-make-room-unit.cpp`: the fuzz check required exactly 600,000 solves (its own loop count) | Nothing: the properties stay checked and the count is still printed as solves | rail-pause row; Top 14 | — |
 
@@ -83,11 +84,6 @@ compositor counts do not measure native unit peak or establish PID headroom.
   the focused-widget timeout exits before `results.json` is written. Exact boundaries stay in
   `windowing-unit`; GUI cases sit well inside/outside the window and record received event times;
   write results in `finally`. (Top 6)
-- **`widget-morph-test` measures its poller as if it were the animation:** sample counts, last
-  sampled width vs settled width (a skipped frame reads as a snap), polling timestamps as duration;
-  "entry reload: no snapshots retained" after a fixed 1 s sleep without logging the count. Easing
-  math with supplied timestamps; frame-tagged pixels for integration; bounded lifecycle wait with a
-  state dump. (Top 4)
 - **`translucency-test` checks only the published opacity**; a shader that ignores it passes.
   Check the foreground/background pixel mix. (Top 3)
 

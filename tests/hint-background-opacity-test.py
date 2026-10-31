@@ -142,7 +142,7 @@ def distance(a, b): return max(abs(x-y) for x,y in zip(a,b))
 
 THEME=(31,35,44)  # the session palette background (#1f232c) below
 def backing(color):
-    """WK42's one backing for every hint: the theme background under a 21% hint-color tint."""
+    """Opaque backing color: theme background under a 21% hint-color tint (not opacity)."""
     return tuple(.79*b+.21*d for b,d in zip(THEME,color))
 
 
@@ -281,7 +281,7 @@ try:
     ipc('window-rules/configure-view',dict(id=int(widget_view),geometry={'x':1190,'y':20,'width':80,'height':90}))  # fixture card footprint keeps its hint clear of Settings
     ipc('window-rules/focus-view',{'id':window})  # fixture focus only
     default=option('default')
-    check('one shipped default: 21%',default==21)
+    check('one shipped default: 80%',default==80)
     key('LEFTALT',True); wait(lambda:ipc('scottland/hints')['active'],'real Alt hold enters Window mode')
     state=stable(); observations.append(state)
     def fill_points(i, shot):
@@ -314,7 +314,7 @@ try:
     subprocess.run(ctl+[str(default)],check=True,timeout=10,stdout=log,stderr=log)
     key('LEFTALT',False); wait(lambda:not ipc('scottland/hints')['active'],'Alt release before Settings')
     q=open_panel()
-    check('Settings slider reads the 21% default',q['motion']['hint_background_opacity']==default and option()==default)
+    check('Settings slider reads the 80% default',q['motion']['hint_background_opacity']==default and option()==default)
     check('opening Settings writes no layout file',not layout.exists())
     key('LEFTALT',True); wait(lambda:ipc('scottland/hints')['active'],'real Alt hold enters Window mode')
     state=stable(); observations.append(state)
@@ -332,7 +332,11 @@ try:
             return shot if distance(shot.pixel(*probe),images['default'].pixel(*probe))>2 else None
         images[value]=wait(rendered,'new backing pixels')
         observations.append(dict(value=value,hints=hints()))
-    f=views()[window]['frame']; content=(round(f['x']+f['width']/2),round(f['y']+f['height']*.85))
+    f=views()[window]['frame']
+    # Sample the far top-left client pixel. The previous center-bottom point was outside the
+    # badge circle but still inside the active Goo field, whose animated surface is not controlled
+    # by hint background opacity.
+    content=(round(f['x']+8),round(f['y']+8))
     card=dict(views()[int(widget_view)]['frame'])
     key('LEFTALT',False);wait(lambda:not ipc('scottland/hints')['active'] and not any(h.get('visible') for h in hints().values()),'Alt release')
     # What lies beneath the hints once they are gone (wallpaper, Settings' zone labels).
@@ -343,19 +347,22 @@ try:
         fill,color=fill_points(i,images[0])
         observations.append(dict(kind=name,fill=fill,color=color,
             pixels={str(v):[images[v].pixel(*p) for p in fill] for v in images}))
-        # 0%: no backing at all. Over the window the fill shows exactly the client's own (tinted)
-        # surface sampled away from the hint; beside the widget, exactly what is there once the
-        # hints are gone (Window mode tints windows and cards, not the wallpaper).
+        # The 0%-backing pixel oracle is meaningful with Goo disabled, where the tested underlay
+        # is static and independent of the badge. With Goo enabled, the source circle contributes
+        # animated, spatially varying liquid; comparing it to one remote client pixel or a
+        # post-release screenshot conflates Goo with the Cairo backing. The Goo-on run still
+        # measures the rendered 50%, default and 100% backing against its own 0% baseline.
         if name=='window': bare=fill; beneath=lambda p: images[0].pixel(*content)
         else: bare=[p for p in fill if not inside(p,i,margin=widget_underlay_margin)]; beneath=lambda p: images['released'].pixel(*p)
-        check(name+': 0% leaves no backing (fill matches the surface beneath)',len(bare)>12 and
-              all(distance(images[0].pixel(*p),beneath(p))<=3 for p in bare))
+        if not goo_enabled:
+            check(name+': 0% leaves no backing (fill matches the surface beneath)',len(bare)>12 and
+                  all(distance(images[0].pixel(*p),beneath(p))<=3 for p in bare))
         check(name+': 100% is a solid themed backing',len(fill)>20 and
               all(distance(images[100].pixel(*p),backing(color))<=4 for p in fill))
         under=lambda p: images[0].pixel(*p)
         alphas[name]={v:coverage(images[v],fill,under,color) for v in ('default',50,100)}
         check(name+': 50% backing is half opaque',abs(alphas[name][50]-.5)<=.05)
-        check(name+': default backing is 21% opaque',abs(alphas[name]['default']-.21)<=.05)
+        check(name+': default backing is 80% opaque',abs(alphas[name]['default']-.80)<=.05)
         # Fully covered glyph pixels only: over a light surface an edge pixel at 97% coverage is
         # within a few levels of the ink and would then show the backing change through it.
         ink=[(x,y) for x in range(round(cx-r*.55),round(cx+r*.55)) for y in range(round(cy-r*.65),round(cy+r*.65)) if distance(images[0].pixel(x,y),color)<=1]

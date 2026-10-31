@@ -1,23 +1,31 @@
 # Mike's rulings
 
 A dated log of the decisions Mike has made, in his terms, with where each one is specified. Use it to
-review behavior: every ruling here should be true of the desktop, and the linked row says how. When Mike
+review product policy; the linked row records implementation and acceptance for its target. When Mike
 rules on something, add it here in the same change that updates the spec. Principles (P-rows) live in
 [core/INVARIANTS.md](../core/INVARIANTS.md); feature rows in the docs named below.
 
 Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the session record.
 
+## Omarchy reload and screen sharing
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-07 | Scottland reload restarts the session's Hyprland shim and existing Omarchy shell together so the bar and menus reconnect. | O34 |
+| 10-07 | Screen sharing keeps xdg-desktop-portal-wlr's slurp chooser; the user selects a screen by clicking it. | AG02 |
+
 ## Omarchy solar compatibility
 
 | Date | Ruling | Where |
 |---|---|---|
-| 10-10 | Omarchy sessions require Sunlight and network lookup opt-in for missing/unset settings, preserving standalone Core/Settings defaults and explicit choices; preserve the existing solar timer and user configuration until explicit opt-in, and guard the adapter against stale producer state. Keep this compatibility repair separate from broader Sunlight work. | O18; S21 opt-in defaults |
+| 10-10 | Omarchy sessions require Sunlight and network lookup opt-in for missing/unset settings, preserving standalone Core/Settings defaults and explicit choices; preserve the existing solar timer and user configuration until explicit opt-in. The earlier requirement to gate application on live producer freshness was superseded by the 2026-10-20 transition policy. | O18; S21 opt-in defaults |
 
 ## Sunlight transition scheduling
 
 | Date | Ruling | Where |
 |---|---|---|
 | 2026-10-12 | Sunlight schedules actual sunrise and sunset boundaries. A manual choice holds until the next boundary; first enable, re-enable and one current-period catch-up after sleep/reboot are the only immediate applications. Persist one transition record so an acknowledged boundary is not replayed, and keep the existing solar.ini control and stock Omarchy timer/configuration unchanged. | A15, S21, O18; `scottland-sunlight` package |
+| 2026-10-20 | A manual Omarchy theme and wallpaper stay selected through the current solar period. At the next actual sunrise or sunset, restore the destination period's remembered theme and wallpaper, or apply its configured day/night mapping when no choice is remembered. Deliver each change through the acknowledged core transition; do not replace manual choices between boundaries. Preserve explicit opt-in, the stock timer and user configuration. | A15, S21, O18 |
 
 ## Omarchy theme memory
 
@@ -59,13 +67,16 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Entering Window mode, windows are nudged so each hint gets full room, best effort; overlap the front window only when there's no room. | WK13 |
 | 10-04 | The frontmost window's hint is always at its exact center. | WK31 |
 | 10-04 | Grabbing a shifted (peeking) window keeps it exactly where it's drawn, which becomes its real position; selecting it by tapping its hint in Window mode instead brings it to its true position. | WK13, WK27 |
-| 10-04 | In Window mode, a mostly occluded window gets an opaque hint-color outline, in its own layer above all windows. | WK37 |
+| 10-04 | In Window mode, a mostly occluded window gets an opaque hint-color outline, in its own layer above all windows. (Superseded 2026-10-07 by the Window-mode tint layer in WK14/WK37.) | WK37 |
 | 10-04 | Window-mode tint strength is a setting. | WK38 |
 | 10-07 | per-screen: a glide on one screen switches only that screen to live window avoidance, not all screens. | WK13 |
 | 2026-10-06 | There should be a settings slider for opacity of the background behind hint letters. | WK42, S23 |
 | 2026-10-06 | "why does 100% mean 21% that makes no sense"; "it should set both. having them different is a bug." The slider is the absolute opacity of the background behind hint letters (100% solid, 0% none), one value and one default for window and widget hints. | WK42, WK26, S23 |
 | 2026-10-07 | "no, it should go from 0 to 100%, this is simple." This corrects an accidental choice to add a contrast floor for widget hint letters, which is void. Hint background opacity is user adjustable across the full 0-100% range, one value for window and widget hints, default 21%. No contrast floor, halo, minimum or automatic adjustment; low values show whatever lies beneath. | WK42, S23 |
 | 2026-10-07 | "Record option 2: both separate settings go 0–100%". The Window mode hint color overlay (`window_mode_tint`) widens from 0–30% to 0–100%, default still 7%; it stays a separate setting from hint background opacity, which is unchanged. | WK38, S14 |
+| 2026-10-07 | "can the tints in hint mode of the windows all be drawn on a layer above all windows, so where they intersect the colors mix, and then turn off the extra window border strokes". Each drawn window and widget card, including fullscreen windows, gets one tint over its whole extent in a layer above all windows and cards; overlapping tints use the settled option A, ordinary rear-first translucent layering, at the `window_mode_tint` strength (0–100%, default 7%). Window mode draws no window/card outline, border or fullscreen rim. Hint circles, letters, backgrounds, rims, press flashes, goo dye and fallback halo dye remain unchanged; Scottland Settings and its other overlays stay above the tint, untinted. (Supersedes the 10-04 WK37 outline row.) | WK14, WK37, S14 |
+| 2026-10-13 | Mike's saved Settings values (`hint_background_opacity = 80`, `window_mode_tint = 17.5`) set their fresh-install and Settings Defaults values, superseding the 2026-10-07 defaults of 21% and 7%; both controls retain their 0–100% ranges and separate behavior. | WK42, WK38, S23, S14 |
+| 2026-10-15 | Active Window-mode filter exclusion makes nonmatching windows and widgets fully transparent even when a per-window opacity override is retained; clearing or exiting the filter restores the override. The above-window tint layer follows the same exclusion. | A20 |
 
 ## Window mode keys
 
@@ -139,7 +150,7 @@ Specified in windowing-keys.md WK36 and WP1.
 
 | Date | Ruling | Where |
 |---|---|---|
-| 10-07 | Direct file edits update the settings UI and running desktop, and settings UI changes update the file. | S4, S5, S6, S21 |
+| 10-07 | The managed settings files are the source of truth: direct file edits update the running desktop and Settings, and Settings changes write back to the files. This is the settled file-wins policy and remains a 0.4 feature target, not a claim of availability on 0.3. The 0.4 Settings specification marks file-wins implemented but not yet tested. | 0.4 Settings S4 |
 
 ## Omarchy adapter, distro and flavorings
 
@@ -182,6 +193,13 @@ Specified in windowing-keys.md WK36 and WP1.
 |---|---|---|
 | 10-08 | Boot, relog and reload use the live session values in the shared manager. Import each configured, set variable once. Log import or portal failures without retrying; login still starts the session watcher and ordinary hooks, and reload continues its plugin/config work. At login, restart only active or transitioning portal units that predate the successful import; do not restart failed portal units. On reload, import the live values without restarting already-running services. | E1, `core/autostart.d/05-import-environment` |
 
+## Window notes
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-09 | A widget shows one plugin-drawn note dot at its lower corner away from the screen edge; it shows no note text and the dot does not react to hover. The widget card, state file and D-Bus properties do not change. | NT-16 |
+| 10-09 | Notes are quiet labels. Adding, updating, removing or showing one does not request attention, change focus, raise a window or notify the user. | NT-7 |
+
 ## Knocks (concept in discussion; docs/knocks.md)
 
 | Date | Ruling |
@@ -196,6 +214,12 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-04 | Knocks from objects on the desktop matter most (the user elected them to be there). Knock priority comes from another system; Scottland only renders it. | docs/knocks.md |
 | 10-04 | Knocks have many channels, not one: every window is a channel for its object's knocks, and knocks from objects not on the desktop coexist with them; nothing is ranked against anything else. | docs/knocks.md |
 
+## Middle-press window drag
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-06 | Ruled: “any real middle press drags the window; a stock pen does nothing until you remap a button with another tool.” `BTN_STYLUS` stays client input; Scottland adds no pen remapping or setting. R7 replaces L24's three-finger click-drag resize with a move. A quick middle click still reaches the app; R5 waits on WK39 hold forms. | L24; R1–R8 |
+
 ## Testing
 
 | Date | Ruling | Where |
@@ -207,7 +231,7 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-05 | Dye release is the rate at which dye enters the goo. The setting called dye strength is dye density, and is named that. | GO23, GO28 |
 | 10-05 | Remove the drag audition (pausing during a drag to solo) altogether, with its timeout setting in Settings: the three-finger hold does the job. (Supersedes the two 10-05 re-arm entries.) | SP7 |
 | 10-05 | Peeking is temporary and never moves a window's true location, so it never violates "stays put". Soloed, paired, audition-dropped and focused windows get no special anchoring in the peek engine: any window that is covered peeks like any other. **Resolved 10-07 (see below):** the focused window is the exception, not the rule. WK13's 10-02 anchoring stands; only the solo, pair and audition parts of this entry are in effect. | WK13, WK36, spread |
-| 10-07 | Mike's stay-still ruling, verbatim: "the active window NEVER moves  automatically without the user explicitely doing it." This settles the 10-05 entry above in WK13's favor: the focused window's 10-02 anchoring was never limited to avoidance, so it keeps that anchoring against peeking too, with no exception for solo, pair or audition. WK13 restated to the broader rule: the active window never moves automatically, for any reason, without the user doing it. | WK13 |
+| 10-07 | Stay-still rule: "the active window NEVER moves  automatically without the user explicitely doing it." This settles the 10-05 entry above in WK13's favor: the focused window's 10-02 anchoring was never limited to avoidance, so it keeps that anchoring against peeking too, with no exception for solo, pair or audition. WK13 states the settled policy. The 0.4 focused-window source change and its unit results are complete; that evidence does not establish current 0.3 behavior. The current 0.3 source contains the focused anchor, but no current-target runtime acceptance is recorded. | WK13 |
 | 10-05 | Entering Window mode, a hint appears only once it has settled: never drawn, removed, then drawn again while placement and window avoidance run. | WK41 |
 | 10-05 | Window mode works with all windows across all screens. You can pair with a window on another screen: the window whose hint you are manipulating moves to the screen where its partner is. | WK, WK36 |
 | 10-05 | A solo or pair from a hold is an audition. Starting to drag cancels it, as does Esc. During a pair audition the pointer may not be over where the held window is drawn; that's fine, since nothing really moved. When the cursor moves again, the held window returns to its position under the cursor and drags as normal. | WK35, WK36, WK39 |

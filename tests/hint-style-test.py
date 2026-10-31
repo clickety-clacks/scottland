@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from headless_palette import replace_session_file, write_session_file
 import gi
 gi.require_version('GdkPixbuf', '2.0')
 from gi.repository import GdkPixbuf
@@ -133,7 +134,7 @@ def rgb(hex_color):
     return tuple(int(hex_color[i:i+2], 16)/255 for i in (1, 3, 5))
 
 palette_path = Path(run('python3', '-c',
-    "import os;print(os.path.join(os.environ['XDG_RUNTIME_DIR'],'scottland',os.environ['WAYLAND_DISPLAY']+'.palette.json'))"))
+    "import os;print(os.path.join(os.environ['SCOTTLAND_SESSION_DIR'],os.environ['WAYLAND_DISPLAY']+'.palette.json'))"))
 palettes = {
     'dark': {'scheme': 'dark', 'background': '#1f232c', 'foreground': '#d8deea', 'accent': '#81a1c1'},
     'light': {'scheme': 'light', 'background': '#f4f5f7', 'foreground': '#232a35', 'accent': '#3b6ea8'},
@@ -141,8 +142,8 @@ palettes = {
 
 def theme(name):
     temporary = palette_path.with_suffix('.hint-style-test.tmp')
-    temporary.write_text(json.dumps(palettes[name]))
-    temporary.replace(palette_path)
+    write_session_file(temporary, json.dumps(palettes[name]))
+    replace_session_file(temporary, palette_path)
     ipc('wayfire/set-config-options', {'scottland/color_scheme': name,
         'scottland/accent_color': palettes[name]['accent']+'ff'})
     time.sleep(.6)
@@ -186,7 +187,7 @@ try:
             key('LEFTALT', False); time.sleep(.3)
             scaled = dict(palettes['dark'], text_scale=1.5)
             temporary = palette_path.with_suffix('.hint-style-test.tmp')
-            temporary.write_text(json.dumps(scaled)); temporary.replace(palette_path)
+            write_session_file(temporary, json.dumps(scaled)); replace_session_file(temporary, palette_path)
             time.sleep(.8)
             hold()
             # Larger hints need more room: rear windows may still be easing to it (WK13).
@@ -293,7 +294,7 @@ try:
     before_colors = {h['window']: h['color'] for h in hints()}
     custom = dict(palettes['light'], accent='#d15baa')
     temporary = palette_path.with_suffix('.hint-style-test.tmp')
-    temporary.write_text(json.dumps(custom)); temporary.replace(palette_path)
+    write_session_file(temporary, json.dumps(custom)); replace_session_file(temporary, palette_path)
     changed = wait(lambda: hints() if all(h['color'] != before_colors[h['window']] for h in hints()) else None)
     accent_hue = colorsys.rgb_to_hls(*rgb(custom['accent']))[0]*360
     check(all(abs((colorsys.rgb_to_hls(*h['color'])[0]*360-accent_hue+180)%360-180) >= 100-1e-6

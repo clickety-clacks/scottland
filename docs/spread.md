@@ -1,9 +1,9 @@
-# Spread: solo, and making room during a drag
+# Spread, solo and gather
 
-This document records the two layouts that make room for something the user placed, and the
-presentation contract they share: **solo** (one window takes the center; the other center windows
-go to the periphery, which spreads; built from the signed-off design, "final.md", kept with the
-project's private design notes) and the **WG26 rail profile**. Both follow P14:
+This document records the layouts that make room for something the user placed, the deliberate
+periphery rearrangement called **gather**, and the **WG26 rail profile**. Solo moves center windows
+to the periphery around one window; gather moves periphery windows toward their center borders.
+Both follow P14:
 the thing the user placed stays exactly where it was put; everything else flows around it.
 
 Window avoidance for Window-mode hints is a separate policy ([WK13](windowing-keys.md#invariants),
@@ -19,15 +19,7 @@ hint inside its window.
 
 ## Spread, solo and gather
 
-**Triggers (P4).** Only explicit requests spread a layout: holding the focused window's hint in
-Window mode or a three-finger hold on the focused window solos it (WK35), and plain Space in
-Window mode gathers the periphery (WK43). These actions commit outright, with no undo (P5). Present, card
-clicks, zone cycling and ordinary drops never spread, and neither does pausing during a drag: the
-drag audition that offered a solo there is removed, with its pause setting (ruling 10-05: the
-three-finger hold does the job). Its hotspot setting, `solo_audition_hotspot` (50 pt), stays: moving
-the pointer beyond it is what counts as starting to drag, which cancels a pointer hold's audition
-(ruling 10-05; WK39). Pointer-hold auditions are not built on this branch, so nothing reads the
-setting yet; its metadata and Settings help say so until they land.
+**Triggers (P4).** Only explicit requests arrange other windows: a focused window's hint hold or a three-finger hold solos it (WK35), and plain Space in Window mode gathers the periphery on each output (WK43). These actions commit outright, with no undo (P5). Presenting, card clicks, zone cycling and ordinary drops never spread, and pausing during a drag does not spread either. The drag audition and its pause were removed (ruling 10-05); its `solo_audition_hotspot` setting (28 pt) remains so moving beyond it cancels a pointer hold's audition if that behavior is introduced (WK39). Pointer-hold auditions are not built on this branch, so nothing reads the setting yet; its metadata and Settings help say so until they land.
 
 **The solo window.** Already in the center zone: it stays where it is (P2, P14). Otherwise it goes
 to its remembered center spot (WP2), else the middle of the screen, padded on screen (WP7), at full
@@ -105,19 +97,53 @@ session the kernel did about 31 units/µs against 112 in the unit suite on the s
 12 ms reach less far there; this is still to be measured on a real GPU session. Unit operations
 measure under 40 µs of CPU; longer wall-clock slices seen on the x86 test machine were preemption under load.
 
+## Gather
+
+Pressing plain Space in Window mode gathers the periphery on every output and leaves Window mode
+active. It consumes the press once, including key repeat; Ctrl, Shift or Super with Space does
+nothing. Outside Window mode, Space keeps its ordinary route, so quick Alt+Space remains the
+application chord. A focused-surface key-layer claim still wins, and Space ends a hint hold first:
+a focused window's pending press acts as a tap before the gather starts.
+
+Gather uses the existing `spread::solve` entry point, snapshot builder, scale and legality rules,
+overlap measure, work counter, sliced job and commit path. Its schedule moves only resident
+periphery windows. Center windows, rail windows, widgets, fullscreen windows and a grabbed window
+are obstacles. Each side is solved independently. Its residents are ordered by their true inner
+distance to the border, then distance from the vertical midline, then window id. Each takes the
+innermost candidate distance that fits in the padded workarea and stays on its side without its
+inner edge crossing the center border. Candidate distances include the border and obstacle or
+already placed window edges. On each candidate the window takes the y nearest the midline where
+its normalized overlap with every obstacle and earlier window on that side is at most 10%; ties
+within half a point prefer its former y, then the upper position.
+
+When the 10% limit cannot fit, the window chooses the legal candidate with the smallest sum of
+normalized overlaps, then the innermost distance and y nearest the midline. A window too wide to
+fit stays unchanged and blocks later placements. An overhanging window moves out to its border.
+Every screen reads only its own windows and obstacles; a screen with no periphery or one over the
+128 movable / 256 obstacle caps does not stop other screens. A cap reached during a solve leaves
+that screen unchanged. Identical-height border columns within the overlap limit and clear of
+obstacles are calm on a repeated gather.
+
+Each screen commits its moves in one existing spread transaction, gliding from the drawn frame,
+stopping keyboard motion and updating zone memory for moved windows only. Focus, selection,
+stacking, cycle state and widgets stay unchanged; there is no undo. Solo and Gather requests run
+one at a time in press order, each snapshot taken after the preceding commit. Neither cancels the
+other. Gather has no wall-clock cut: a screen completes or reaches the shared work cap, and its
+result is always a whole arrangement or no change.
+
 ### Invariants
 
 | ID | Invariant | Status |
 |---|---|---|
-| SP1 | The focused window's hint hold and three-finger hold solo it; plain Space in Window mode gathers every screen. These are explicit spread requests (P4); nothing else spreads. | solo verified (headless on both test machines, real stipc input, 2026-10-04; re-run on the ARM test machine after the audition's removal, 2026-10-05); gather acceptance pending |
+| SP1 | The focused window's hint hold or a three-finger hold solos it; plain Space in Window mode gathers each output once. Ctrl, Shift or Super makes Space a consumed no-op, repeats do not gather twice, focused-surface claims retain priority, and quick Alt+Space keeps its application route. These are explicit spread requests (P4); other actions do not spread. | Solo: verified (headless real-input checks); Gather: source implemented, acceptance pending |
 | SP2 | Arrivals land in the periphery (center outside the center zone and the rails, footprint inside the padded workarea), preferring the nearer side, hanging at most 16 pt into the center zone when they fit (ruling 10-04). | verified (unit fuzz, 600 scenes; headless) |
-| SP3 | In solo, a resident moves only when required by P6 and never moves inward or grows; in gather, residents move inward toward the center-zone border on their own side, never past it, and may grow with the zone scale. | solo verified (unit fuzz and fixtures; headless); gather acceptance pending |
+| SP3 | In solo, a resident moves only when required by P6 and never moves inward or grows; it stays on its side, ends clear when pushed, and returns when its spot is free again. Gather is the explicit exception: it moves residents inward toward their own center-zone border, never across it, and may grow with the zone scale. | Solo: verified (unit fuzz and fixtures, headless); Gather: acceptance pending |
 | SP4 | The spacing pass moves only windows spread moved, each at most one halo, residents vertically only, arrivals within band, and never adds overlap (P7). | verified (unit fuzz) |
-| SP5 | The solve's work is charged (item by item, except the cap-bounded batches listed under "Bounded") and runs in measured 2 ms slices; the delivered result is always a complete validated checkpoint or no change; a completed solve and a fixed-work cut are deterministic, and sliced equals synchronous. The commit after a solve is one block outside the slice bound (about 0.4 ms of compositor CPU per moved window). | verified (unit suite; real-build slices and delivery CPU measured headless on the x86 test machine and the ARM test machine); real-GPU latency not yet measured |
+| SP5 | The solve's work is charged (item by item, except the cap-bounded batches listed under "Bounded") and runs in 2 ms slices. Solo may deliver a complete checkpoint at its existing time limit; Gather runs to completion or the work cap and delivers a whole arrangement or no change. Fixed-work results are deterministic, and sliced equals synchronous. Each commit is one block outside the slice bound. | Solo: verified (unit suite and sliced runs); Gather: source candidate, tests not run |
 | SP6 | A keyboard or three-finger solo commits outright, no undo (P5); the solo window ends in the center at full scale, in front. | verified (headless on both test machines) |
 | SP7 | Pausing during a drag does nothing: held still in the center zone for any time, no other window is drawn anywhere but where it is, and dropping there moves no other window. A `solo_audition_delay` left in an older config is ignored (ruling 10-05: the drag audition is removed). | verified (the ARM test machine, headless, real stipc drags judged from pixels: 9 checks in 2 scenarios, shipped config and a stale 300 ms `solo_audition_delay`; the build before the removal fails 7 of them, 2026-10-05) |
-| SP8 | A reload with a solve in flight survives, applies nothing half-done and leaves no window displaced; a reload from the previous main build keeps every window, widget and peek. | verified (headless reload rehearsals on both test machines, 2026-10-04; re-run on the ARM test machine, from main into the build without the audition, 2026-10-05) |
-| SP9 | Gather is one deterministic, no-wall-cut pass per screen in the existing solver. It commits only a complete screen layout, observes the same work cap, and serializes with solo and other screens in press order. | source implemented; host acceptance pending |
+| SP8 | A reload with a solve in flight survives, applies nothing half-done and leaves no window displaced; stale snapshots are not committed after their screen changes, and a reload from the previous main build keeps every window, widget and peek. | Verified for solo by headless reload rehearsals; Gather acceptance pending |
+| SP9 | Gather runs one deterministic, no-wall-cut pass per screen through the existing solver. It moves only periphery residents on their own screen and side, taking the innermost legal distance within the 10% normalized-overlap limit and falling back to the least-overlap legal spot when space runs out. It commits a complete screen layout, observes the work cap, updates moved-window memories, and serializes with solo and other screens in press order. | Source implemented; acceptance pending |
 
 Not yet seen on a physical screen or with a physical touchpad (the shared test session was not
 reloaded).

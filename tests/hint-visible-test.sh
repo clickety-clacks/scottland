@@ -12,4 +12,4 @@ cleanup() {
 }
 trap cleanup EXIT
 tests/headless.sh start --widgets
-python3 tests/hint-visible-test.py "$artifacts"
+tests/headless.sh run python3 tests/hint-visible-test.py "$artifacts"

@@ -163,8 +163,7 @@ try:
     check('minimized W covers nothing: R is drawn at its true place',
           boxB is not None and max(abs(shiftB[0]), abs(shiftB[1])) <= 4,
           f'box {boxB}; shift {shiftB}; dx,dy {b["dx"]:.1f},{b["dy"]:.1f}; target {b["target_dx"]:.1f},'
-          f'{b["target_dy"]:.1f}; outcome {b.get("outcome")}; visible_fraction {b.get("visible_fraction")}; '
-          f'outline {b.get("outline")}; order {b.get("avoidance_order")}')
+          f'{b["target_dy"]:.1f}; outcome {b.get("outcome")}; order {b.get("avoidance_order")}')
     key('LEFTALT', False)
 finally:
     for name in list(held):

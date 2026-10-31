@@ -41,6 +41,9 @@ extern "C" {
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_buffer.h>
+#define namespace namespace_t
+#include <wlr/types/wlr_layer_shell_v1.h>
+#undef namespace
 #if WF_HAS_XWAYLAND
 #include <pthread.h>  // as Wayfire does: xwayland.h uses C++ keywords as names
 #define class class_t
@@ -73,6 +76,8 @@ extern "C" {
 #include "inertia.hpp"
 #include <chrono>
 #include "hint-overlay.hpp"
+#include "note-overlay.hpp"
+#include "window-notes.hpp"
 #include <wayfire/scene-operations.hpp>
 #include "key-layers.hpp"
 #include "session.hpp"
@@ -84,11 +89,15 @@ extern "C" {
 #include <cctype>
 #include <cmath>
 #include <ctime>
+#include <deque>
 #include <map>
+#include <limits>
 #include <set>
 #include <regex>
 #include <optional>
 #include <tuple>
+#include <limits>
+#include <climits>
 #include <signal.h>
 extern "C" {
 #include <sys/pidfd.h>  // glibc declares it without C linkage for C++
@@ -140,6 +149,19 @@ uint32_t now_msec()
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+uint64_t monotonic_msec64()
+{
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return uint64_t(ts.tv_sec) * 1000 + uint64_t(ts.tv_nsec / 1000000);
+}
+
+int64_t unix_msec()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
 std::string upper(std::string text)
@@ -263,6 +285,23 @@ std::pair<std::string, std::string> split_combo(const std::string& combo)
 }
 
 enum class zone_t { center, continuous, widget };
+
+enum class opacity_override_t { none, opaque, translucent };
+
+static constexpr double TRANSPARENCY_FOCUSED_OPACITY = 0.985;
+static constexpr double TRANSPARENCY_UNFOCUSED_OPACITY = 0.96;
+
+const char *opacity_override_name(opacity_override_t mode)
+{
+    switch (mode)
+    {
+      case opacity_override_t::opaque: return "opaque";
+      case opacity_override_t::translucent: return "translucent";
+      case opacity_override_t::none: return "none";
+    }
+
+    return "none";
+}
 
 struct placement_t
 {
@@ -457,21 +496,35 @@ std::function<double(double)> scale_function(double width, double center_pct, do
  */
 static void release_stale_pointer_focus()
 {
-    auto focus = wf::get_core().get_cursor_focus();
+    auto& core = wf::get_core();
+    auto focus = core.get_cursor_focus();
     if (!focus || (typeid(*focus) == typeid(wf::scene::node_t))) return;  // none, or already inert
+
+    // Transferring the stale pointer grab also takes keyboard focus. Remember a view only when it
+    // owned keyboard focus before that transfer; refocusing a layer-shell or other scene node must
+    // remain Wayfire's job.
+    auto active_view = core.seat->get_active_view();
+    auto active_node = core.seat->get_active_node();
+    bool restore_active_view = active_view && active_view->is_mapped() && active_node &&
+        ((wf::node_to_view(active_node) == active_view) || (active_node == focus));
+
     auto top = focus.get();
     while (top->parent()) top = top->parent();
-    if (top == wf::get_core().scene().get()) return;
+    if (top == core.scene().get()) return;
     LOGI("scottland: released stale pointer focus ", focus->stringify());
     focus.reset();
     // A core node_t has core code only, but its shared_ptr control block is instantiated here: it
     // is never released, so Wayfire dropping it later can't call into an unloaded library.
     auto inert = new wf::scene::node_ptr(std::make_shared<wf::scene::node_t>(false));
-    wf::get_core().transfer_grab(*inert);
+    core.transfer_grab(*inert);
     // The transfer also took keyboard focus and made the inert node an explicit pointer grab: an
     // input-state update ends that grab (the node isn't in the scene) and refocus restores keys.
-    wf::scene::update(wf::get_core().scene(), wf::scene::update_flag::INPUT_STATE);
-    wf::get_core().seat->refocus();
+    wf::scene::update(core.scene(), wf::scene::update_flag::INPUT_STATE);
+    core.seat->refocus();
+    if (restore_active_view && active_view->is_mapped())
+    {
+        core.seat->focus_view(active_view);
+    }
 }
 
 /**
@@ -934,6 +987,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> goo_dye_density{"scottland/goo_dye_density"};
     // Keep parsing the historical key so existing user config still opts in.
     wf::option_wrapper_t<bool> hint_avoidance_always{"scottland/hint_avoidance_always"};
+    wf::option_wrapper_t<std::string> agentd_hub_url{"scottland/agentd_hub_url"};
     wf::option_wrapper_t<std::string> color_scheme{"scottland/color_scheme"};
     wf::option_wrapper_t<wf::color_t> accent_color{"scottland/accent_color"};
     wf::option_wrapper_t<wf::color_t> attention_color{"scottland/attention_color"};
@@ -966,7 +1020,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         scottland::palette.unfocused_edge_tone_light = unfocused_edge_tone_light;
         scottland::palette.unfocused_edge_tone_dark = unfocused_edge_tone_dark;
         scottland::palette.unfocused_edge_strength = unfocused_edge_strength;
-        scottland::palette.hint_tint = window_mode_tint_strength();
         scottland::palette.dye_strength = std::clamp(float(goo_dye_density), 0.f, 1.5f);
         wf::color_t accent = accent_color;
         scottland::palette.accent = {accent.r, accent.g, accent.b};
@@ -1187,8 +1240,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return place_at(output, x, output->get_relative_geometry().width);
     }
 
-    // Fullscreen views have no Scottland frame. Give only excluded fullscreen views a separate
-    // opacity transformer, so leaving the filter restores Wayfire's normal fullscreen rendering.
+    // Fullscreen surfaces have no Scottland frame. A filter-only view transformer
+    // hides excluded fullscreen windows and is removed when they match or the mode ends.
     struct fullscreen_filter_visual_t
     {
         std::weak_ptr<wf::view_interface_t> view;
@@ -1198,6 +1251,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void set_fullscreen_filter_hidden(wayfire_toplevel_view view, bool hidden)
     {
+        if (!view) return;
         auto found = fullscreen_filter_visuals.find(view->get_id());
         if (found != fullscreen_filter_visuals.end())
         {
@@ -1218,18 +1272,36 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         view->get_transformed_node()->add_transformer(opacity, wf::TRANSFORMER_HIGHLEVEL,
             "scottland-filter-fullscreen");
         view->damage();
-        fullscreen_filter_visuals.emplace(view->get_id(), fullscreen_filter_visual_t{view->weak_from_this(), opacity});
+        fullscreen_filter_visuals.emplace(view->get_id(),
+            fullscreen_filter_visual_t{view->weak_from_this(), opacity});
+    }
+
+    void clear_window_filter_fullscreen_visuals()
+    {
+        while (!fullscreen_filter_visuals.empty())
+        {
+            auto found = fullscreen_filter_visuals.begin();
+            if (auto view = found->second.view.lock())
+            {
+                view->damage();
+                view->get_transformed_node()->rem_transformer("scottland-filter-fullscreen");
+                view->damage();
+            }
+            fullscreen_filter_visuals.erase(found);
+        }
     }
 
     bool matches_window_filter(wayfire_toplevel_view view)
     {
         if (!view) return false;
-        auto link = link_of_widget(view);
-        if (!link) link = link_of_window(view);
+        auto widget = link_of_widget(view);
+        auto link = widget ? widget : link_of_window(view);
         if (!link) return window_filter.matches(view->get_title(), view->get_app_id());
         if (window_filter.matches(view->get_title(), view->get_app_id(), link->name)) return true;
-        auto partner = link_of_widget(view) ?
-            wf::toplevel_cast(view_by_id(link->window_id)) :
+
+        // A card and its hidden application window are one filter target: either side's
+        // user-facing identity can keep that target visible.
+        auto partner = widget ? wf::toplevel_cast(view_by_id(link->window_id)) :
             wf::toplevel_cast(link->widget.lock());
         return partner && window_filter.matches(partner->get_title(), partner->get_app_id());
     }
@@ -1244,8 +1316,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!frame) return;
         bool focused = wf::get_core().seat->get_active_view() == view;
         double target;
+        auto state = model.windows.find(view->get_id());
+        auto opacity_mode = state == model.windows.end() ? opacity_override_t::none : state->second.opacity_override;
+        // An active Window-mode filter controls rendered visibility before the
+        // user's retained per-window override. Clearing or exiting the filter
+        // reapplies that override without losing it.
         if (excluded)
             target = 0.0;
+        else if (opacity_mode == opacity_override_t::opaque)
+            target = 1.0;
+        else if (opacity_mode == opacity_override_t::translucent)
+            target = focused ? TRANSPARENCY_FOCUSED_OPACITY : TRANSPARENCY_UNFOCUSED_OPACITY;
+        // Without a user override, preserve pairing's one-time opaque presentation.
         else if (untouched_since_pairing(view))
             target = 1.0;  // pairing shows both fully opaque, once (WK36)
         else if (window_keys.active)
@@ -1399,6 +1481,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
 
+        update_note_visuals();
         return !transitions.empty();
     }
 
@@ -1616,12 +1699,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto link = link_of_widget(active);
             clear_attention(link ? link->window_id : active->get_id());
         }
+        update_note_visuals();
     };
     wf::signal::connection_t<wf::view_unmapped_signal> on_unmapped =
         [=] (wf::view_unmapped_signal *ev)
     {
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
+            spread_mapped_views.erase(toplevel->get_id());
             auto disappearing_card = link_of_widget(toplevel);
             bool lost_entry = disappearing_card && entering_widget(disappearing_card->window_id);
             if (model.drag.rail.presentation.is_active() &&
@@ -1637,6 +1722,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             stop_widget_transition(toplevel);
             set_fullscreen_filter_hidden(toplevel, false);
             model.windows.erase(toplevel->get_id());
+            model.notes.erase(toplevel->get_id());
+            note_panel_layout_cache.erase(toplevel->get_id());
+            clear_note_dot(toplevel->get_id());
             render_hidden(toplevel, false);  // return our lease even if Wayfire already unmapped it
             if (auto frame = frame_of(toplevel, false))
             {
@@ -1650,7 +1738,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 transition_widget(*link, widget_link_t::lifecycle_t::closing);  // if it maps again, it's an ordinary window
                 auto widget = wf::toplevel_cast(link->widget.lock());
                 auto launcher = link->launcher;
-                model.widgets.erase(uint64_t(link->window_id));
+                erase_widget_link(uint64_t(link->window_id));
                 announce_widgets();
                 close_view_or_process(widget, launcher);
             } else if (auto link = link_of_widget(toplevel))
@@ -1660,14 +1748,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     auto launcher = link->launcher;
                     transition_widget(*link, widget_link_t::lifecycle_t::restoring);
                     model.windows[link->window_id].pending_rail.reset();
-                    model.widgets.erase(uint64_t(link->window_id));
+                    erase_widget_link(uint64_t(link->window_id));
                     end_process(launcher, 0);
                     announce_widgets();
                 } else if (!link->docked())  // a preview going is no reason to close the app
                 {
                     auto launcher = link->launcher;
                     bool preview  = link->previewing();
-                    model.widgets.erase(uint64_t(link->window_id));
+                    erase_widget_link(uint64_t(link->window_id));
                     if (preview)
                     {
                         end_process(launcher, 0);  // whatever else it started goes with it
@@ -1683,6 +1771,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         publish_model();
+        update_note_visuals();
         refresh_layout_avoidance();
     };
     wf::wl_idle_call idle_focus;
@@ -1757,6 +1846,46 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::optional<double> pin;
     };
 
+    struct provenance_record_t
+    {
+        std::optional<std::string> name, sender, launcher, knock;
+        int64_t launched_at = 0;
+
+        wf::json_t snapshot() const
+        {
+            wf::json_t result;
+            if (name) result["name"] = *name;
+            if (sender) result["sender"] = *sender;
+            if (launcher) result["launcher"] = *launcher;
+            result["launched_at"] = launched_at;
+            if (knock) result["knock"] = *knock;
+            return result;
+        }
+    };
+
+    struct provenance_pending_t
+    {
+        provenance_record_t record;
+        pid_t pid = 0;
+        uint64_t start_ticks = 0;
+        uint64_t accepted_monotonic_ms = 0;
+        uint64_t sequence = 0;
+        std::vector<scottland::window_notes::note_t> staged_notes;
+    };
+
+    struct process_identity_t
+    {
+        pid_t parent = 0;
+        uint64_t start_ticks = 0;
+        char state = 'X';
+    };
+
+    struct pending_activation_surface_t
+    {
+        std::vector<std::string> tokens;
+        wf::wl_listener_wrapper destroyed;
+    };
+
     struct window_state_t
     {
         std::weak_ptr<wf::view_interface_t> view;
@@ -1767,9 +1896,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double scale = 1.0;                           // target, never an animation sample
         bool focused = false;
         bool above = false;
+        opacity_override_t opacity_override = opacity_override_t::none;
         std::optional<double> pinned_scale;          // kept by Shift during drag or arrow motion (L31)
         std::optional<scottland::windowing::window_memory> placement;
         std::optional<paired_placement_t> paired_placement;
+        std::optional<provenance_record_t> provenance;
         std::optional<scottland::windowing::point> pending_rail; // refine on widget adoption
         std::set<std::string> attention;
     };
@@ -1864,6 +1995,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint64_t version = 0;
         std::string session;
         std::map<uint64_t, window_state_t> windows;
+        std::map<uint64_t, std::vector<scottland::window_notes::note_t>> notes;
+        int64_t next_note_id = 1;
         std::map<uint64_t, widget_link_t> widgets;    // keyed by the app window
         widget_mode_t widget_mode = widget_mode_t::expanded;  // the mode taps choose; survives a reload
         std::optional<widget_mode_t> widget_mode_held;        // Super+M held: momentary until released
@@ -1873,6 +2006,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::set<uint64_t> selected;                 // reserved for future multi-select
         std::set<wf::output_t*> focused_outputs;     // a fullscreen window in front: focus (FS1)
     } model;
+    #include "window-notes-bridge.hpp"
+    // Provenance declarations live only in the plugin. Bound records are part of window_state_t;
+    // pending declarations and their xdg tokens expire together and are never written to disk.
+    std::map<std::string, provenance_pending_t> pending_provenance;
+    std::map<std::string, uint64_t> provenance_tokens_expire_at;
+    std::map<wlr_surface*, std::shared_ptr<pending_activation_surface_t>> pending_activation_surfaces;
+    uint64_t provenance_sequence = 0;
+    wf::wl_timer<false> provenance_expiration;
+    std::map<uint64_t, uint64_t> widget_view_owners; // widget view id -> owning app window id
+    std::map<uint64_t, uint64_t> widget_view_ids;    // owning app window id -> widget view id
     struct rail_layout_motion_t
     {
         std::weak_ptr<wf::view_interface_t> view;
@@ -2099,6 +2242,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         state.above = view->has_data("wm-actions-above");
         state.zone = placement_of(view).zone;
         state.focused = wf::get_core().seat->get_active_view() == view;
+        index_spread_view(view);
     }
 
     void move_window(wayfire_toplevel_view view, double x, double y)
@@ -2374,6 +2518,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         model.widget_mode = mode;
         model.widget_mode_held.reset();
         apply_widget_mode(true);
+        update_note_visuals();
     }
 
     /** The mode shown now: a held Super+M's, else the chosen one (Window mode expands on top). */
@@ -2428,6 +2573,352 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // global for apps to bind.
     wlr_xdg_activation_v1 *activation = nullptr;
     wf::wl_listener_wrapper on_activate;
+    static constexpr uint64_t PROVENANCE_TTL_MS = 60000;
+
+    static std::optional<process_identity_t> read_process_identity(pid_t pid)
+    {
+        if (pid <= 1) return std::nullopt;
+        std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+        std::string line;
+        if (!std::getline(stat, line)) return std::nullopt;
+        auto close = line.rfind(')');
+        if (close == std::string::npos) return std::nullopt;
+
+        std::istringstream fields(line.substr(close + 1));
+        char state = 'X';
+        long long parent = 0;
+        if (!(fields >> state >> parent) || parent < 0 || parent > std::numeric_limits<pid_t>::max())
+            return std::nullopt;
+        std::string ignored;
+        for (int field = 5; field <= 21; ++field)
+            if (!(fields >> ignored)) return std::nullopt;
+        uint64_t start_ticks = 0;
+        if (!(fields >> start_ticks) || state == 'Z' || state == 'X') return std::nullopt;
+        return process_identity_t{static_cast<pid_t>(parent), start_ticks, state};
+    }
+
+    static bool sender_rest_has_space_or_control(const std::string& value)
+    {
+        auto unicode_space = [] (uint32_t cp)
+        {
+            return cp == 0x0085 || cp == 0x00a0 || cp == 0x1680 ||
+                (cp >= 0x2000 && cp <= 0x200a) || cp == 0x2028 || cp == 0x2029 ||
+                cp == 0x202f || cp == 0x205f || cp == 0x3000;
+        };
+        for (size_t i = 0; i < value.size(); )
+        {
+            auto first = static_cast<unsigned char>(value[i]);
+            uint32_t cp = 0;
+            size_t width = 0;
+            if (first < 0x80)
+            {
+                cp = first;
+                width = 1;
+            } else if ((first & 0xe0) == 0xc0)
+            {
+                cp = first & 0x1f;
+                width = 2;
+            } else if ((first & 0xf0) == 0xe0)
+            {
+                cp = first & 0x0f;
+                width = 3;
+            } else if ((first & 0xf8) == 0xf0)
+            {
+                cp = first & 0x07;
+                width = 4;
+            } else
+            {
+                return true;  // invalid UTF-8 is not a sender id
+            }
+            if (i + width > value.size()) return true;
+            for (size_t j = 1; j < width; ++j)
+            {
+                auto next = static_cast<unsigned char>(value[i + j]);
+                if ((next & 0xc0) != 0x80) return true;
+                cp = (cp << 6) | (next & 0x3f);
+            }
+            if ((width == 2 && cp < 0x80) || (width == 3 && cp < 0x800) ||
+                (width == 4 && cp < 0x10000) || cp > 0x10ffff ||
+                (cp >= 0xd800 && cp <= 0xdfff)) return true;
+            if (cp <= 0x20 || (cp >= 0x7f && cp <= 0x9f) || unicode_space(cp)) return true;
+            i += width;
+        }
+        return false;
+    }
+
+    static bool valid_sender_id(const std::string& value)
+    {
+        auto colon = value.find(':');
+        if (colon == std::string::npos || colon == 0 || colon + 1 == value.size()) return false;
+        auto first = static_cast<unsigned char>(value[0]);
+        if (first < 'a' || first > 'z') return false;
+        for (size_t i = 0; i < colon; ++i)
+        {
+            auto c = static_cast<unsigned char>(value[i]);
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                c == '+' || c == '.' || c == '-')) return false;
+        }
+        return !sender_rest_has_space_or_control(value);
+    }
+
+    void clear_pending_surface_token(const std::string& token)
+    {
+        for (auto it = pending_activation_surfaces.begin(); it != pending_activation_surfaces.end(); )
+        {
+            auto& tokens = it->second->tokens;
+            tokens.erase(std::remove(tokens.begin(), tokens.end(), token), tokens.end());
+            if (tokens.empty()) it = pending_activation_surfaces.erase(it);
+            else ++it;
+        }
+    }
+
+    void destroy_activation_token(const std::string& token)
+    {
+        if (!activation) return;
+        auto existing = wlr_xdg_activation_v1_find_token(activation, token.c_str());
+        if (existing) wlr_xdg_activation_token_v1_destroy(existing);
+    }
+
+    void arm_provenance_expiration()
+    {
+        if (provenance_tokens_expire_at.empty())
+        {
+            provenance_expiration.disconnect();
+            return;
+        }
+        auto earliest = std::min_element(provenance_tokens_expire_at.begin(), provenance_tokens_expire_at.end(),
+            [] (const auto& a, const auto& b) { return a.second < b.second; })->second;
+        auto now = monotonic_msec64();
+        auto delay = std::max<uint64_t>(1, earliest > now ? earliest - now : 1);
+        provenance_expiration.set_timeout(static_cast<int>(std::min<uint64_t>(delay, INT_MAX)), [=] ()
+        {
+            expire_provenance_tokens();
+        });
+    }
+
+    void expire_provenance_tokens()
+    {
+        auto now = monotonic_msec64();
+        for (auto it = provenance_tokens_expire_at.begin(); it != provenance_tokens_expire_at.end(); )
+        {
+            if (it->second > now) { ++it; continue; }
+            const auto token = it->first;
+            pending_provenance.erase(token);
+            clear_pending_surface_token(token);
+            it = provenance_tokens_expire_at.erase(it);
+            destroy_activation_token(token);
+        }
+        arm_provenance_expiration();
+    }
+
+    wf::json_t declare_provenance(wf::json_t data)
+    {
+        if (!data.is_object() || !data.has_member("pid") || !data["pid"].is_int64())
+            return wf::ipc::json_error("provenance declaration needs integer \"pid\"");
+        if (data.has_member("launched_at"))
+            return wf::ipc::json_error("launched_at is set by Scottland and cannot be declared");
+
+        size_t expected_fields = 1;
+        for (auto key : {"name", "sender", "launcher", "knock"})
+        {
+            if (!data.has_member(key)) continue;
+            ++expected_fields;
+            if (!data[key].is_string() || data[key].as_string().empty())
+                return wf::ipc::json_error(std::string("provenance field \"") + key + "\" must be a non-empty string");
+            if (std::string(key) == "sender" && !valid_sender_id(data[key].as_string()))
+                return wf::ipc::json_error("sender must be a sender id with a namespace and non-empty rest");
+        }
+        if (data.size() != expected_fields)
+            return wf::ipc::json_error("provenance declaration has an unknown field");
+
+        auto raw_pid = data["pid"].as_int64();
+        if (raw_pid <= 1 || raw_pid > std::numeric_limits<pid_t>::max())
+            return wf::ipc::json_error("pid must name a live process");
+        auto pid = static_cast<pid_t>(raw_pid);
+        auto identity = read_process_identity(pid);
+        if (!identity) return wf::ipc::json_error("pid must name a live process");
+        if (!activation)
+            return wf::ipc::json_error("xdg-activation is unavailable for provenance tokens");
+
+        provenance_record_t record;
+        if (data.has_member("name")) record.name = data["name"].as_string();
+        if (data.has_member("sender")) record.sender = data["sender"].as_string();
+        if (data.has_member("launcher")) record.launcher = data["launcher"].as_string();
+        if (data.has_member("knock")) record.knock = data["knock"].as_string();
+
+        wlr_xdg_activation_token_v1 *created = nullptr;
+        const auto prior_timeout = activation->token_timeout_msec;
+        activation->token_timeout_msec = PROVENANCE_TTL_MS;
+        created = wlr_xdg_activation_token_v1_create(activation);
+        activation->token_timeout_msec = prior_timeout;
+        if (!created)
+            return wf::ipc::json_error("could not create a provenance activation token");
+        const char *token_name = wlr_xdg_activation_token_v1_get_name(created);
+        if (!token_name || !*token_name)
+        {
+            wlr_xdg_activation_token_v1_destroy(created);
+            return wf::ipc::json_error("could not name a provenance activation token");
+        }
+        std::string token(token_name);
+        if (provenance_tokens_expire_at.count(token))
+        {
+            wlr_xdg_activation_token_v1_destroy(created);
+            return wf::ipc::json_error("wlroots returned a duplicate provenance activation token");
+        }
+
+        auto accepted = monotonic_msec64();
+        record.launched_at = unix_msec();
+        pending_provenance.emplace(token, provenance_pending_t{
+            record, pid, identity->start_ticks, accepted, ++provenance_sequence});
+        provenance_tokens_expire_at.emplace(token, accepted + PROVENANCE_TTL_MS);
+        arm_provenance_expiration();
+        auto reply = wf::ipc::json_ok();
+        reply["token"] = token;
+        reply["launched_at"] = record.launched_at;
+        return reply;
+    }
+
+    void forget_pending_activation_surface(wlr_surface *surface)
+    {
+        auto found = pending_activation_surfaces.find(surface);
+        if (found != pending_activation_surfaces.end()) pending_activation_surfaces.erase(found);
+    }
+
+    void remember_pending_activation_surface(wlr_surface *surface, const std::string& token)
+    {
+        if (!surface) return;
+        auto found = pending_activation_surfaces.find(surface);
+        if (found == pending_activation_surfaces.end())
+        {
+            auto pending_surface = std::make_shared<pending_activation_surface_t>();
+            pending_surface->destroyed.set_callback([=] (void*)
+            {
+                pending_activation_surfaces.erase(surface);
+            });
+            pending_surface->destroyed.connect(&surface->events.destroy);
+            found = pending_activation_surfaces.emplace(surface, std::move(pending_surface)).first;
+        }
+        found->second->tokens.push_back(token);
+    }
+
+    void discard_pending_provenance(const std::string& token)
+    {
+        pending_provenance.erase(token);
+        clear_pending_surface_token(token);
+        // Keep the token in the suppression set through its original expiry. It must never
+        // fall back to ordinary activation after its one provenance binding was consumed.
+        arm_provenance_expiration();
+    }
+
+    bool bind_provenance(const std::string& token, wayfire_toplevel_view view)
+    {
+        auto pending = pending_provenance.find(token);
+        if (pending == pending_provenance.end() || !view || !view->is_mapped()) return false;
+        observe_view(view);
+        auto& state = model.windows[view->get_id()];
+        if (!state.provenance)
+        {
+            state.provenance = pending->second.record;
+            auto staged_notes = std::move(pending->second.staged_notes);
+            if (!staged_notes.empty())
+            {
+                auto& notes = model.notes[view->get_id()];
+                for (auto& note : staged_notes) notes.push_back(std::move(note));
+                note_panel_layout_cache.erase(view->get_id());
+            }
+            discard_pending_provenance(token);
+            publish_model();
+            if (!staged_notes.empty()) update_note_visuals();
+            return true;
+        }
+        discard_pending_provenance(token);
+        return true;
+    }
+
+    bool bind_pending_activation_on_map(wayfire_toplevel_view view)
+    {
+        auto surface = view ? view->get_wlr_surface() : nullptr;
+        auto found = surface ? pending_activation_surfaces.find(surface) : pending_activation_surfaces.end();
+        if (found == pending_activation_surfaces.end()) return false;
+        auto tokens = found->second->tokens;
+        forget_pending_activation_surface(surface);
+        expire_provenance_tokens();
+        bool handled = false;
+        for (const auto& token : tokens)
+        {
+            auto known = provenance_tokens_expire_at.find(token);
+            if (known == provenance_tokens_expire_at.end()) continue;
+            if (pending_provenance.count(token))
+                bind_provenance(token, view);
+            handled = true;
+        }
+        arm_provenance_expiration();
+        return handled;
+    }
+
+    bool bind_pending_by_process(wayfire_toplevel_view view)
+    {
+        if (!view || !view->is_mapped() || view->parent) return false;
+        auto state = model.windows.find(view->get_id());
+        if (state == model.windows.end() || state->second.provenance) return false;
+        expire_provenance_tokens();
+
+        std::set<pid_t> visited;
+        pid_t pid = state->second.pid;
+        std::string selected;
+        while (pid > 1 && visited.insert(pid).second)
+        {
+            auto identity = read_process_identity(pid);
+            if (!identity) return false;
+            const provenance_pending_t *newest = nullptr;
+            for (const auto& [token, pending] : pending_provenance)
+            {
+                if (pending.pid == pid && pending.start_ticks == identity->start_ticks &&
+                    (!newest || pending.sequence > newest->sequence))
+                {
+                    newest = &pending;
+                    selected = token;
+                }
+            }
+            if (newest) break;  // the first match is the nearest declared ancestor
+            pid = identity->parent;
+        }
+        if (selected.empty()) return false;
+        return bind_provenance(selected, view);
+    }
+
+    bool handle_provenance_activation(wlr_surface *surface, wlr_xdg_activation_token_v1 *token,
+        wayfire_toplevel_view view)
+    {
+        if (!token) return false;
+        const char *name = wlr_xdg_activation_token_v1_get_name(token);
+        if (!name || !*name) return false;
+        const std::string token_name(name);
+        auto known = provenance_tokens_expire_at.find(token_name);
+        if (known == provenance_tokens_expire_at.end())
+        {
+            expire_provenance_tokens();
+            return false;
+        }
+        if (known->second <= monotonic_msec64())
+        {
+            expire_provenance_tokens();
+            return true;  // stale provenance tokens never regain ordinary activation effects
+        }
+        expire_provenance_tokens();
+        auto pending = pending_provenance.find(token_name);
+        if (pending == pending_provenance.end())
+        {
+            return true;  // a PV-5-bound token still has no activation side effects
+        }
+        if (view && view->is_mapped())
+        {
+            bind_provenance(token_name, view);
+            return true;
+        }
+        remember_pending_activation_surface(surface, token_name);
+        return true;
+    }
 
     void start_activation()
     {
@@ -2455,6 +2946,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             auto ev = static_cast<wlr_xdg_activation_v1_request_activate_event*>(data);
             auto view = wf::toplevel_cast(ev->surface ? wf::wl_surface_to_wayfire_view(ev->surface->resource) : nullptr);
+            if (handle_provenance_activation(ev->surface, ev->token, view)) return;
             if (view && view->is_mapped())
             {
                 handle_activation(view, ev->token);
@@ -2680,17 +3172,46 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return found == model.widgets.end() ? nullptr : &found->second;
     }
 
+    void forget_widget_view(uint64_t window_id)
+    {
+        auto indexed = widget_view_ids.find(window_id);
+        if (indexed == widget_view_ids.end()) return;
+        auto owner = widget_view_owners.find(indexed->second);
+        if (owner != widget_view_owners.end() && owner->second == window_id)
+            widget_view_owners.erase(owner);
+        widget_view_ids.erase(indexed);
+    }
+
+    void index_widget_view(uint64_t window_id)
+    {
+        forget_widget_view(window_id);
+        auto link = model.widgets.find(window_id);
+        if (link == model.widgets.end()) return;
+        if (auto widget = link->second.widget.lock())
+        {
+            widget_view_owners[widget->get_id()] = window_id;
+            widget_view_ids[window_id] = widget->get_id();
+        }
+    }
+
+    void erase_widget_link(uint64_t window_id)
+    {
+        forget_widget_view(window_id);
+        model.widgets.erase(window_id);
+    }
+
     widget_link_t *link_of_widget(wayfire_view view)
     {
-        for (auto& [id, link] : model.widgets)
+        if (!view) return nullptr;
+        auto owner = widget_view_owners.find(view->get_id());
+        if (owner == widget_view_owners.end()) return nullptr;
+        auto found = model.widgets.find(owner->second);
+        if (found == model.widgets.end() || found->second.widget.lock().get() != view.get())
         {
-            if (view && (link.widget.lock().get() == view.get()))
-            {
-                return &link;
-            }
+            forget_widget_view(owner->second);
+            return nullptr;
         }
-
-        return nullptr;
+        return &found->second;
     }
 
     bool is_widget(wayfire_view view)
@@ -3000,7 +3521,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
 
-        model.widgets[link.window_id] = std::move(link);
+        auto window_id = link.window_id;
+        model.widgets[window_id] = std::move(link);
+        index_widget_view(window_id);
         announce_widgets();
 
         if (!widget_watchdog.is_connected())
@@ -3022,6 +3545,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 transition_widget(link, widget_link_t::lifecycle_t::restoring);
                 model.windows[link.window_id].pending_rail.reset();
                 end_process(link.launcher, 0);  // a late widget would show up unlinked
+                forget_widget_view(link.window_id);
                 it = model.widgets.erase(it);
                 announce_widgets();
                 continue;
@@ -3050,6 +3574,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             link.widget = view->weak_from_this();
+            index_widget_view(link.window_id);
             set_scale(view, 1.0);
             if (link.previewing())
             {
@@ -3218,6 +3743,38 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!entries.is_array())
         {
             model.version = std::max(model.version, (uint64_t)entries["version"].as_int64());
+            if (entries.has_member("next_note_id") && entries["next_note_id"].is_int())
+                model.next_note_id = std::max<int64_t>(1, entries["next_note_id"].as_int64());
+            if (entries.has_member("notes") && entries["notes"].is_array())
+            {
+                auto saved_notes = entries["notes"];
+                for (size_t i = 0; i < saved_notes.size(); ++i)
+                {
+                    auto saved_window = saved_notes[i];
+                    if (!saved_window.has_member("id") || !saved_window["id"].is_int()) continue;
+                    const auto window_id = saved_window["id"].as_int64();
+                    if (window_id <= 0 || !model.windows.count(uint64_t(window_id)) ||
+                        !saved_window.has_member("notes") || !saved_window["notes"].is_array()) continue;
+                    auto saved_list = saved_window["notes"];
+                    auto& notes = model.notes[uint64_t(window_id)];
+                    for (size_t j = 0; j < saved_list.size(); ++j)
+                    {
+                        auto saved = saved_list[j];
+                        if (!saved.has_member("id") || !saved["id"].is_int() ||
+                            !saved.has_member("writer") || !saved["writer"].is_string() ||
+                            !saved.has_member("text") || !saved["text"].is_string()) continue;
+                        scottland::window_notes::note_t note{saved["id"].as_int64(),
+                            saved["writer"].as_string(), saved["text"].as_string()};
+                        if (note.id <= 0 || !scottland::window_notes::valid_writer(note.writer) ||
+                            !scottland::window_notes::valid_text(note.text)) continue;
+                        notes.push_back(note);
+                        if (note.id < std::numeric_limits<int64_t>::max())
+                            model.next_note_id = std::max(model.next_note_id, note.id + 1);
+                    }
+
+                    if (notes.empty()) model.notes.erase(uint64_t(window_id));
+                }
+            }
             auto mode = entries.has_member("widget_mode") ?
                 parse_widget_mode(entries["widget_mode"].as_string()) : std::nullopt;
             model.widget_mode = mode ? *mode :
@@ -3234,6 +3791,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 }
                 found->second.scale = entry["scale"].as_double();
                 if (entry.has_member("placement")) found->second.placement = read_memory(entry["placement"]);
+                if (entry.has_member("provenance") && entry["provenance"].is_object() &&
+                    entry["provenance"].has_member("launched_at") && entry["provenance"]["launched_at"].is_int64())
+                {
+                    auto value = entry["provenance"];
+                    provenance_record_t record;
+                    if (value.has_member("name") && value["name"].is_string()) record.name = value["name"].as_string();
+                    if (value.has_member("sender") && value["sender"].is_string()) record.sender = value["sender"].as_string();
+                    if (value.has_member("launcher") && value["launcher"].is_string()) record.launcher = value["launcher"].as_string();
+                    if (value.has_member("knock") && value["knock"].is_string()) record.knock = value["knock"].as_string();
+                    record.launched_at = value["launched_at"].as_int64();
+                    found->second.provenance = std::move(record);
+                }
                 if (entry.has_member("pending_rail")) found->second.pending_rail = scottland::windowing::point{
                     entry["pending_rail"]["x"].as_double(), entry["pending_rail"]["y"].as_double()};
                 if (entry.has_member("pinned_scale") && entry["pinned_scale"].is_double())
@@ -3317,7 +3886,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             watch_process(process);
             link.launcher = process;
-            model.widgets[link.window_id] = std::move(link);
+            auto window_id = link.window_id;
+            model.widgets[window_id] = std::move(link);
+            index_widget_view(window_id);
             keep_above(widget);
             set_scale(widget, 1.0);
             place_widget(widget, widget->get_output(), model.widgets[window->get_id()]);
@@ -3584,6 +4155,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             } else ++it;
         }
 
+        update_note_visuals();
         return !rail_layout_motions.empty();
     }
 
@@ -4050,7 +4622,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto widget   = wf::toplevel_cast(link.widget.lock());
         auto launcher = link.launcher;
         transition_widget(link, widget_link_t::lifecycle_t::restoring);
-        model.widgets.erase(uint64_t(link.window_id));  // `link` is gone from here on
+        erase_widget_link(uint64_t(link.window_id));  // `link` is gone from here on
         close_view_or_process(widget, launcher);
         announce_widgets();
     }
@@ -4092,7 +4664,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint64_t id = link.window_id;
         auto launcher = link.launcher;
         close_view_or_process(widget, launcher);
-        model.widgets.erase(id);
+        erase_widget_link(id);
         announce_widgets();
     }
 
@@ -4104,7 +4676,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto launcher = link.launcher;
         // Shown again first: if the app asks before closing (unsaved work), the question is visible.
         transition_widget(link, widget_link_t::lifecycle_t::closing);
-        model.widgets.erase(uint64_t(link.window_id));  // `link` is gone from here on
+        erase_widget_link(uint64_t(link.window_id));  // `link` is gone from here on
         announce_widgets();
         close_view_or_process(widget, launcher);
         if (window)
@@ -4254,6 +4826,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::json_t model_snapshot(const std::string& slice)
     {
+        if (slice == "notes") return notes_slice_snapshot();
         auto reply = wf::ipc::json_ok();
         reply["collapsed"] = model.widget_mode == widget_mode_t::collapsed;
         reply["widget_mode"] = widget_mode_name(model.widget_mode);
@@ -4284,6 +4857,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 sources.append(source);
             }
             entry["attention"] = sources;
+            entry["opacity_override"] = opacity_override_name(state.opacity_override);
             if (slice != "attention")
             {
                 entry["app_id"] = state.app_id;
@@ -4298,6 +4872,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["collapsed"] = represented && represented->collapsed;
                 if (slice == "desktop")
                 {
+                    if (state.provenance) entry["provenance"] = state.provenance->snapshot();
                     if (model.drag.morph && model.drag.morph->dragged.lock().get() == state.view.lock().get())
                     {
                         entry["form"] = "morphing";
@@ -4381,10 +4956,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     bool installing_model = true;  // no partial init/handover snapshots escape
     std::map<std::string, std::string> published_slices;
     std::map<std::string, uint64_t> published_versions;
+    uint64_t published_version(const std::string& slice) const
+    {
+        auto found = published_versions.find(slice);
+        return found == published_versions.end() ? model.version : found->second;
+    }
     // A transaction that changes many windows at once (a spread commit) publishes the model once
     // at its end instead of once per change: each publish serializes the whole desktop.
     int publish_batch = 0;
     bool publish_pending = false;
+    bool publish_force_notes_pending = false;
     struct publish_batch_t
     {
         scottland_plugin_t *self;
@@ -4394,12 +4975,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (--self->publish_batch == 0 && self->publish_pending)
             {
                 self->publish_pending = false;
-                self->publish_model();
+                const bool force_notes = self->publish_force_notes_pending;
+                self->publish_force_notes_pending = false;
+                self->publish_model(force_notes);
             }
         }
     };
 
-    void publish_model()
+    void publish_model(bool force_notes = false)
     {
         if (installing_model)
         {
@@ -4409,44 +4992,41 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (publish_batch)
         {
             publish_pending = true;
+            publish_force_notes_pending = publish_force_notes_pending || force_notes;
             return;
         }
 
-        auto full = model_snapshot("desktop");
-        auto text = full.serialize();
-        if (published_slices["desktop"] == text)
-        {
-            return;
-        }
-
-        model.version++;
-        published_slices["desktop"] = text;
-        full["version"] = (int64_t)model.version;
-        send_ipc_event(full, "scottland-model#");
-        for (auto slice : {"widgets", "attention"})
+        std::map<std::string, wf::json_t> changed;
+        for (auto slice : {"desktop", "widgets", "attention", "notes"})
         {
             auto snapshot = model_snapshot(slice);
             auto value = snapshot.serialize();
-            if (published_slices[slice] != value)
-            {
-                published_slices[slice] = value;
-                published_versions[slice] = model.version;
-                snapshot["version"] = (int64_t)model.version;
-                send_ipc_event(snapshot, std::string("scottland-") + slice + "#");
-            }
+            if ((std::string(slice) == "notes" && force_notes) || published_slices[slice] != value)
+                changed.emplace(slice, std::move(snapshot));
+        }
+
+        if (changed.empty()) return;
+        model.version++;
+        for (auto& [slice, snapshot] : changed)
+        {
+            published_slices[slice] = model_snapshot(slice).serialize();
+            published_versions[slice] = model.version;
+            snapshot["version"] = (int64_t)model.version;
+            const std::string event = slice == "desktop" ? "scottland-model#" : "scottland-" + slice + "#";
+            send_ipc_event(snapshot, event);
         }
     }
 
     wf::ipc::method_callback desktop_state = [=] (wf::json_t data) -> wf::json_t
     {
         std::string slice = data.has_member("slice") && data["slice"].is_string() ? data["slice"].as_string() : "desktop";
-        if ((slice != "desktop") && (slice != "widgets") && (slice != "attention"))
+        if ((slice != "desktop") && (slice != "widgets") && (slice != "attention") && (slice != "notes"))
         {
             return wf::ipc::json_error("unknown desktop-model slice");
         }
 
         auto reply = model_snapshot(slice);
-        reply["version"] = (int64_t)model.version;
+        reply["version"] = (int64_t)published_version(slice);
         return reply;
     };
     wf::ipc::method_callback_full subscribe_model = [=] (wf::json_t data, wf::ipc::client_interface_t *client) -> wf::json_t
@@ -4476,7 +5056,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         auto reply = wf::ipc::json_ok();
         reply["widgets"] = widget_snapshot();
-        reply["version"] = (int64_t)model.version;
+        reply["version"] = (int64_t)published_version("widgets");
         return reply;
     };
 
@@ -4702,6 +5282,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         link.icon = data["icon"].as_string();
         link.card = data.has_member("card") && data["card"].as_bool();
         publish_model();
+        if (window_keys.active && !window_filter.query.empty()) update_window_filter();
         return wf::ipc::json_ok();
     };
 
@@ -4971,16 +5552,33 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     }
 
     // Touchpad window gestures (L23, L24). A three-finger swipe moves the window under the pointer
-    // through the same live drag as Super+drag; a
-    // three-finger click-drag (clickfinger's middle button) resizes it around its center. A
-    // three-finger click that doesn't move stays a middle click, replayed to the app on release.
+    // through the same live drag as Super+drag. A middle press from any pointer source waits for a
+    // click or a move; touchpad_gestures only controls the separate swipe and hold gestures.
     wf::option_wrapper_t<bool> touchpad_gestures{"scottland/touchpad_gestures"};
     bool swipe_moving = false;
     bool middle_pending  = false;
-    bool middle_resizing = false;
+    bool middle_dragging = false;
+    bool middle_consumed = false;
     wf::pointf_t middle_origin;
     std::weak_ptr<wf::view_interface_t> middle_view;
+    wlr_input_device *middle_device = nullptr;
+    wlr_surface *middle_surface = nullptr;
     bool test_touchpad_pointers = false;  // scottland/test-input: count every pointer as a touchpad
+
+    bool middle_gesture_active() const
+    {
+        return middle_pending || middle_dragging || middle_consumed;
+    }
+
+    void clear_middle_gesture()
+    {
+        middle_pending = false;
+        middle_dragging = false;
+        middle_consumed = false;
+        middle_view.reset();
+        middle_device = nullptr;
+        middle_surface = nullptr;
+    }
 
     bool is_touchpad(wlr_input_device *device)
     {
@@ -5008,6 +5606,51 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         return view;
+    }
+
+    /** The halo can have no pointer focus node or client surface. Resolve that empty scene hit
+     * with the same topmost-frame selection used to track the halo under the cursor. */
+    wayfire_toplevel_view middle_press_target()
+    {
+        auto& core = wf::get_core();
+        auto focus = core.get_cursor_focus();
+        auto hit = core.scene()->find_node_at(core.get_cursor_position());
+        auto frame = focus ? dynamic_cast<scottland::frame_t*>(focus.get()) : nullptr;
+        if (!frame && hit)
+        {
+            frame = dynamic_cast<scottland::frame_t*>(hit->node.get());
+        }
+
+        auto cursor_view = wf::toplevel_cast(core.get_cursor_focus_view());
+        auto view = frame ? frame->toplevel() : (hit ?
+            wf::toplevel_cast(wf::node_to_view(hit->node->shared_from_this())) : cursor_view);
+        if (!focus && !hit && !cursor_view)
+        {
+            auto cursor = core.get_cursor_position();
+            auto output = core.output_layout->find_closest_output(cursor);
+            if (output && !output->is_plugin_active("move") &&
+                !output->is_plugin_active("scottland-resize"))
+            {
+                auto local = cursor - wf::origin(output->get_layout_geometry());
+                auto halo_frame = frame_near(output, local);
+                view = halo_frame ? halo_frame->toplevel() : nullptr;
+            }
+        }
+
+        if (!view || !view->is_mapped() || view->pending_fullscreen() || !frame_of(view, false))
+        {
+            return nullptr;
+        }
+
+        return view;
+    }
+
+    bool pointer_focus_is_layer_shell()
+    {
+        auto seat = wf::get_core().get_current_seat();
+        auto surface = seat ? seat->pointer_state.focused_surface : nullptr;
+        auto root_surface = surface ? wlr_surface_get_root_surface(surface) : nullptr;
+        return root_surface && wlr_layer_surface_v1_try_from_wlr_surface(root_surface);
     }
 
     void swipe_begin(uint32_t fingers)
@@ -5082,7 +5725,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         cancel_touchpad_hold();
         if (!touchpad_gestures || (fingers != 3) || !is_touchpad(device) || drag->view || swipe_moving ||
-            middle_pending || middle_resizing) return;
+            middle_gesture_active()) return;
         auto view = gesture_target();
         if (!view) return;
         auto link = link_of_widget(view);
@@ -5115,70 +5758,128 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_hold_end_event>> on_hold_end =
         [=] (wf::input_event_signal<wlr_pointer_hold_end_event>*) { cancel_touchpad_hold(); };
 
-    void replay_middle_click()
+    void replay_middle_click(wf::pointf_t press, wf::pointf_t release, wlr_surface *recipient,
+        wayfire_toplevel_view target)
     {
+        if (!recipient || !target || !target->is_mapped())
+        {
+            return;
+        }
+
+        auto& core = wf::get_core();
         auto seat = wf::get_core().get_current_seat();
-        uint32_t time = now_msec();
-        wlr_seat_pointer_notify_button(seat, time, BTN_MIDDLE, WL_POINTER_BUTTON_STATE_PRESSED);
-        wlr_seat_pointer_notify_frame(seat);
-        wlr_seat_pointer_notify_button(seat, time, BTN_MIDDLE, WL_POINTER_BUTTON_STATE_RELEASED);
-        wlr_seat_pointer_notify_frame(seat);
+        if (!seat)
+        {
+            return;
+        }
+
+        // A clickfinger release can land over a different client. Refocus the press point, replay
+        // only if the original surface is still the recipient there, then put the cursor back.
+        core.warp_cursor(press);
+        if (seat->pointer_state.focused_surface == recipient)
+        {
+            uint32_t time = now_msec();
+            wlr_seat_pointer_notify_button(seat, time, BTN_MIDDLE, WL_POINTER_BUTTON_STATE_PRESSED);
+            wlr_seat_pointer_notify_frame(seat);
+            wlr_seat_pointer_notify_button(seat, time, BTN_MIDDLE, WL_POINTER_BUTTON_STATE_RELEASED);
+            wlr_seat_pointer_notify_frame(seat);
+        }
+
+        core.warp_cursor(release);
     }
 
-    wf::signal::connection_t<wf::input_event_signal<wlr_pointer_button_event>> on_touchpad_button =
+    wf::signal::connection_t<wf::input_event_signal<wlr_pointer_button_event>> on_middle_button =
         [=] (wf::input_event_signal<wlr_pointer_button_event> *ev)
     {
         if (ev->event->state == WL_POINTER_BUTTON_STATE_PRESSED && is_touchpad(ev->device))
             cancel_touchpad_hold(); // a click came first (L24)
-        if (!touchpad_gestures || (ev->event->button != BTN_MIDDLE) || !is_touchpad(ev->device))
+        if (ev->event->button != BTN_MIDDLE)
         {
             return;
         }
 
         if (ev->event->state == WL_POINTER_BUTTON_STATE_PRESSED)
         {
-            auto view = gesture_target();
-            if (!view || !(view->get_allowed_actions() & wf::VIEW_ALLOW_RESIZE))
+            if ((ev->mode != wf::input_event_processing_mode_t::FULL) || middle_gesture_active() ||
+                !ev->device || drag->view)
             {
-                return;  // an ordinary middle click
+                return;
             }
 
-            // Hold the click until the fingers either move (resize) or lift (middle click).
+            if (pointer_focus_is_layer_shell())
+            {
+                return;  // layer-shell clients are not framed Scottland windows
+            }
+
+            auto view = middle_press_target();
+            auto seat = wf::get_core().get_current_seat();
+            auto recipient = seat ? seat->pointer_state.focused_surface : nullptr;
+            if (!view || !(view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE))
+            {
+                return;  // only a movable framed window can claim the middle press
+            }
+
+            // Withhold a real middle press until it resolves to a click or a live move.
             middle_pending = true;
             middle_origin  = wf::get_core().get_cursor_position();
             middle_view    = view->weak_from_this();
+            middle_device  = ev->device;
+            // A press on the frame halo has no focused client surface, but can still start a
+            // move. replay_middle_click() deliberately ignores a null recipient on release.
+            middle_surface = recipient;
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
-        } else if (middle_pending)
+        } else if ((ev->event->state == WL_POINTER_BUTTON_STATE_RELEASED) && (ev->device == middle_device))
         {
-            middle_pending = false;
-            ev->mode = wf::input_event_processing_mode_t::IGNORE;
-            replay_middle_click();
-        } else if (middle_resizing)
-        {
-            middle_resizing = false;  // the release reaches the resize grab, which ends it
+            if (middle_pending)
+            {
+                auto release = wf::get_core().get_cursor_position();
+                auto press = middle_origin;
+                auto recipient = middle_surface;
+                auto target = wf::toplevel_cast(middle_view.lock());
+                clear_middle_gesture();
+                ev->mode = wf::input_event_processing_mode_t::IGNORE;
+                replay_middle_click(press, release, recipient, target);
+            } else if (middle_dragging)
+            {
+                // The post-event handler ends the drag for this exact owner device.
+                ev->mode = wf::input_event_processing_mode_t::IGNORE;
+            } else if (middle_consumed)
+            {
+                clear_middle_gesture();
+                ev->mode = wf::input_event_processing_mode_t::IGNORE;
+            }
         }
     };
 
-    void check_middle_drag()
+    void check_middle_drag(wlr_input_device *device)
     {
-        if (!middle_pending)
+        if (!middle_pending || (device != middle_device))
         {
             return;
         }
 
         auto cursor = wf::get_core().get_cursor_position();
-        if (std::hypot(cursor.x - middle_origin.x, cursor.y - middle_origin.y) < 8.0)
+        if (std::hypot(cursor.x - middle_origin.x, cursor.y - middle_origin.y) <= 12.0)
         {
             return;
         }
 
         middle_pending = false;
-        auto view   = wf::toplevel_cast(middle_view.lock());
-        auto output = view ? view->get_output() : nullptr;
-        if (view && output && output_instance.count(output) &&
-            output_instance[output]->start(view, BTN_MIDDLE, 1, -1))
+        auto view = wf::toplevel_cast(middle_view.lock());
+        if (!drag->view && view && view->is_mapped() && (view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE))
         {
-            middle_resizing = true;
+            // The move begins at the press point, so the window rejoins the cursor without a jump.
+            drag->set_input(-1, true, BTN_MIDDLE, true);
+            drag->set_pending_drag(middle_origin);
+            drag->start_drag(view);
+        }
+
+        middle_dragging = bool(drag->view) && (drag->view == view);
+        middle_consumed = !middle_dragging;
+        if (middle_dragging)
+        {
+            model.drag.input_override = middle_origin;
+            note_drag_start();
         }
     }
 
@@ -5701,9 +6402,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         });
     }
 
-    // Isolated test sessions only: a virtual touchpad that emits wlroots' touchpad events
-    // (hold, swipe, button) the way libinput's backend does, so they take Wayfire's real input
-    // path: core input signals, plugins, then the client's gesture protocol.
+    // Isolated test sessions only: a virtual touchpad that emits wlroots' touchpad and pointer
+    // events (hold, swipe, motion, button) through Wayfire's real input path.
     wf::ipc::method_callback test_touchpad_input = [=] (wf::json_t data) -> wf::json_t
     {
         if (!getenv("SCOTTLAND_TEST_MODEL")) return wf::ipc::json_error("test sessions only");
@@ -5722,12 +6422,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         else if (event == "button") test_touchpad->press(
             data.has_member("button") && data["button"].as_string() == "left" ? BTN_LEFT : BTN_MIDDLE,
             data.has_member("pressed") && data["pressed"].as_bool());
+        else if (event == "motion") test_touchpad->move_to({
+            data.has_member("x") ? data["x"].as_double() : wf::get_core().get_cursor_position().x,
+            data.has_member("y") ? data["y"].as_double() : wf::get_core().get_cursor_position().y});
         else if (!event.empty()) return wf::ipc::json_error("unknown touchpad event");
         auto reply = wf::ipc::json_ok();
         reply["hold_pending"] = bool(touchpad_hold);
         reply["swipe_moving"] = swipe_moving;
         reply["middle_pending"] = middle_pending;
-        reply["middle_resizing"] = middle_resizing;
+        reply["middle_dragging"] = middle_dragging;
+        reply["middle_consumed"] = middle_consumed;
         reply["dragging"] = bool(drag->view);
         return reply;
     };
@@ -5778,7 +6482,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto reply = wf::ipc::json_ok();
         reply["swipe_moving"]    = swipe_moving;
         reply["middle_pending"]  = middle_pending;
-        reply["middle_resizing"] = middle_resizing;
+        reply["middle_dragging"] = middle_dragging;
+        reply["middle_consumed"] = middle_consumed;
         reply["hold_armed"] = hold_finger >= 0;
         if (getenv("SCOTTLAND_TEST_MODEL"))
         {
@@ -5796,14 +6501,40 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     };
 
     wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_motion_event>> on_motion =
-        [=] (auto) { check_middle_drag(); track_pointer(); };
+        [=] (wf::post_input_event_signal<wlr_pointer_motion_event> *ev)
+    {
+        check_middle_drag(ev->device);
+        if (middle_dragging && (ev->device == middle_device))
+        {
+            drag->handle_motion(wf::get_core().get_cursor_position());
+        }
+
+        track_pointer();
+        update_note_visuals();
+    };
     wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_motion_absolute_event>> on_motion_abs =
-        [=] (auto) { check_middle_drag(); track_pointer(); };
+        [=] (wf::post_input_event_signal<wlr_pointer_motion_absolute_event> *ev)
+    {
+        check_middle_drag(ev->device);
+        if (middle_dragging && (ev->device == middle_device))
+        {
+            drag->handle_motion(wf::get_core().get_cursor_position());
+        }
+
+        track_pointer();
+        update_note_visuals();
+    };
     wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_button_event>> on_button =
         [=] (wf::post_input_event_signal<wlr_pointer_button_event> *ev)
     {
         if (ev->event->state == WL_POINTER_BUTTON_STATE_RELEASED)
         {
+            if (middle_dragging && (ev->event->button == BTN_MIDDLE) && (ev->device == middle_device))
+            {
+                clear_middle_gesture();
+                drag->handle_input_released();
+            }
+
             if (auto owner = pointer_owner.lock())
             {
                 owner->release();
@@ -5824,6 +6555,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // Live scaling while a window is dragged. The drag keeps the grabbed point of the window's
     // (transformed) bounding box under the pointer, so rescaling mid-drag stays anchored there.
     std::unique_ptr<scottland::live_drag_t> drag = std::make_unique<scottland::live_drag_t>();
+    wf::signal::connection_t<wf::input_device_removed_signal> on_middle_device_removed =
+        [this] (wf::input_device_removed_signal *ev)
+    {
+        if (ev->device && (ev->device->get_wlr_handle() == middle_device))
+        {
+            bool was_dragging = middle_dragging;
+            clear_middle_gesture();
+            if (was_dragging) drag->handle_input_released();
+        }
+    };
 
     wf::option_wrapper_t<wf::buttonbinding_t> move_button{"scottland/move"};
     wf::option_wrapper_t<wf::buttonbinding_t> move_shift_button{"scottland/move_shift"};
@@ -6129,6 +6870,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!frame)
         {
             end_morph();
+            update_note_visuals();
             return false;
         }
 
@@ -6174,6 +6916,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!model.drag.morph->toward && (drag->view != dragged) && !model.drag.morph->shape.running() && !model.drag.morph->fade.running())
         {
             end_morph();  // a cancelled drag finished morphing back
+            update_note_visuals();
             return false;
         }
 
@@ -6236,6 +6979,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (drag->view == dragged && drag->current_output)
             update_rail_drag(dragged, drag->current_output);
         dragged->damage();  // through the drag's own transform, so it repaints with the pointer still
+        update_note_visuals();
         return true;
     }
 
@@ -6673,6 +7417,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             announce_widgets();
         }
 
+        update_note_visuals();
         return active;
     }
 
@@ -6962,6 +7707,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         if (settled) refresh_layout_avoidance();
+        update_note_visuals();
         return !glides.empty();
     }
 
@@ -7233,10 +7979,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::scene::root_node_update_signal> on_scene_structure =
         [=] (wf::scene::root_node_update_signal *ev)
     {
-        // Without avoidance there are no offsets to keep honest.
-        if (!window_keys.active && !window_avoidance_always && !hint_avoidance_always) return;
         if (ev->flags & (wf::scene::update_flag::CHILDREN_LIST | wf::scene::update_flag::ENABLED))
-            refresh_layout_avoidance();
+        {
+            update_note_visuals(true);
+            // Without avoidance there are no offsets to keep honest.
+            if (window_keys.active || window_avoidance_always || hint_avoidance_always)
+                refresh_layout_avoidance();
+        }
     };
 
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped = [=] (wf::view_mapped_signal *ev)
@@ -7244,6 +7993,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
             observe_view(toplevel);
+            if (!bind_pending_activation_on_map(toplevel))
+                bind_pending_by_process(toplevel);
             if (!model.widgets.empty())
             {
                 adopt_widget(toplevel);
@@ -7253,6 +8004,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         apply(ev->view);
         hint_registration.run_once([=] () { refresh_layout_avoidance(); });
         idle_focus.run_once([=] () { update_focus(); });
+        update_note_visuals();
     };
 
     wf::signal::connection_t<wf::view_geometry_changed_signal> on_geometry =
@@ -7286,12 +8038,22 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         apply(ev->view);
         publish_model();
         refresh_layout_avoidance();
+        update_note_visuals();
     };
 
     wf::signal::connection_t<wf::view_set_output_signal> on_output = [=] (wf::view_set_output_signal *ev)
     {
+        index_spread_view(wf::toplevel_cast(ev->view));
         apply(ev->view);
         refresh_layout_avoidance();
+        update_note_visuals();
+    };
+
+    wf::signal::connection_t<wf::view_moved_to_wset_signal> on_view_moved_to_wset =
+        [=] (wf::view_moved_to_wset_signal *ev)
+    {
+        index_spread_view(ev->view, ev->new_wset);
+        if (ev->view && ev->view->is_mapped()) observe_view(ev->view);
     };
 
     // Test sessions: write the next frame an output renders on its own to
@@ -7398,6 +8160,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     fullscreen_filter->second.opacity->get_alpha() : 1.0);
             // Where it's going, as the desktop model publishes it, not a step of an animation.
             auto state = model.windows.find(view->get_id());
+            entry["opacity_override"] = state != model.windows.end() ?
+                opacity_override_name(state->second.opacity_override) : "none";
             entry["target_scale"] = state != model.windows.end() ? state->second.scale : 1.0;
             if (auto frame = frame_of(view, false))
             {
@@ -7509,6 +8273,94 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         apply_all();
         publish_model();
         return wf::ipc::json_ok();
+    };
+
+    /** IPC scottland/transparency {action: toggle|status, window?}: toggles the active
+     *  keyboard-focused toplevel atomically; status may name any mapped toplevel. */
+    wf::ipc::method_callback transparency = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (!data.has_member("action") || !data["action"].is_string())
+        {
+            return wf::ipc::json_error("transparency needs string \"action\" (toggle or status)");
+        }
+
+        auto action = data["action"].as_string();
+        wayfire_toplevel_view view;
+        if (action == "toggle")
+        {
+            if (data.has_member("window"))
+            {
+                return wf::ipc::json_error("transparency toggle always targets the focused window");
+            }
+
+            view = wf::toplevel_cast(wf::get_core().seat->get_active_view());
+            if (!view || !view->is_mapped())
+            {
+                return wf::ipc::json_error("no focused window");
+            }
+        } else if (action == "status")
+        {
+            if (data.has_member("window"))
+            {
+                if (!data["window"].is_int64() || data["window"].as_int64() <= 0)
+                {
+                    return wf::ipc::json_error("transparency status needs a positive integer \"window\"");
+                }
+
+                view = view_by_id((uint64_t)data["window"].as_int64());
+                if (!view || !view->is_mapped())
+                {
+                    return wf::ipc::json_error("no such window");
+                }
+            } else
+            {
+                view = wf::toplevel_cast(wf::get_core().seat->get_active_view());
+                if (!view || !view->is_mapped())
+                {
+                    return wf::ipc::json_error("no focused window");
+                }
+            }
+
+            auto state = model.windows.find(view->get_id());
+            auto reply = wf::ipc::json_ok();
+            reply["window"] = (int64_t)view->get_id();
+            reply["override"] = opacity_override_name(state == model.windows.end() ?
+                opacity_override_t::none : state->second.opacity_override);
+            return reply;
+        } else
+        {
+            return wf::ipc::json_error("transparency action must be toggle or status");
+        }
+
+        observe_view(view);
+        auto& state = model.windows[view->get_id()];
+        // A transparency toggle is a later user manipulation: end pairing's one-time opaque hold.
+        state.paired_placement.reset();
+        if (state.opacity_override == opacity_override_t::none)
+        {
+            // The frame target is the value already being eased toward, so a toggle during an
+            // animation samples the shown mode once instead of chasing its changing alpha.
+            double shown_opacity = 1.0;
+            if (!view->pending_fullscreen())
+            {
+                if (auto frame = frame_of(view, false))
+                {
+                    shown_opacity = frame->opacity_target;
+                }
+            }
+            state.opacity_override = shown_opacity < 1.0 ? opacity_override_t::opaque :
+                opacity_override_t::translucent;
+        } else
+        {
+            state.opacity_override = opacity_override_t::none;
+        }
+
+        apply_opacity(view);
+        publish_model();
+        auto reply = wf::ipc::json_ok();
+        reply["window"] = (int64_t)view->get_id();
+        reply["override"] = opacity_override_name(state.opacity_override);
+        return reply;
     };
 
     wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> ipc_repo;
@@ -7823,6 +8675,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/send-key", send_key);
         ipc_repo->register_method("scottland/run-binding", run_binding);
         ipc_repo->register_method("scottland/layout-state", layout_state);
+        ipc_repo->register_method("scottland/transparency", transparency);
         wf::get_core().connect(&on_axis);
         wf::get_core().connect(&on_initial_app_id);
         wf::get_core().connect(&on_forget_app_id);
@@ -7838,6 +8691,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().scene()->connect(&on_scene_structure);
         wf::get_core().connect(&on_geometry);
         wf::get_core().connect(&on_output);
+        wf::get_core().connect(&on_view_moved_to_wset);
         wf::get_core().connect(&on_focus);
         wf::get_core().connect(&on_unmapped);
         wf::get_core().connect(&on_motion);
@@ -7846,7 +8700,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_swipe_end);
         wf::get_core().connect(&on_hold_begin);
         wf::get_core().connect(&on_hold_end);
-        wf::get_core().connect(&on_touchpad_button);
+        wf::get_core().connect(&on_middle_button);
+        wf::get_core().connect(&on_middle_device_removed);
         wf::get_core().connect(&on_touch_down_capture);
         wf::get_core().connect(&on_touch_motion_capture);
         wf::get_core().connect(&on_touch_up_capture);
@@ -7859,6 +8714,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/widgets", widgets_state);
         ipc_repo->register_method("scottland/desktop-model", desktop_state);
         ipc_repo->register_method("scottland/subscribe", subscribe_model);
+        ipc_repo->register_method("scottland/notes", notes_method);
+        ipc_repo->register_method("scottland/provenance-declare", [=] (wf::json_t data)
+        {
+            return declare_provenance(std::move(data));
+        });
         if (getenv("SCOTTLAND_TEST_MODEL") && std::string(getenv("SCOTTLAND_TEST_MODEL")) == "1")
         {
             ipc_repo->register_method("scottland/audit-model", audit_model);
@@ -7930,7 +8790,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         unfocused_edge_tone_dark.set_callback([=] { load_color_scheme(); });
         unfocused_edge_strength.set_callback([=] { load_color_scheme(); });
         goo_dye_density.set_callback([=] { load_color_scheme(); });
-        window_mode_tint.set_callback([=] { load_color_scheme(); refresh_layout_avoidance(); });
+        window_mode_tint.set_callback([=] { refresh_layout_avoidance(); });
         hint_background_opacity.set_callback([=] { refresh_layout_avoidance(); });
         auto avoidance_setting_changed = [=] {
             declutter_signature.clear();
@@ -7959,8 +8819,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 else model.goo_outputs.erase(output);
                 publish_model();
             },
-            [this](wf::output_t *) { apply_all(); });
+            [this](wf::output_t *) { apply_all(); update_note_visuals(); });
         refresh_layout_avoidance();
+        update_note_visuals();
         LOGI("scottland: plugin loaded");
     }
 
@@ -7972,6 +8833,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().bindings->rem_binding(&on_move_shift);
         bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
         installing_model = reloading;  // teardown is also part of the atomic handover
+        clear_note_overlays();
         widget_peek_tick.disconnect();
         goo.stop();
         fini_window_keys();
@@ -7982,6 +8844,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/send-key");
         ipc_repo->unregister_method("scottland/run-binding");
         ipc_repo->unregister_method("scottland/layout-state");
+        ipc_repo->unregister_method("scottland/transparency");
         on_minimize_edge.disconnect();
         on_minimize_device_removed.disconnect();
         shortcuts.fini();
@@ -7992,6 +8855,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_mapped.disconnect();
         on_geometry.disconnect();
         on_output.disconnect();
+        on_view_moved_to_wset.disconnect();
         on_focus.disconnect();
         on_unmapped.disconnect();
         idle_focus.disconnect();
@@ -8022,7 +8886,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         cancel_touchpad_hold();
         test_touchpad.reset();
         ipc_repo->unregister_method("scottland/test-touchpad");
-        on_touchpad_button.disconnect();
+        on_middle_button.disconnect();
+        on_middle_device_removed.disconnect();
         on_touch_down.disconnect();
         on_touch_down_capture.disconnect();
         on_touch_motion_capture.disconnect();
@@ -8036,6 +8901,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/widgets");
         ipc_repo->unregister_method("scottland/desktop-model");
         ipc_repo->unregister_method("scottland/subscribe");
+        ipc_repo->unregister_method("scottland/notes");
+        ipc_repo->unregister_method("scottland/provenance-declare");
         ipc_repo->unregister_method("scottland/audit-model");
         on_title.disconnect();
         on_app_id.disconnect();
@@ -8055,6 +8922,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_focus_request.disconnect();
         on_new_transaction.disconnect();
         on_activate.disconnect();
+        provenance_expiration.disconnect();
+        for (const auto& entry : provenance_tokens_expire_at)
+            destroy_activation_token(entry.first);
+        pending_provenance.clear();
+        provenance_tokens_expire_at.clear();
+        pending_activation_surfaces.clear();
         // Unloading gives every app its window back. A reload (scottland-reload marks it) hands the
         // widgets over instead: they stay, their windows stay hidden, and the new plugin takes
         // the links from a file (WG5).
@@ -8096,6 +8969,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto snapshot = model_snapshot("desktop");
             snapshot["version"] = (int64_t)model.version;
             snapshot["links"] = handover;
+            snapshot["notes"] = notes_windows_snapshot();
+            snapshot["next_note_id"] = model.next_note_id;
             auto path = runtime_file(".widget-handover.json");
             std::ofstream out(path + ".tmp");
             out << snapshot.serialize();
@@ -8115,6 +8990,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
         model.widgets.clear();
+        widget_view_owners.clear();
+        widget_view_ids.clear();
         if (handover.size() == 0)
         {
             announce_widgets();  // the widget service drops its objects
@@ -8138,7 +9015,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         fullscreen_filter_visuals.clear();
 
         scottland::gl_programs().release();
-        scottland::windowing::release_hint_gl();
+        scottland::windowing::release_window_tint_gl();
         fini_widget_spawn();
         fini_hint_palette_watch();
         release_stale_pointer_focus();  // e.g. the live drag's grab: its owner and code go next

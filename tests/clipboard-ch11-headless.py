@@ -216,8 +216,8 @@ def capture(output, name=None):
 
 
 def palette_background():
-    path = (Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" /
-            f"{Path(os.environ['WAYLAND_DISPLAY']).name}.palette.json")
+    path = Path(os.environ["SCOTTLAND_SESSION_DIR"]) / \
+            f"{Path(os.environ['WAYLAND_DISPLAY']).name}.palette.json"
     if path.is_file():
         return color(json.loads(path.read_text(encoding="utf-8")).get("background", "#1c1d22"))
     return color("#1c1d22")

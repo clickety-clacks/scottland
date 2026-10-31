@@ -56,6 +56,10 @@ def state():
     return next((v for v in ipc('scottland/layout-state')['views'] if v['title'] == 'CycleSpring'), None)
 
 
+def client_geometry():
+    return next(v['geometry'] for v in ipc('window-rules/list-views') if v['id'] == wid)
+
+
 def key(code, down):
     ipc('stipc/feed_key', {'key': 'KEY_' + code, 'state': down})
 
@@ -193,12 +197,35 @@ try:
         tap(c.upper())
     time.sleep(.07)
     before_dock = state()
-    for c in hint:
+    client_before_dock = client_geometry()
+    drawn_before = before_dock['frame']
+    client_center = [client_before_dock['x'] + client_before_dock['width'] / 2,
+                     client_before_dock['y'] + client_before_dock['height'] / 2]
+    check(math.dist(center(before_dock), client_center) > 25 or
+          abs(drawn_before['width'] - client_before_dock['width']) > 20,
+          'second hint arrives while the first cycle is still moving')
+    for c in hint[:-1]:
         tap(c.upper())
-    after_dock = state()
-    check(math.dist(center(before_dock), center(after_dock)) < 25 and
-          abs(before_dock['frame']['width'] - after_dock['frame']['width']) < 20,
-          'rapid double-tap hands the drawn spring frame to the unchanged widget morph')
+    final_key = hint[-1].upper()
+    key(final_key, True)
+    try:
+        after_dock = state()
+        client_after_dock = client_geometry()
+    finally:
+        key(final_key, False)
+    (out / 'rapid-double-tap.json').write_text(json.dumps({
+        'before': before_dock, 'after': after_dock,
+        'client_geometry_before': client_before_dock,
+        'client_geometry_after': client_after_dock,
+    }, indent=2))
+    # The spring keeps moving while separate input and state IPC requests complete. Its
+    # drawn rectangle therefore need not be equal across these samples. Check the stable
+    # client geometry and that the live window-to-widget presentation has taken over.
+    check(client_after_dock == client_before_dock,
+          'rapid double-tap leaves client geometry unchanged during docking')
+    presentation = after_dock.get('frame', {}).get('presentation')
+    check(after_dock['widgetized'] and presentation is not None,
+          'rapid double-tap starts the live widget presentation')
     key('LEFTALT', False)
     time.sleep(.8)
     check(state()['widgetized'], 'rapid double-tap completes docking')
