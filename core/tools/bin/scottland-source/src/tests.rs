@@ -3,7 +3,7 @@ use crate::system::System;
 use crate::workspace::Workspace;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -651,10 +651,21 @@ fn package_adoption_accepts_a_dangling_managed_link_after_legacy_link_replacemen
     fs::remove_file(&link).unwrap();
     symlink(paths.tool_target("example-tool"), &link).unwrap();
     assert!(!link.exists());
-    assert!(system
-        .adopt_release(&release, &paths.base_tools, &available)
-        .unwrap()
-        .is_some());
+    let activation = system.adopt_release(&release, &paths.base_tools, &available);
+    if fs::metadata(&paths.source_repo).unwrap().uid() == 0 {
+        assert!(activation.unwrap().is_some());
+    } else {
+        // Activation precedes reconcile's root-ownership validation. An ordinary
+        // unit runner owns this scratch repository, so require that exact later
+        // refusal; the independent postconditions below still prove activation.
+        assert_eq!(
+            activation.unwrap_err().to_string(),
+            format!(
+                "source repository path {} is not root-owned; it was left untouched",
+                paths.source_repo.display()
+            )
+        );
+    }
     assert_eq!(system.installed().unwrap(), Some(release.clone()));
     assert_symlink_target(&link, &paths.tool_target("example-tool"));
     let output = Command::new(&link).output().unwrap();
