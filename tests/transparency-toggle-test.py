@@ -317,9 +317,29 @@ try:
     check('focus opacity is visibly easing before toggle', .70 < intermediate < .98)
     first = toggle(b)
     check('sub-unity target toggles to opaque', first['override'] == 'opaque' and status(b)['override'] == 'opaque')
-    wait_opacity(b, 1.0, 'opaque override animation settles')
-    opaque_alpha = opacity(b)
+    # opacity_mix animates for 180 ms. Require exact unity across reads for
+    # 250 ms before capturing; a near-unity sample can still be blending.
+    opaque_wait_start = time.monotonic()
+    opaque_since = None
+    while True:
+        opaque_alpha = opacity(b)
+        observed_at = time.monotonic()
+        print(f'opaque settle t={observed_at:.6f} alpha={opaque_alpha!r}', flush=True)
+        if opaque_alpha == 1.0:
+            if opaque_since is None:
+                opaque_since = observed_at
+            if observed_at - opaque_since > .250:
+                break
+        else:
+            opaque_since = None
+        if observed_at - opaque_wait_start >= 12:
+            raise RuntimeError(f'opaque override did not remain exactly 1.0 for 250 ms; '
+                               f'last alpha={opaque_alpha!r}, unity since={opaque_since}')
+        time.sleep(.015)
+    print(f'opaque capture starts t={time.monotonic():.6f} alpha={opaque_alpha!r}', flush=True)
     opaque = Shot('toggle-opaque')
+    captured_alpha = opacity(b)
+    print(f'opaque capture finished t={time.monotonic():.6f} alpha={captured_alpha!r}', flush=True)
     opaque_foreground = opaque.pixel(visible_b_x, visible_b_y)
     opaque_overlap = opaque.pixel(overlap_x, overlap_y)
     check(f'opaque override produces unblended foreground pixels (alpha={opaque_alpha:.5f}, '
