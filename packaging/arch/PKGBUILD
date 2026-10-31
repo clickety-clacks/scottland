@@ -93,7 +93,7 @@ package_scottland() {
   ln -s /usr/lib/scottland/libexec/scottland-clipboard "$pkgdir/usr/bin/scottland-clipboard"
   ln -s /usr/lib/scottland/libexec/scottland-emoji "$pkgdir/usr/bin/scottland-emoji"
   ln -s /usr/lib/scottland/libexec/scottland-keybindings "$pkgdir/usr/bin/scottland-keybindings"
-  ln -s /usr/lib/scottland/libexec/scottland-ctl "$pkgdir/usr/bin/scottland-ctl"
+  ln -s /usr/lib/scottland/tools/current/bin/scottland-ctl "$pkgdir/usr/bin/scottland-ctl"
   install -Dm644 "$_root/core/agents/skills/scottland/SKILL.md" "$pkgdir/usr/share/scottland/agents/skills/scottland/SKILL.md"
   install -Dm755 "$_root/core/autostart.d/02-link-agent-skills" "$pkgdir/usr/lib/scottland/autostart.d/02-link-agent-skills"
   install -Dm755 "$_root/core/libexec/scottland-widget-spawn" "$pkgdir/usr/lib/scottland/libexec/scottland-widget-spawn"
