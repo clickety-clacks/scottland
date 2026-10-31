@@ -607,6 +607,70 @@ fn adopt_prepares_received_release_when_local_commits_prevent_activation() {
 }
 
 #[test]
+fn package_adoption_accepts_a_dangling_managed_link_after_legacy_link_replacement() {
+    let scratch = Scratch::new();
+    let source = scratch.0.join("source");
+    let (release, _) = create_workspace_repository(&source);
+    let system = package_system(&scratch.0.join("system-root"));
+    let paths = &system.paths;
+    fs::create_dir_all(paths.source_repo.parent().unwrap()).unwrap();
+    git_ok(
+        &scratch.0,
+        &[
+            "clone",
+            "--bare",
+            source.to_str().unwrap(),
+            paths.source_repo.to_str().unwrap(),
+        ],
+    );
+    fs::create_dir_all(&paths.base_tools).unwrap();
+    let names = ["example-source", "example-tool", "example-available-tool"];
+    for name in names {
+        write_executable(
+            &paths.base_tools.join(name),
+            &format!("#!/bin/sh\nprintf '{name} {release}\\n'\n"),
+        );
+    }
+    let available = names.into_iter().map(str::to_owned).collect();
+    fs::create_dir_all(&paths.tool_bin).unwrap();
+    let link = paths.tool_link("example-tool");
+    let legacy = scratch
+        .0
+        .join("system-root/usr/lib/example/libexec/example-tool");
+    symlink(&legacy, &link).unwrap();
+
+    let error = system
+        .adopt_release(&release, &paths.base_tools, &available)
+        .expect_err("a legacy helper link must not be overwritten by adoption");
+    assert!(error.to_string().contains("cannot replace existing link"));
+    assert_eq!(system.installed().unwrap(), None);
+    assert_symlink_target(&link, &legacy);
+
+    // Package extraction replaces its own legacy link on upgrade. The new link
+    // is also dangling on a fresh install, until adoption selects the base build.
+    fs::remove_file(&link).unwrap();
+    symlink(paths.tool_target("example-tool"), &link).unwrap();
+    assert!(!link.exists());
+    assert!(system
+        .adopt_release(&release, &paths.base_tools, &available)
+        .unwrap()
+        .is_some());
+    assert_eq!(system.installed().unwrap(), Some(release.clone()));
+    assert_symlink_target(&link, &paths.tool_target("example-tool"));
+    let output = Command::new(&link).output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        format!("example-tool {release}")
+    );
+    assert!(system
+        .adopt_release(&release, &paths.base_tools, &available)
+        .unwrap()
+        .is_none());
+    assert_eq!(system.installed().unwrap(), Some(release));
+}
+
+#[test]
 fn package_adoption_disables_and_restores_tools_in_a_cached_build() {
     let scratch = Scratch::new();
     let source = scratch.0.join("source");
