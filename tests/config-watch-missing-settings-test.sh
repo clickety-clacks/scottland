@@ -47,8 +47,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$tmp/home/.config" "$tmp/state" "$tmp/hooks/libexec"
+mkdir -p "$tmp/home/.config" "$tmp/state" "$tmp/hooks/libexec" "$tmp/base"
 [[ ! -e $tmp/home/.config/scottland ]] || { echo 'settings directory unexpectedly exists' >&2; exit 1; }
+cp -- "$repo/core/config/scottland.ini" "$tmp/base/scottland.ini"
 cat >"$tmp/hooks/libexec/scottland-build-config" <<'BUILD'
 #!/bin/sh
 set -eu
@@ -85,7 +86,7 @@ chmod 700 "$tmp/start-watcher.sh"
 export TEST_HOME="$tmp/home" TEST_CONFIG_HOME="$tmp/home/.config"
 export TEST_STATE_HOME="$tmp/state" TEST_SESSION_DIR="$headless"
 export TEST_HOOKS="$tmp/hooks" TEST_REPO="$repo"
-export TEST_BASE="$repo/core/config/scottland.ini" BUILD_LOG="$tmp/builds.log"
+export TEST_BASE="$tmp/base/scottland.ini" BUILD_LOG="$tmp/builds.log"
 export WATCHER_PID_FILE="$tmp/watcher.pid"
 
 session_started=1
@@ -184,5 +185,30 @@ writes=$(wc -l <"$tmp/config-writes.log")
   echo "overrides.ini change produced $builds rebuild(s) and $writes Wayfire config write(s), expected three total rebuilds and at least three writes" >&2
   exit 1
 }
+replacement=$(mktemp "$tmp/base/scottland.ini.replacement.XXXXXX")
+cp -- "$repo/core/config/scottland.ini" "$replacement"
+mv -f -- "$replacement" "$TEST_BASE"
+for _ in $(seq 50); do
+  [[ $(wc -l <"$BUILD_LOG") -ge 4 ]] && break
+  sleep 0.1
+done
+sleep 0.5
+builds=$(wc -l <"$BUILD_LOG")
+writes=$(wc -l <"$tmp/config-writes.log")
+[[ $builds == 4 && $writes -ge 4 ]] || {
+  echo "base config replacement produced $builds rebuild(s) and $writes Wayfire config write(s), expected four total rebuilds and at least four writes" >&2
+  exit 1
+}
+waiting=0
+for _ in $(seq 50); do
+  children=$(cat "/proc/$watcher_group/task/$watcher_group/children" 2>/dev/null || true)
+  for child in $children; do
+    [[ -r /proc/$child/comm ]] || continue
+    [[ $(cat "/proc/$child/comm") == inotifywait ]] && waiting=1
+  done
+  ((waiting)) && break
+  sleep 0.1
+done
+((waiting)) || { echo 'watcher did not resume watching after the base config was replaced' >&2; exit 1; }
 tests/headless.sh run true
-printf 'settings directory creation and two file changes: rebuilds: %s; Wayfire config writes: %s; headless session remained reachable\n' "$builds" "$writes"
+printf 'settings directory creation, two file changes, and base config replacement: rebuilds: %s; Wayfire config writes: %s; headless session remained reachable\n' "$builds" "$writes"

@@ -39,11 +39,11 @@ while :; do
     if [ -n "$missing_paths" ]; then
       # Keep watching present inputs while checking for a newly created input path.
       # shellcheck disable=SC2086
-      inotifywait -qq -r -t 2 -e close_write -e moved_to -e create -e delete $watch_paths
+      inotifywait -qq -r -t 2 -e close_write -e moved_to -e create -e delete -e delete_self -e move_self $watch_paths
       status=$?
     else
       # shellcheck disable=SC2086
-      inotifywait -qq -r -e close_write -e moved_to -e create -e delete $watch_paths
+      inotifywait -qq -r -e close_write -e moved_to -e create -e delete -e delete_self -e move_self $watch_paths
       status=$?
     fi
   fi
