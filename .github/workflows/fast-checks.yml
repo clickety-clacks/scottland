@@ -210,4 +210,9 @@ jobs:
                 SCOTTLAND_HEADLESS_DIR="$PWD/build/queue-headless-scratch/session" \
                 tests/transparency-toggle-test.sh "$PWD/build/queue-headless-evidence"
               rmdir -- build/queue-headless-scratch
+              mkdir -m 700 build/config-watch-scratch
+              SCOTTLAND_TEST_SCRATCH="$PWD/build/config-watch-scratch" \
+                SCOTTLAND_HEADLESS_DIR="$PWD/build/config-watch-scratch/session" \
+                tests/config-watch-missing-settings-test.sh "$PWD/build/config-watch-evidence"
+              rmdir -- build/config-watch-scratch
             '
