@@ -14,14 +14,63 @@ pause_file=
 mkdir -p "$(dirname "$log")"
 echo "$(date '+%F %T') watching (pid $$)" >>"$log"
 trap 'echo "$(date "+%F %T") watcher stopped by signal" >>"$log"; exit 0' TERM INT HUP
+previous_missing_paths=
 while :; do
   paths=$("$build" --watch-paths)
+  watch_paths=
+  missing_paths=
+  # The builder's path list has always used shell word splitting at the inotifywait boundary.
   # shellcheck disable=SC2086
-  inotifywait -qq -r -e close_write -e moved_to -e create -e delete $paths
-  status=$?
+  for path in $paths; do
+    if [ -e "$path" ]; then
+      watch_paths="$watch_paths $path"
+    else
+      missing_paths="$missing_paths $path"
+    fi
+  done
+  path_appeared=0
+  # shellcheck disable=SC2086
+  for path in $previous_missing_paths; do
+    [ -e "$path" ] && path_appeared=1
+  done
+  previous_missing_paths=$missing_paths
+  status=0
+  if [ "$path_appeared" -ne 1 ]; then
+    if [ -n "$missing_paths" ]; then
+      # Keep watching present inputs while checking for a newly created input path.
+      # shellcheck disable=SC2086
+      inotifywait -qq -r -t 2 -e close_write -e moved_to -e create -e delete $watch_paths
+      status=$?
+    else
+      # shellcheck disable=SC2086
+      inotifywait -qq -r -e close_write -e moved_to -e create -e delete $watch_paths
+      status=$?
+    fi
+  fi
+  if [ "$status" -eq 0 ] || [ "$status" -eq 2 ]; then
+    remaining_missing_paths=
+    path_appeared=0
+    # shellcheck disable=SC2086
+    for path in $missing_paths; do
+      if [ -e "$path" ]; then
+        path_appeared=1
+      else
+        remaining_missing_paths="$remaining_missing_paths $path"
+      fi
+    done
+    previous_missing_paths=$remaining_missing_paths
+    # inotifywait uses status 2 for a timeout; only rebuild if a missing input appeared.
+    if [ "$status" -eq 2 ] && [ "$path_appeared" -eq 1 ]; then
+      status=0
+    fi
+  fi
+  if [ "$status" -eq 2 ]; then
+    continue  # No watched input changed during the missing-path check interval.
+  fi
   if [ "$status" -ne 0 ]; then
     echo "$(date '+%F %T') inotifywait exited $status; retrying" >>"$log"
     sleep 2
+    continue
   fi
   sleep 0.3  # let editors finish writing
   if [ -n "$pause_file" ] && [ -e "$pause_file" ]; then
