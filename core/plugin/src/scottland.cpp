@@ -5698,7 +5698,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         uint64_t partner = resting ? resting->partner : focused_app();
         wf::get_core().default_wm->focus_raise_view(view);
-        drag->set_input(-1, false, BTN_LEFT, false, device, true);
+        drag->set_input(-1, true, BTN_LEFT, false, device, true);
         drag->set_pending_drag(wf::get_core().get_cursor_position());
         drag->start_drag(view);
         note_drag_start();  // now, where the fingers began: the first update may be a while
@@ -5813,7 +5813,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!hold.partner) return;
         // The fingers are still down: the result is an offer (WK39). Hold it in a suspended
         // three-finger drag, so lifting commits it and moving the fingers turns it into L23.
-        drag->set_input(-1, false, BTN_LEFT, false, hold.device, true);
+        drag->set_input(-1, true, BTN_LEFT, false, hold.device, true);
         drag->set_pending_drag(wf::get_core().get_cursor_position());
         drag->start_drag(view);
         if (drag->view != view)

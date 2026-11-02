@@ -497,6 +497,19 @@ def unrelated_pointer_release_cannot_take_touchpad_offer():
     verify(lambda: paired(A, B, area, want), 3, 'the owning three-finger lift takes the pair (Wayfire)')
 
 @scenario
+def unrelated_pointer_motion_cannot_cancel_touchpad_offer():
+    'unrelated pointer motion beyond the hotspot cannot cancel a three-finger offer'
+    setup(PAIR, A); f0 = frames(A, B); want, _ = pair_plan(A, B, area)
+    x, y = center(B); pointer(x, y); time.sleep(.1)
+    pad('hold_begin', fingers=3)
+    need(lambda: light(px(want[B][0] + 210, want[B][1] + 150)), 3, 'touchpad offer shown')
+    pointer(x + 80, y); time.sleep(.1)  # mouse motion beyond the 28 pt hotspot is not this gesture
+    ok, _ = holds(lambda: frames(A, B) == f0 and light(px(want[B][0] + 210, want[B][1] + 150)), .5)
+    check(ok, 'unrelated pointer motion leaves true geometry unchanged and offer active (Wayfire, pixels)')
+    pad('hold_end', cancelled=False)
+    verify(lambda: paired(A, B, area, want), 3, 'the owning three-finger lift takes the pair after pointer motion (Wayfire)')
+
+@scenario
 def touchpad_cancel_then_swipe_continues():
     'libinput cancelling the hold into a swipe of the same fingers continues the offer; lifting takes it'
     setup(PAIR, A); want, _ = pair_plan(A, B, area)
