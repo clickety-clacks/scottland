@@ -64,6 +64,25 @@ class window_tint_layer_node : public wf::scene::node_t
 };
 // Frees the tint shader; call with the plugin's other GL resources on unload.
 void release_window_tint_gl();
+// WK39: a hold in progress, as a stroked arc that fills clockwise from the top around a hint
+// badge or the pointer (hold_ring_progress). One small shader quad; dots without GLES.
+class hold_ring_node : public wf::scene::node_t
+{
+  public:
+    hold_ring_node() : node_t(false) {}
+    void update(double cx, double cy, double radius, double line, hint_rgb color, double progress);
+    wf::geometry_t get_bounding_box() override { return box; }
+    void gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
+        wf::scene::damage_callback damage, wf::output_t *output) override;
+    wf::geometry_t box{0, 0, 0, 0};
+    double cx = 0, cy = 0, radius = 0, line = hold_ring_width, progress = 0;
+    hint_rgb color{0, 0, 0};
+};
+// Compiles the ring shader up front, so its first draw costs no compile on an input path (P8).
+// Call in a GL context (wf::gles::run_in_context_if_gles).
+void prepare_hint_gl();
+// Frees the ring shader; call with the plugin's other GL resources on unload.
+void release_hint_gl();
 
 // A small, click-through name plate while a quick Alt+Tab chord previews a center window.
 class center_switcher_node : public wf::scene::node_t

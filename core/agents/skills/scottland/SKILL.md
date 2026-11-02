@@ -195,7 +195,7 @@ Apps that ignore smooth scrolling (Ghostty) get it as a high-resolution wheel in
 |---|---|
 | `lift_delay = 350` | Milliseconds a finger must rest still on a window before it lifts to move. |
 | `sounds = true` | Scottland's interface sounds (the lift "bloop"). |
-| `touchpad_gestures = true` | Three-finger drag moves a window; three-finger click-drag resizes it. |
+| `touchpad_gestures = true` | Three-finger drag and three-finger click-drag move a window. |
 | `remap_apps_<n>` / `remap_from_<n>` / `remap_to_<n>` | Per-app key remaps, e.g. Ctrl+W → Ctrl+BackSpace in browsers. |
 | `[input] natural_scroll`, `touchpad_scroll_speed`, `click_method`, `drag_lock` | Touchpad behavior (Wayfire input options). |
 

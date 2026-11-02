@@ -17,11 +17,15 @@ class live_drag_transform_t : public wf::scene::transformer_base_node_t
 {
   public:
     wf::pointf_t position, relative;
+    // While a drag is suspended (a hold's offer, WK39), or a window is lifted for one, draw the
+    // window exactly where it really is: the offset is just its output's origin in the layout.
+    std::optional<wf::pointf_t> pinned;
     live_drag_transform_t() : transformer_base_node_t(false) {}
     std::string stringify() const override { return "scottland-live-drag"; }
     std::optional<wf::scene::input_node_t> find_node_at(const wf::pointf_t&) override { return {}; }
     wf::pointf_t offset()
     {
+        if (pinned) return *pinned;
         auto b = get_children_bounding_box();
         return {position.x - b.x - relative.x * b.width,
             position.y - b.y - relative.y * b.height};
@@ -48,6 +52,62 @@ class live_drag_transform_t : public wf::scene::transformer_base_node_t
     {
         instances.push_back(std::make_unique<instance_t>(this, damage, output));
     }
+};
+
+// Draws a window in front of everything, in layout coordinates, exactly where it really is, as a
+// suspended drag does: an offset on its frame may then show it over another screen (a hold's pair
+// offer joining a window from another screen, WK39). Nothing about the window changes. It goes
+// back into its own place on destruction, drop(), unmap, or its output's removal.
+class view_lift_t
+{
+  public:
+    explicit view_lift_t(wayfire_toplevel_view target)
+    {
+        if (!target || !target->is_mapped() || !target->get_output()) return;
+        auto node = target->get_transformed_node();
+        auto inner = node->parent() ? std::dynamic_pointer_cast<wf::scene::floating_inner_node_t>(
+            node->parent()->shared_from_this()) : nullptr;
+        if (!inner) return;
+        view = target;
+        parent = inner;
+        output = target->get_output();
+        transform = std::make_shared<live_drag_transform_t>();
+        transform->pinned = wf::origin(output->get_layout_geometry());
+        view->damage();
+        node->add_transformer(transform, wf::TRANSFORMER_HIGHLEVEL - 1, "scottland-offer-lift");
+        wf::scene::readd_front(wf::get_core().scene(), node);
+        view->connect(&unmap);
+        wf::get_core().output_layout->connect(&removed);
+        view->damage();
+    }
+    ~view_lift_t() { drop(); }
+    view_lift_t(const view_lift_t&) = delete;
+    view_lift_t& operator=(const view_lift_t&) = delete;
+    bool lifted() const { return bool(view); }
+    void drop()
+    {
+        if (!view) return;
+        unmap.disconnect();
+        removed.disconnect();
+        auto node = view->get_transformed_node();
+        view->damage();
+        wf::scene::readd_front(parent, node);
+        node->rem_transformer(transform);
+        view->damage();
+        view.reset();
+        parent.reset();
+        transform.reset();
+        output = nullptr;
+    }
+
+  private:
+    wayfire_toplevel_view view;
+    std::shared_ptr<wf::scene::floating_inner_node_t> parent;
+    std::shared_ptr<live_drag_transform_t> transform;
+    wf::output_t *output = nullptr;
+    wf::signal::connection_t<wf::view_unmapped_signal> unmap = [this] (auto *) { drop(); };
+    wf::signal::connection_t<wf::output_removed_signal> removed =
+        [this] (wf::output_removed_signal *ev) { if (ev->output == output) drop(); };
 };
 
 class live_drag_t : public wf::signal::provider_t, public wf::pointer_interaction_t,
@@ -81,7 +141,9 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     int finger = -1;
     bool pointer_motion_managed_externally = false;
     bool pointer_release_managed_externally = false;
+    bool gesture = false;
     uint32_t button = BTN_LEFT;
+    wlr_input_device *owner = nullptr;
     bool finishing = false;
     bool transferring = false;
     wf::plugin_activation_data_t activation = {
@@ -128,12 +190,15 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     void set_pending_drag(wf::pointf_t p) { pending = p; }
     void set_input(int touch_finger = -1, bool manage_pointer_motion_externally = false,
         uint32_t pointer_button = BTN_LEFT,
-        bool manage_pointer_release_externally = false)
+        bool manage_pointer_release_externally = false, wlr_input_device *device = nullptr,
+        bool pointer_gesture = false)
     {
         finger = touch_finger;
         pointer_motion_managed_externally = manage_pointer_motion_externally;
         button = pointer_button;
         pointer_release_managed_externally = manage_pointer_release_externally;
+        owner = device;
+        gesture = pointer_gesture;
     }
     void start_drag(wayfire_toplevel_view target)
     {
@@ -157,9 +222,32 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
         wf::move_drag::drag_focus_output_signal ev{nullptr, current_output};
         emit(&ev);
     }
+    // Suspended: the window is drawn where it really is, still in front of everything in layout
+    // coordinates, while the grab, its motion and its release keep coming here. A fired hold is
+    // suspended for as long as it offers (WK39). Resuming carries on as the ordinary drag: the
+    // window rejoins the pointer at its original grab point.
+    bool suspended = false;
+    void suspend(bool on)
+    {
+        if (!view || !transform || on == suspended || !view->get_output()) return;
+        suspended = on;
+        auto node = view->get_transformed_node();
+        node->begin_transform_update();
+        if (on) transform->pinned = wf::origin(view->get_output()->get_layout_geometry());
+        else { transform->pinned.reset(); transform->position = position; }
+        node->end_transform_update();
+        view->damage();
+    }
     void handle_motion(wf::pointf_t to)
     {
         if (!view || finishing || transferring) return;
+        if (suspended)
+        {
+            position = to;
+            wf::move_drag::drag_motion_signal ev{to};
+            emit(&ev);
+            return;
+        }
         if (!transform)
         {
             legacy->handle_motion(to);
@@ -183,7 +271,10 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
         wf::move_drag::drag_motion_signal ev{to};
         emit(&ev);
     }
-    void handle_input_released()
+    // commit = false ends the drag where the window really is, dropping whatever the drag drew
+    // (a hold form, WK35/WK36: the gesture was a hold, never a move). Only the live renderer can
+    // do that; the legacy move plugin always commits, so callers check is_live() first.
+    void handle_input_released(bool commit = true)
     {
         if (!view || finishing || transferring) return;
         if (!transform)
@@ -200,7 +291,9 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
         auto node = target->get_transformed_node();
         unmap.disconnect();
         wf::scene::readd_front(parent, node);
+        if (suspended) commit = false;  // a hold or an offer ends where the window really is
         node->rem_transformer(transform);
+        suspended = false;
         transform.reset();
         parent.reset();
         if (grab) grab->ungrab_input();
@@ -208,7 +301,7 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
         if (grab_output) grab_output->deactivate_plugin(&activation);
         grab_output = nullptr;
         // Commit the shown global position before the common drop/morph/physics path.
-        if (target->is_mapped() && output)
+        if (commit && target->is_mapped() && output)
         {
             if (target->get_output() != output) wf::move_view_to_output(target, output, false);
             auto origin = wf::origin(output->get_layout_geometry());
@@ -235,8 +328,9 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     }
     void handle_pointer_button(const wlr_pointer_button_event& ev) override
     {
-        if (finger < 0 && !pointer_release_managed_externally && ev.button == button &&
-            ev.state == WL_POINTER_BUTTON_STATE_RELEASED)
+        if (finger < 0 && !gesture && ev.button == button && ev.state == WL_POINTER_BUTTON_STATE_RELEASED &&
+            !pointer_release_managed_externally &&
+            (!owner || !ev.pointer || &ev.pointer->base == owner))
             handle_input_released();
     }
     void handle_touch_motion(uint32_t, int id, wf::pointf_t) override

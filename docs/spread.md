@@ -19,7 +19,14 @@ hint inside its window.
 
 ## Spread, solo and gather
 
-**Triggers (P4).** Only explicit requests arrange other windows: a focused window's hint hold or a three-finger hold solos it (WK35), and plain Space in Window mode gathers the periphery on each output (WK43). These actions commit outright, with no undo (P5). Presenting, card clicks, zone cycling and ordinary drops never spread, and pausing during a drag does not spread either. The drag audition and its pause were removed (ruling 10-05); its `solo_audition_hotspot` setting (28 pt) remains so moving beyond it cancels a pointer hold's audition if that behavior is introduced (WK39). Pointer-hold auditions are not built on this branch, so nothing reads the setting yet; its metadata and Settings help say so until they land.
+**Triggers (P4).** Only explicit requests spread a layout: the focused window's hint hold (WK35), a taken offer from a pointer or touchpad hold form on the focused window (Super + press, the halo, three fingers; WK39), and plain Space in Window mode gathers the periphery (WK43). These are explicit requests and commit without undo (P5); pointer and touchpad hold forms first preview the solo and commit when released (ruling 10-05). Present, card
+clicks, zone cycling and ordinary drops never spread, and neither does pausing during a drag: the
+drag audition that offered a solo there is removed, with its pause setting (ruling 10-05: the
+three-finger hold does the job). Its hotspot setting, `solo_audition_hotspot` (28 pt), stays: moving
+the pointer beyond it from where a hold fired is what counts as starting to drag, which cancels the
+hold's audition (ruling 10-05; WK39). A hold's audition is shown as a presentation layer only (a
+translation and scale per window on the shared drag layer); no true geometry, zone, memory, pin or
+widget state changes until it is taken.
 
 **The solo window.** Already in the center zone: it stays where it is (P2, P14). Otherwise it goes
 to its remembered center spot (WP2), else the middle of the screen, padded on screen (WP7), at full
@@ -135,7 +142,7 @@ result is always a whole arrangement or no change.
 
 | ID | Invariant | Status |
 |---|---|---|
-| SP1 | The focused window's hint hold or a three-finger hold solos it; plain Space in Window mode gathers each output once. Ctrl, Shift or Super makes Space a consumed no-op, repeats do not gather twice, focused-surface claims retain priority, and quick Alt+Space keeps its application route. These are explicit spread requests (P4); other actions do not spread. | Solo: verified (headless real-input checks); Gather: source implemented, acceptance pending |
+| SP1 | The focused window's hint hold solos it; taking an offer from a pointer or touchpad hold form on it (Super + press, the halo, three fingers; WK39) also solos it; plain Space in Window mode gathers every screen. These are the explicit spread requests (P4); nothing else spreads. | current exact-head checks pending; earlier solo/gather receipts do not cover this merged candidate |
 | SP2 | Arrivals land in the periphery (center outside the center zone and the rails, footprint inside the padded workarea), preferring the nearer side, hanging at most 16 pt into the center zone when they fit (ruling 10-04). | verified (unit fuzz, 600 scenes; headless) |
 | SP3 | In solo, a resident moves only when required by P6 and never moves inward or grows; it stays on its side, ends clear when pushed, and returns when its spot is free again. Gather is the explicit exception: it moves residents inward toward their own center-zone border, never across it, and may grow with the zone scale. | Solo: verified (unit fuzz and fixtures, headless); Gather: acceptance pending |
 | SP4 | The spacing pass moves only windows spread moved, each at most one halo, residents vertically only, arrivals within band, and never adds overlap (P7). | verified (unit fuzz) |
