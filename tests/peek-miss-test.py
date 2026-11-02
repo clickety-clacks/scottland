@@ -337,8 +337,9 @@ try:
         sx1, sy1, sx2, sy2 = scene(S); fx = scene(B)
         gx, gy = (sx1 + 8, (sy1 + sy2) / 2) if sx1 < fx[0] - 10 else (sx2 - 8, (sy1 + sy2) / 2) if sx2 > fx[2] + 10 else \
             ((sx1 + sx2) / 2, sy1 + 8) if sy1 < fx[1] - 10 else ((sx1 + sx2) / 2, sy2 - 8)
-        pointer(gx, gy); time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.2)
-        pointer(gx + 3, gy + 3); time.sleep(.3); release()
+        # Let go well inside the hold delay; a three-finger hold with no click is WK35/WK36.
+        pointer(gx, gy); time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.1)
+        pointer(gx + 3, gy + 3); time.sleep(.1); release()
         def drag_state():
             return ipc('scottland/desktop-model').get('drag', {})
         def drag_ended():

@@ -22,6 +22,23 @@ constexpr double hint_badge_opacity = 0.21;
 // Hint colors keep this 7% window/card tint as their contrast basis; the live Window-mode slider
 // changes the separate scene-layer wash and never recalculates the colors themselves.
 constexpr double hint_window_opacity = 0.07;
+// WK39: the hold ring (after Vimarchy's held hint). It waits hold_ring_pause ms, then fills
+// clockwise from the top at a constant rate and is complete exactly when the hold fires.
+constexpr double hold_ring_pause = 100;     // ms before it starts to fill
+constexpr double hold_ring_width = 4;       // stroke, logical px
+constexpr double hold_ring_gap = 6;         // between a hint badge's edge and the stroke's center
+constexpr double hold_ring_pointer = 22;    // radius at the pointer, logical px
+constexpr double hold_ring_linger = 250;    // ms the complete ring stays after the hold fires
+// Fill fraction `elapsed` ms into a hold of `delay` ms. A delay no longer than the pause fills
+// from the start. Reduced motion shows the whole ring once the pause has passed, unanimated.
+inline double hold_ring_progress(double elapsed, double delay, bool reduced_motion = false)
+{
+    double pause = delay > hold_ring_pause ? hold_ring_pause : 0;
+    if (elapsed < pause) return 0;
+    if (reduced_motion || delay <= pause) return 1;
+    double t = (elapsed - pause) / (delay - pause);
+    return t <= 0 ? 0 : t >= 1 ? 1 : t;
+}
 inline double hint_badge_size(double width, double height, double text_scale = 1.0)
 {
     // Vimarchy's sizing, scaled with the desktop's text size as everything else that's text.
