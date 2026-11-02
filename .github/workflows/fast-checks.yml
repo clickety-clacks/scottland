@@ -218,4 +218,10 @@ jobs:
                 exit "$test_status"
               fi
               rmdir -- build/fast-checks-headless-scratch
+              mkdir -m 700 build/config-watch-scratch
+              SCOTTLAND_TEST_SCRATCH="$PWD/build/config-watch-scratch" \
+                SCOTTLAND_HEADLESS_DIR="$PWD/build/config-watch-scratch/session" \
+                timeout --signal=TERM --kill-after=30s 2m \
+                tests/config-watch-missing-settings-test.sh "$PWD/build/config-watch-evidence"
+              rmdir -- build/config-watch-scratch
             '
