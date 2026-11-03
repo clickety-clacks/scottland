@@ -11,13 +11,16 @@
 #include <wayfire/plugins/ipc/ipc-method-repository.hpp>
 #include <wayfire/plugins/ipc/ipc-helpers.hpp>
 #include <wayfire/util/log.hpp>
+#include <wayfire/util.hpp>
 extern "C" {
 #include <wlr/backend/headless.h>
 #include <wlr/backend/multi.h>
 #include <wlr/interfaces/wlr_switch.h>
 #include <wlr/types/wlr_input_device.h>
+#include <wlr/types/wlr_output_power_management_v1.h>
 }
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <map>
 #include <string>
@@ -93,6 +96,43 @@ struct session_t::impl
     switch_bindings{"scottland/switch_bindings"};
     std::unique_ptr<test_switches_t> test_switches;
     uint64_t config_reloads = 0;
+    wf::wl_idle_call restore_power;
+    std::map<wlr_output*, wlr_output_power_manager_v1*> powered_off;
+    std::unique_ptr<wl_protocol_logger, decltype(&wl_protocol_logger_destroy)>
+        power_requests{nullptr, wl_protocol_logger_destroy};
+
+    // Wayfire owns the power manager. Its public protocol resources identify that
+    // manager without reaching into Wayfire's private output-layout implementation.
+    static void observe_power_request(void *data, wl_protocol_logger_type direction,
+        const wl_protocol_logger_message *message)
+    {
+        if (direction != WL_PROTOCOL_LOGGER_REQUEST ||
+            std::strcmp(wl_resource_get_class(message->resource), "zwlr_output_power_v1") ||
+            std::strcmp(message->message->name, "set_mode"))
+        {
+            return;
+        }
+
+        auto power = static_cast<wlr_output_power_v1*>(wl_resource_get_user_data(message->resource));
+        if (!power || !power->output)
+        {
+            return;
+        }
+
+        auto self = static_cast<impl*>(data);
+        if (message->arguments[0].u == ZWLR_OUTPUT_POWER_V1_MODE_OFF)
+        {
+            self->powered_off[power->output] = power->manager;
+        } else if (message->arguments[0].u == ZWLR_OUTPUT_POWER_V1_MODE_ON)
+        {
+            self->powered_off.erase(power->output);
+        }
+    }
+
+    wf::signal::connection_t<wf::output_removed_signal> on_output_removed = [=] (auto *ev)
+    {
+        powered_off.erase(ev->output->handle);
+    };
 
     wf::ipc::method_callback state = [=] (wf::json_t)
     {
@@ -106,6 +146,24 @@ struct session_t::impl
     // the count went up sees its effect.
     wf::signal::connection_t<wf::reload_config_signal> on_config_reload = [=] (wf::reload_config_signal*)
     {
+        // Stock Wayfire can re-enable DPMS outputs during reload while retaining
+        // its power-owned render inhibit. Repeat OFF through that same owner;
+        // never touch the shared inhibit count or outputs explicitly requested ON.
+        // Reload replaces Wayfire's cursor theme, then reconnects it in idle.
+        // Output commits must wait for that reconnection too.
+        restore_power.run_once([=] ()
+        {
+            auto config = wf::get_core().output_layout->get_current_configuration();
+            for (auto [output, manager] : powered_off)
+            {
+                auto state = config.find(output);
+                if (state != config.end() && state->second.source == wf::OUTPUT_IMAGE_SOURCE_SELF)
+                {
+                    wlr_output_power_v1_set_mode_event event{output, ZWLR_OUTPUT_POWER_V1_MODE_OFF};
+                    wl_signal_emit_mutable(&manager->events.set_mode, &event);
+                }
+            }
+        });
         ++config_reloads;
     };
 
@@ -163,6 +221,9 @@ session_t::~session_t()
 void session_t::init()
 {
     priv = std::make_unique<impl>();
+    priv->power_requests.reset(wl_display_add_protocol_logger(
+        wf::get_core().display, impl::observe_power_request, priv.get()));
+    wf::get_core().output_layout->connect(&priv->on_output_removed);
     priv->ipc->register_method("scottland/session-state", priv->state);
     wf::get_core().connect(&priv->on_switch);
     wf::get_core().connect(&priv->on_config_reload);
