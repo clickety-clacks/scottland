@@ -187,6 +187,47 @@ int main()
     mode.end(); pairs.clear(); mode.begin(many, 1); mode.letter('s', 1000);
     check(!mode.hold_waiting() && !mode.hold_due(3000) && pairs.empty(), "an incomplete prefix never holds");
 
+    // The reported many-window boundary changes labels from one letter to two.
+    // Exercise the same focused solo and unfocused pair gesture on each side of it.
+    for (unsigned count : {20u, 32u})
+    {
+        std::vector<hint_entry> loaded;
+        for (unsigned slot = 0; slot < count; ++slot)
+            loaded.push_back({slot + 1, slot, zone::center, false});
+        // Each real-client count runs in a fresh session; an empty desktop resets width.
+        mode.end(); mode.refresh({}); focus = 1; selected = 0; moves.clear(); pairs.clear(); solos.clear();
+        mode.begin(loaded, 1);
+        unsigned width = count == 20 ? 1 : 2;
+        check(mode.hint_width == width && mode.label(0).size() == width &&
+            mode.label(1).size() == width,
+            count == 20 ? "20 windows keep one-letter hints" : "32 windows use two-letter hints");
+
+        auto press_complete_hint = [&] (uint64_t id, uint32_t start)
+        {
+            std::string label = mode.label(unsigned(id - 1));
+            for (size_t i = 0; i < label.size(); ++i)
+            {
+                uint32_t at = start + uint32_t(i) * 30;
+                mode.letter(label[i], at);
+                if (i + 1 < label.size()) mode.release(label[i], at + 10);
+            }
+            return std::pair{label.back(), start + uint32_t(label.size() - 1) * 30};
+        };
+        auto [solo_key, solo_at] = press_complete_hint(1, 1000);
+        check(!mode.hold_due(solo_at + 499) && mode.hold_due(solo_at + 500) &&
+            solos == std::vector<uint64_t>{1} && pairs.empty() && moves.empty(),
+            count == 20 ? "20 windows: focused hint hold solos without a tap" :
+                "32 windows: focused hint hold solos without a tap");
+        mode.release(solo_key, solo_at + 600);
+        auto [pair_key, pair_at] = press_complete_hint(2, 2000);
+        check(!mode.hold_due(pair_at + 499) && mode.hold_due(pair_at + 500) &&
+            pairs == std::vector<std::pair<uint64_t, uint64_t>>{{2, 1}} &&
+            solos == std::vector<uint64_t>{1},
+            count == 20 ? "20 windows: unfocused hint hold pairs with prior focus" :
+                "32 windows: unfocused hint hold pairs with prior focus");
+        mode.release(pair_key, pair_at + 600);
+    }
+
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }
