@@ -13,8 +13,13 @@ the lock client died, Wayfire's stand-in, never the window underneath (#3366CC).
 
   tests/omarchy-lock-power-test.py
 """
+import json
+import shlex
+import shutil
 import signal
 import sys
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -51,7 +56,36 @@ def start_lock(session):
     return session.spawn(f"exec qs -p {lock_qml}")
 
 
-with Session(fixture, "hl-omarchy-lock-power") as session:
+def reported_power(session):
+    result = session.hyprctl("-j", "monitors")
+    return [monitor["dpmsStatus"] for monitor in json.loads(result.stdout)] if result.returncode == 0 else []
+
+
+@contextmanager
+def power_hook_overlay():
+    source = REPO / "build/hooks"
+    with tempfile.TemporaryDirectory(prefix="omarchy-power-hooks-", dir=REPO / "build") as scratch:
+        hooks = Path(scratch) / "hooks"
+        shutil.copytree(source, hooks, symlinks=True)
+        helper = hooks / "libexec/scottland-output-power"
+        real = helper.with_name("scottland-output-power.real")
+        helper.rename(real)
+        missing = Path(scratch) / "missing-status"
+        actions = Path(scratch) / "power-actions"
+        helper.write_text(
+            "#!/bin/sh\n"
+            "for arg do last=$arg; done\n"
+            f"if [ \"$last\" = status ] && [ -e {shlex.quote(str(missing))} ]; then exit 0; fi\n"
+            f"if [ \"$last\" = on ]; then printf 'on\\n' >> {shlex.quote(str(actions))}; fi\n"
+            f"exec {shlex.quote(str(real))} \"$@\"\n"
+        )
+        helper.chmod(0o755)
+        yield hooks, missing, actions
+
+
+with power_hook_overlay() as (power_hooks, missing_status, power_actions), \
+        Session(fixture, "hl-omarchy-lock-power",
+                env={"SCOTTLAND_TEST_HOOKS": str(power_hooks)}) as session:
     check("shim answers", session.wait_shim()[0])
     session.run("sh", "-c", f"python3 {REPO}/tests/solid-color-app.py lockpower '#3366CC' "
                             ">/dev/null 2>&1 </dev/null &")
@@ -66,6 +100,21 @@ with Session(fixture, "hl-omarchy-lock-power") as session:
         session, "start", center, lambda p: p == WINDOW)[0])
     check("unlocked session reports unlocked (exit 1)", locked_status(session) == 1,
           locked_status(session))
+
+    real_power = reported_power(session)
+    check("real on readings remain on", bool(real_power) and all(real_power), real_power)
+    missing_status.touch()
+    missing_power = reported_power(session)
+    check("a missing power-helper entry reports not-on",
+          bool(missing_power) and not any(missing_power), missing_power)
+    power_actions.write_text("")
+    recovery_on = session.run("omarchy-brightness-display", "on")
+    sent_actions = power_actions.read_text().splitlines()
+    check("Omarchy recovery sends ON when power status is missing",
+          recovery_on.returncode == 0 and sent_actions == ["on"],
+          (recovery_on.returncode, sent_actions))
+    missing_status.unlink()
+    power_actions.write_text("")
 
     # AG18: display off and on through Omarchy's own script.
     off = session.run("omarchy-brightness-display", "off")
