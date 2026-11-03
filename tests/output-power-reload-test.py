@@ -139,7 +139,7 @@ def ipc(method):
         return json.loads(read(struct.unpack('<I', read(4))[0]))
 
 
-def reload(name):
+def reload(name, mode=1):
     previous = ipc('scottland/session-state')['config-reloads']
     start = len(wire.events)
     with (root / 'config/wayfire.ini').open('a') as f:
@@ -147,7 +147,8 @@ def reload(name):
     observed = wait(lambda: ipc('scottland/session-state')['config-reloads'],
                     lambda count: count > previous, 'config reload')
     assert observed == previous + 1, (previous, observed)
-    state = wire.power_state()
+    state = wait(wire.power_state, lambda state: state.get('mode') == mode,
+                 'settled output power after ' + name)
     modes = [e for e in wire.events[start:] if e['object'] == wire.power and e['opcode'] == 0]
     result['checks'].append({'reload': name, 'utc': now(), 'power': state, 'mode_events': modes})
     return state
@@ -210,7 +211,7 @@ try:
         assert reload('s3-on')['mode'] == 1
         drawing('s3-reload')
         wire.set_power(0)
-        state = reload('s4-off')
+        state = reload('s4-off', 1 if args.expect_bug else 0)
         result['scenario4_pass'] = state['mode'] == 0
         if args.expect_bug:
             assert state['mode'] == 1, 'Expected base regression did not reproduce'
@@ -219,7 +220,7 @@ try:
             assert frame['content_max'] == 0, 'Base failure is not black in the proven client region'
         else:
             assert state['mode'] == 0, 'OFF plus reload did not settle OFF'
-            assert reload('s4-off-again')['mode'] == 0, 'Repeated reload lost requested OFF'
+            assert reload('s4-off-again', 0)['mode'] == 0, 'Repeated reload lost requested OFF'
         wire.set_power(1)
         drawing('s4-recovery-on')
         assert reload('s4-after-on')['mode'] == 1, 'A later reload undid explicit ON'

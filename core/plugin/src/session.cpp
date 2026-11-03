@@ -11,6 +11,7 @@
 #include <wayfire/plugins/ipc/ipc-method-repository.hpp>
 #include <wayfire/plugins/ipc/ipc-helpers.hpp>
 #include <wayfire/util/log.hpp>
+#include <wayfire/util.hpp>
 extern "C" {
 #include <wlr/backend/headless.h>
 #include <wlr/backend/multi.h>
@@ -95,6 +96,7 @@ struct session_t::impl
     switch_bindings{"scottland/switch_bindings"};
     std::unique_ptr<test_switches_t> test_switches;
     uint64_t config_reloads = 0;
+    wf::wl_idle_call restore_power;
     std::map<wlr_output*, wlr_output_power_manager_v1*> powered_off;
     std::unique_ptr<wl_protocol_logger, decltype(&wl_protocol_logger_destroy)>
         power_requests{nullptr, wl_protocol_logger_destroy};
@@ -147,16 +149,21 @@ struct session_t::impl
         // Stock Wayfire can re-enable DPMS outputs during reload while retaining
         // its power-owned render inhibit. Repeat OFF through that same owner;
         // never touch the shared inhibit count or outputs explicitly requested ON.
-        auto config = wf::get_core().output_layout->get_current_configuration();
-        for (auto [output, manager] : powered_off)
+        // Reload replaces Wayfire's cursor theme, then reconnects it in idle.
+        // Output commits must wait for that reconnection too.
+        restore_power.run_once([=] ()
         {
-            auto state = config.find(output);
-            if (state != config.end() && state->second.source == wf::OUTPUT_IMAGE_SOURCE_SELF)
+            auto config = wf::get_core().output_layout->get_current_configuration();
+            for (auto [output, manager] : powered_off)
             {
-                wlr_output_power_v1_set_mode_event event{output, ZWLR_OUTPUT_POWER_V1_MODE_OFF};
-                wl_signal_emit_mutable(&manager->events.set_mode, &event);
+                auto state = config.find(output);
+                if (state != config.end() && state->second.source == wf::OUTPUT_IMAGE_SOURCE_SELF)
+                {
+                    wlr_output_power_v1_set_mode_event event{output, ZWLR_OUTPUT_POWER_V1_MODE_OFF};
+                    wl_signal_emit_mutable(&manager->events.set_mode, &event);
+                }
             }
-        }
+        });
         ++config_reloads;
     };
 
