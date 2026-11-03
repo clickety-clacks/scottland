@@ -510,7 +510,7 @@ class Translator:
             "specialWorkspace": {"id": 0, "name": ""},
             "reserved": reserved,
             "focused": output["id"] == focused_id,
-            "dpmsStatus": (power or {}).get(output["name"], True),
+            "dpmsStatus": (power or {}).get(output["name"], False),
             # omarchy-hyprland-session-locked reads the session lock from here: Hyprland lists
             # "LOCK" among the reasons a monitor can't go solitary while a lock holds the session,
             # including one whose lock client died.
