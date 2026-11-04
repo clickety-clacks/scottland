@@ -56,6 +56,12 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 2026-10-13 | Mike's saved Settings value (`hint_background_opacity = 80`) sets the fresh-install and Settings Defaults value to 80%, superseding the 2026-10-07 default of 21%; the absolute 0–100% range and one shared window/widget setting are unchanged. | WK42, S23 |
 | 2026-10-07 | "Record option 2: both separate settings go 0–100%". The Window mode hint color overlay (`window_mode_tint`) widens from 0–30% to 0–100%, default still 7%; it stays a separate setting from hint background opacity, which is unchanged. | WK38, S14 |
 
+## Pointer and touchpad gestures
+
+| Date | Ruling | Where |
+|---|---|---|
+| 2026-11-04 | “I meant what I said on 10-06, and meant mouse middle button drag: that should move the window not resize it.” Three-finger touchpad click-drag resizes around the center; three-finger drag without a click moves; an ordinary mouse middle-button drag moves; a quick middle click reaches the app; pen and tablet behavior is unchanged. This corrects the 10-06 R7 interpretation that replaced touchpad resize. | L23, L24; touchpad_gestures |
+
 ## Window mode keys
 
 | Date | Ruling | Where |
