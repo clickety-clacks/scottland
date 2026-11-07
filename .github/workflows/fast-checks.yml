@@ -207,11 +207,10 @@ jobs:
               make test-hooks
               mkdir -m 700 build/middle-press-fast-check-scratch
               middle_log="$PWD/build/middle-press-console.log"
-              if SCOTTLAND_SKIP_CROSS_SURFACE_REPLAY=1 \
-                SCOTTLAND_TEST_SCRATCH="$PWD/build/middle-press-fast-check-scratch" \
+              if SCOTTLAND_TEST_SCRATCH="$PWD/build/middle-press-fast-check-scratch" \
                 SCOTTLAND_HEADLESS_DIR="$PWD/build/middle-press-fast-check-scratch/session" \
                 timeout --signal=TERM --kill-after=30s 6m \
-                tests/middle-press-test.sh "$PWD/build/middle-press-evidence" >"$middle_log" 2>&1; then
+                tests/middle-press-test.sh "$PWD/build/middle-press-evidence" --skip-cross-surface-replay >"$middle_log" 2>&1; then
                 cat "$middle_log"
               else
                 test_status=$?

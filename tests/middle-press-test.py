@@ -11,6 +11,7 @@ import time
 
 out = Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)
+skip_cross_surface_replay = "--skip-cross-surface-replay" in sys.argv[2:]
 sock = socket.socket(socket.AF_UNIX)
 sock.settimeout(10)
 sock.connect(os.environ["WAYFIRE_SOCKET"])
@@ -302,7 +303,7 @@ try:
           f"{before} -> {after}")
     check(not all_events(), "halo: middle drag release is not replayed to A")
 
-    if os.environ.get("SCOTTLAND_SKIP_CROSS_SURFACE_REPLAY") == "1":
+    if skip_cross_surface_replay:
         print("FOLLOW-UP (not run): original-surface replay after an 8 px cross-window middle click; the exact 0.4 base failed this scenario")
     else:
         # R3(b): the release is over B, but the click belongs only to the original surface A.
