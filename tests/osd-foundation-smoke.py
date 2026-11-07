@@ -425,6 +425,8 @@ def run_smoke(path):
     report = load_report(path)
     outcome_file = ROOT / "build/osd-foundation-smoke/hooks-build.outcome"
     if outcome_file.is_file():
+        report.setdefault("logs", {})["hooks_build_outcome"] = str(
+            outcome_file.relative_to(ROOT))
         outcome_text = outcome_file.read_text().strip()
         if outcome_text.startswith("PASS\t"):
             set_row(report, "meson_test_hooks_build", "PASS", "build_completed", outcome_text)
@@ -512,6 +514,7 @@ def run_smoke(path):
                     f"canonical headless start exited {start_status}; see wayfire-start.log")
             set_unrun(report, "the canonical wrapper did not start the test-owned Wayfire session",
                       "compositor_not_started", exclude=("wayfire_session_started",))
+            save_report(report, path)
             raise SmokePrerequisiteUnavailable
         started = True
 
@@ -524,20 +527,25 @@ def run_smoke(path):
                     f"headless start returned success but Wayfire process identity was unavailable: {error}")
             set_unrun(report, "the test could not verify the real Wayfire executable",
                       "component_identity_unavailable", exclude=("wayfire_session_started",))
+            save_report(report, path)
             raise SmokePrerequisiteUnavailable
         if Path(executable.removesuffix(" (deleted)")).name != "wayfire":
             set_row(report, "wayfire_session_started", "NOT_RUN", "component_identity_mismatch",
                     f"the headless wrapper process resolved to {executable!r}, not Wayfire")
             set_unrun(report, "the real Wayfire executable was not confirmed",
                       "component_identity_mismatch", exclude=("wayfire_session_started",))
+            save_report(report, path)
             raise SmokePrerequisiteUnavailable
         set_row(report, "wayfire_session_started", "PASS", "real_component_started",
                 f"canonical tests/headless.sh started Wayfire pid {pid} ({executable})")
+        save_report(report, path)
 
         ipc_command = ["tests/headless.sh", "ipc", "scottland/desktop-model"]
         report["commands"].append(" ".join(ipc_command))
         ipc_status, ipc_output = run_capture(ipc_command, env=env, timeout=15)
-        (path.parent / "wayfire-ipc.json").write_text(ipc_output)
+        ipc_path = path.parent / "wayfire-ipc.json"
+        ipc_path.write_text(ipc_output)
+        report.setdefault("logs", {})["wayfire_ipc"] = str(ipc_path.relative_to(ROOT))
         try:
             snapshot = json.loads(ipc_output)
         except json.JSONDecodeError:
@@ -548,12 +556,14 @@ def run_smoke(path):
         else:
             set_row(report, "wayfire_desktop_model_ipc", "FAIL", "real_component_assertion_failed",
                     f"desktop-model IPC exit={ipc_status}; response lacked an integer version (see wayfire-ipc.json)")
+        save_report(report, path)
 
         probe_command = [
             "tests/headless.sh", "run", "timeout", "--signal=TERM", "--kill-after=10s", "45s",
             "python3", "tests/osd-foundation-smoke.py", "--probe", "--report", str(path),
         ]
         report["commands"].append(" ".join(probe_command))
+        save_report(report, path)
         probe_status, probe_output = run_capture(probe_command, env=env, timeout=60)
         (path.parent / "quickshell-probe-wrapper.log").write_text(probe_output)
         report = load_report(path)
@@ -564,7 +574,11 @@ def run_smoke(path):
                         f"headless run wrapper exited {probe_status}; see quickshell-probe-wrapper.log")
         save_report(report, path)
     except SmokePrerequisiteUnavailable:
-        pass
+        save_report(report, path)
+    except Exception as error:
+        report["smoke_error"] = f"{type(error).__name__}: {error}"
+        save_report(report, path)
+        raise
     finally:
         if started:
             stop_command = ["tests/headless.sh", "stop"]
