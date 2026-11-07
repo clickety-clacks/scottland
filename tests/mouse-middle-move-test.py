@@ -220,6 +220,8 @@ try:
     pad_down = True
     # test-touchpad models buttons and gestures; stipc supplies pointer motion.
     pointer(center[0] + 80, center[1] + 60)
+    wait(lambda: state()["middle_resizing"], what="touchpad resize grab start")
+    pointer(center[0] + 100, center[1] + 80)
     wait(lambda: geometry() != before, what="touchpad click-drag resize")
     pad("button", button="middle", pressed=False)
     pad_down = False

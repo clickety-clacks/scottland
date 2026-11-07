@@ -192,6 +192,35 @@ jobs:
               bwrap --version
             '
 
+      - name: Run the headless check
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          docker run --rm --privileged \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/home/ci \
+            --env XDG_RUNTIME_DIR="/run/user/$(id -u)" \
+            --env SCOTTLAND_HEADLESS_ISOLATION=1 \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            scottland-checks:main \
+            bash -euo pipefail -c '
+              mkdir -m 700 -p "$XDG_RUNTIME_DIR"
+              git rev-parse HEAD
+              make test-hooks
+              mkdir -m 700 build/main-headless-scratch
+              SCOTTLAND_WIDGET_SCOPE=0 \
+                SCOTTLAND_TEST_SCRATCH="$PWD/build/main-headless-scratch" \
+                SCOTTLAND_HEADLESS_DIR="$PWD/build/main-headless-scratch/session" \
+                timeout --signal=TERM --kill-after=30s 6m tests/hint-background-opacity-test.sh
+              rmdir -- build/main-headless-scratch
+              mkdir -m 700 build/config-watch-scratch
+              SCOTTLAND_TEST_SCRATCH="$PWD/build/config-watch-scratch" \
+                SCOTTLAND_HEADLESS_DIR="$PWD/build/config-watch-scratch/session" \
+                timeout --signal=TERM --kill-after=30s 2m \
+                tests/config-watch-missing-settings-test.sh "$PWD/build/config-watch-evidence"
+              rmdir -- build/config-watch-scratch
+            '
+
   focused-mouse-middle:
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 186 }}
     name: Scottland mouse middle
@@ -235,33 +264,4 @@ jobs:
               git rev-parse HEAD
               make test-hooks
               timeout --signal=TERM --kill-after=30s 6m tests/mouse-middle-move-test.sh
-            '
-
-      - name: Run the headless check
-        run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          docker run --rm --privileged \
-            --user "$(id -u):$(id -g)" \
-            --env HOME=/home/ci \
-            --env XDG_RUNTIME_DIR="/run/user/$(id -u)" \
-            --env SCOTTLAND_HEADLESS_ISOLATION=1 \
-            --volume "$GITHUB_WORKSPACE:/work" \
-            --workdir /work \
-            scottland-checks:main \
-            bash -euo pipefail -c '
-              mkdir -m 700 -p "$XDG_RUNTIME_DIR"
-              git rev-parse HEAD
-              make test-hooks
-              mkdir -m 700 build/main-headless-scratch
-              SCOTTLAND_WIDGET_SCOPE=0 \
-                SCOTTLAND_TEST_SCRATCH="$PWD/build/main-headless-scratch" \
-                SCOTTLAND_HEADLESS_DIR="$PWD/build/main-headless-scratch/session" \
-                timeout --signal=TERM --kill-after=30s 6m tests/hint-background-opacity-test.sh
-              rmdir -- build/main-headless-scratch
-              mkdir -m 700 build/config-watch-scratch
-              SCOTTLAND_TEST_SCRATCH="$PWD/build/config-watch-scratch" \
-                SCOTTLAND_HEADLESS_DIR="$PWD/build/config-watch-scratch/session" \
-                timeout --signal=TERM --kill-after=30s 2m \
-                tests/config-watch-missing-settings-test.sh "$PWD/build/config-watch-evidence"
-              rmdir -- build/config-watch-scratch
             '
