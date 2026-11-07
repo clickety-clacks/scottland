@@ -309,9 +309,9 @@ try:
     # R3(b): the release is over B's frame, but the click belongs only to A's original surface.
     setup(a_x=300, b_x=600)
     a = geometry("A")
-    # Put B's frame over A's right edge so an 8 px move leaves A's surface for
-    # B's frame while remaining inside L24's 12 px click-slop boundary.
-    place("B", round(a["x"] + a["width"] - 26), a["y"], 360, 260)
+    # Put B's frame band just beyond A's press point: the focused swell can extend
+    # the band beyond the client edge, and an 8 px move enters it inside click slop.
+    place("B", round(a["x"] + a["width"] - 17), a["y"], 360, 260)
     focus("B")
     settle("A", "B")
     clear_events()
@@ -322,6 +322,8 @@ try:
     button("BTN_MIDDLE", True)
     wait(lambda: state()["mouse_middle_pending"], what="cross-surface middle pending")
     pointer(x + 8, y)
+    wait(lambda: any(event["edge"] == "leave" for event in pointer_events("A")),
+         what="8 px move leaves A's surface for B's frame")
     button("BTN_MIDDLE", False)
     wait(lambda: len(events("A")) == 2, what="original-surface replay")
     check([(event["edge"], event["button"]) for event in events("A")] ==
