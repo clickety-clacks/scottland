@@ -243,13 +243,15 @@ try:
     pointer(*center)
     pad("swipe_begin", fingers=3)
     swipe_active = True
+    wait(lambda: state()["swipe_moving"], what="three-finger swipe start")
     for _ in range(10):
         pad("swipe_update", fingers=3, dx=20, dy=10)
-    wait(lambda: geometry()["x"] >= before["x"] + 120,
-         what="three-finger swipe movement")
     pad("swipe_end")
     swipe_active = False
-    wait(lambda: not state()["dragging"], what="three-finger swipe end")
+    wait(lambda: not state()["dragging"] and not state()["swipe_moving"] and
+         geometry()["x"] >= before["x"] + 120 and
+         geometry()["y"] >= before["y"] + 40,
+         what="three-finger swipe movement after release")
     after = settle()
     check(after["x"] >= before["x"] + 120 and after["y"] >= before["y"] + 40 and
           (after["width"], after["height"]) == (before["width"], before["height"]),

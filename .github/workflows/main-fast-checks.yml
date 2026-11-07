@@ -222,7 +222,7 @@ jobs:
             '
 
   focused-mouse-middle:
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 186 }}
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
     name: Scottland mouse middle
     runs-on: ubuntu-24.04
     steps:
