@@ -153,6 +153,14 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      - name: Check out Omarchy source for monitor checks
+        uses: actions/checkout@v4
+        with:
+          repository: basecamp/omarchy
+          ref: ac2690cd7be4f47e4a255f5e2e78d904d436b068
+          path: omarchy-source
+          persist-credentials: false
+
       - name: Prepare build environment
         run: |
           printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
@@ -218,6 +226,26 @@ jobs:
                 timeout --signal=TERM --kill-after=30s 2m \
                 tests/config-watch-missing-settings-test.sh "$PWD/build/config-watch-evidence"
               rmdir -- build/config-watch-scratch
+              printf 'Omarchy source commit: '
+              git -C omarchy-source rev-parse HEAD
+              printf 'Omarchy source tree: '
+              git -C omarchy-source rev-parse 'HEAD^{tree}'
+              test "$(git -C omarchy-source rev-parse HEAD)" = ac2690cd7be4f47e4a255f5e2e78d904d436b068
+              test "$(git -C omarchy-source rev-parse 'HEAD^{tree}')" = 43fbdfc8e861ea5a2d9864e9c7cad279da98e974
+              mkdir -m 700 build/omarchy-monitors-scratch
+              mkdir -m 700 build/omarchy-monitors-scratch/tmp
+              console_log="$PWD/build/omarchy-monitors-console.log"
+              if OMARCHY_PATH="$PWD/omarchy-source" \
+                SCOTTLAND_TEST_SCRATCH="$PWD/build/omarchy-monitors-scratch" \
+                SCOTTLAND_HEADLESS_DIR="$PWD/build/omarchy-monitors-scratch/session" \
+                timeout --signal=TERM --kill-after=30s 6m \
+                python3 tests/omarchy-monitors-test.py >"$console_log" 2>&1; then
+                cat "$console_log"
+              else
+                test_status=$?
+                cat "$console_log"
+                exit "$test_status"
+              fi
             '
 
   focused-mouse-middle:
