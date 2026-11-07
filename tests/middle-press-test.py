@@ -214,6 +214,10 @@ def setup(a_x=280, b_x=680):
                  what="show Middle-" + title)
     place("A", a_x, 240, 360, 260)
     place("B", b_x, 240, 360, 260)
+    # After a swipe, the fixtures can still be animating back to their setup
+    # positions. Sample their center pixels only after compositor geometry and
+    # scale have settled, then keep the independent pixel readiness check.
+    settle("A", "B")
     for title in ("A", "B"):
         g = geometry(title)
         if not wait_fixture_pixel(f"ready-{title}",
