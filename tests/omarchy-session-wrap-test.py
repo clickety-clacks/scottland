@@ -15,6 +15,9 @@ def main():
         root = Path(temporary)
         repo = root / "checkout"
         (repo / "tests").mkdir(parents=True)
+        (repo / "build").mkdir()
+        scratch = repo / "build" / "fixture-scratch"
+        scratch.mkdir(mode=0o700)
         (repo / "tests/headless.sh").touch()
         home = root / "home"
         home.mkdir()
@@ -46,7 +49,8 @@ def main():
             with patch.object(omarchy_fixture.subprocess, "run", side_effect=dispatch):
                 session = omarchy_fixture.Session(
                     fixture, "fake-session", repo=repo,
-                    env={"SCOTTLAND_TEST_WRAP": str(wrapper)})
+                    env={"SCOTTLAND_TEST_WRAP": str(wrapper),
+                         "SCOTTLAND_TEST_SCRATCH": str(scratch)})
                 assert "SCOTTLAND_TEST_WRAP" not in session.env
                 try:
                     with session as active:
@@ -72,7 +76,8 @@ def main():
         calls.clear()
         plain = omarchy_fixture.Session(
             fixture, "fake-plain-session", repo=repo, omarchy=False,
-            env={"SCOTTLAND_TEST_WRAP": str(wrapper)})
+            env={"SCOTTLAND_TEST_WRAP": str(wrapper),
+                 "SCOTTLAND_TEST_SCRATCH": str(scratch)})
         with patch.object(omarchy_fixture.subprocess, "run", side_effect=dispatch):
             plain.start()
             plain.stop()

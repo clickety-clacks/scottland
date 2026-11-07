@@ -56,6 +56,9 @@ elif ! docker run "${docker_args[@]}" \
         build/hooks/libexec/scottland-exec \
         build/hooks/libexec/scottland-build-config \
         build/hooks/libexec/scottland-ctl
+      for required_tool in magick hyprctl grim wf-recorder; do
+        command -v "$required_tool"
+      done
       pacman -Q
       preflight_status=0
       tests/headless.sh start || preflight_status=$?
@@ -93,13 +96,23 @@ while IFS=$'\t' read -r row_name venue dependency; do
   else
     row_dir="$evidence/row-$row_index"
     mkdir -m 700 "$row_dir"
+    scratch="$row_dir/scratch"
+    headless="$scratch/session"
+    # WK37/WK38 verifies the runner-owned item2 directory and exact session
+    # layout, so create that row's private scratch at the required build root.
+    if [[ $row_name == tests/hint-outline-test.sh ]]; then
+      scratch=$(mktemp -d "$repo/build/item2-tint.XXXXXXXX")
+      headless="$scratch/headless-wk37-wk38"
+    fi
+    container_scratch="/work${scratch#"$repo"}"
+    container_headless="/work${headless#"$repo"}"
     container_name="scottland-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$shard-$row_index"
     log="$evidence/logs/${row_name##*/}.log"
     printf 'RUN %s\n' "$row_name"
     if docker run "${docker_args[@]}" --name "$container_name" \
         --env SCOTTLAND_TEST_ROW="$row_name" \
-        --env SCOTTLAND_TEST_SCRATCH="/work/build/compositor-rows/shard-$shard/row-$row_index/scratch" \
-        --env SCOTTLAND_HEADLESS_DIR="/work/build/compositor-rows/shard-$shard/row-$row_index/scratch/session" \
+        --env SCOTTLAND_TEST_SCRATCH="$container_scratch" \
+        --env SCOTTLAND_HEADLESS_DIR="$container_headless" \
         scottland-checks:compositor bash -euo pipefail -c '
           mkdir -m 700 -p "$XDG_RUNTIME_DIR" "$SCOTTLAND_TEST_SCRATCH"
           mkdir -m 700 "$SCOTTLAND_TEST_SCRATCH/tmp"
@@ -130,6 +143,12 @@ while IFS=$'\t' read -r row_name venue dependency; do
       row_status=FAIL
       failed=1
       tail -50 "$log"
+    fi
+    if [[ -d $scratch ]]; then
+      while IFS= read -r -d '' runtime_log; do
+        printf '\n--- %s (last 80 lines) ---\n' "${runtime_log#"$repo"/}" >> "$log"
+        tail -80 "$runtime_log" >> "$log"
+      done < <(find "$scratch" -type f \( -name wayfire.log -o -name .headless-start-stderr.log \) -print0)
     fi
     if docker container inspect "$container_name" >/dev/null 2>&1; then
       echo 'owned row container persisted after exit' >> "$log"
