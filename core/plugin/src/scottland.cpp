@@ -8,6 +8,7 @@
 #include <wayfire/plugins/wm-actions-signals.hpp>
 #include <wayfire/toplevel-view.hpp>
 #include <wayfire/view-transform.hpp>
+#include <wayfire/unstable/wlr-surface-node.hpp>
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/option-wrapper.hpp>
 #include <wayfire/config/compound-option.hpp>
@@ -5733,9 +5734,22 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
-        // A clickfinger release can land over a different client. Refocus the press point, replay
-        // only if the original surface is still the recipient there, then put the cursor back.
+        // A click release can land over another surface or a frame. Check the scene below any
+        // active pointer grab at the original point so only the original recipient can get replay.
+        auto hit = core.scene()->find_node_at(press);
+        auto surface_node = hit ? dynamic_cast<wf::scene::wlr_surface_node_t*>(hit->node.get()) : nullptr;
+        if (!surface_node || (surface_node->get_surface() != recipient))
+        {
+            return;
+        }
+
+        // Re-enter the original surface before replay; restore the real release position after.
         core.warp_cursor(press);
+        if (seat->pointer_state.focused_surface != recipient)
+        {
+            wlr_seat_pointer_notify_enter(seat, recipient, hit->local_coords.x, hit->local_coords.y);
+        }
+
         if (seat->pointer_state.focused_surface == recipient)
         {
             uint32_t time = now_msec();
