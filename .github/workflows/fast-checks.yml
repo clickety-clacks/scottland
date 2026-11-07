@@ -1,9 +1,6 @@
 name: Scottland 0.4 fast checks
 
 on:
-  push:
-    branches:
-      - '0.4'
   pull_request:
     branches:
       - '0.4'
@@ -159,7 +156,6 @@ jobs:
 
   headless:
     name: Scottland 0.3 headless
-    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
