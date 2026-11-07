@@ -25,10 +25,14 @@ jobs:
       - name: Prepare build environment
         run: |
           printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
+          docker pull archlinux:base-devel
+          base_ref="$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
           docker build --pull \
             --build-arg CI_UID="$(id -u)" \
+            --build-arg BASE_REF="$base_ref" \
             --tag scottland-checks:phase1 - <<'DOCKERFILE'
-          FROM archlinux:base-devel
+          ARG BASE_REF
+          FROM ${BASE_REF}
           ARG CI_UID
           RUN pacman -Syu --noconfirm --needed \
                 archlinux-keyring bubblewrap dbus gdk-pixbuf2 git glm grim inotify-tools jq \
@@ -36,7 +40,7 @@ jobs:
                 quickshell rust shadow wayfire wayland wayland-protocols wlroots0.20 cairo \
             && useradd --uid "$CI_UID" --gid 0 --create-home ci
           DOCKERFILE
-          printf 'Container base image: %s\n' "$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
+          printf 'Container base image: %s\n' "$base_ref"
           printf 'Prepared container image: %s\n' "$(docker image inspect scottland-checks:phase1 --format '{{.Id}}')"
 
       - name: Report toolchain versions
@@ -50,6 +54,7 @@ jobs:
               . /etc/os-release
               printf "%s %s\n" "$NAME" "$VERSION_ID"
               pacman -Q wayfire wlroots0.20 meson gcc rust python
+              pacman -Q
               printf "C++ compiler: "
               g++ --version | sed -n "1p"
               rustc --version
@@ -68,6 +73,7 @@ jobs:
             scottland-checks:phase1 \
             bash -euo pipefail -c '
               git rev-parse HEAD
+              git rev-parse HEAD^{tree}
               make test-hooks
             '
 
@@ -84,10 +90,14 @@ jobs:
       - name: Prepare build environment
         run: |
           printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
+          docker pull archlinux:base-devel
+          base_ref="$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
           docker build --pull \
             --build-arg CI_UID="$(id -u)" \
+            --build-arg BASE_REF="$base_ref" \
             --tag scottland-checks:phase1 - <<'DOCKERFILE'
-          FROM archlinux:base-devel
+          ARG BASE_REF
+          FROM ${BASE_REF}
           ARG CI_UID
           RUN pacman -Syu --noconfirm --needed \
                 archlinux-keyring bubblewrap dbus gdk-pixbuf2 git glm grim inotify-tools jq \
@@ -95,7 +105,7 @@ jobs:
                 quickshell rust shadow wayfire wayland wayland-protocols wlroots0.20 cairo \
             && useradd --uid "$CI_UID" --gid 0 --create-home ci
           DOCKERFILE
-          printf 'Container base image: %s\n' "$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
+          printf 'Container base image: %s\n' "$base_ref"
           printf 'Prepared container image: %s\n' "$(docker image inspect scottland-checks:phase1 --format '{{.Id}}')"
 
       - name: Report toolchain versions
@@ -109,6 +119,7 @@ jobs:
               . /etc/os-release
               printf "%s %s\n" "$NAME" "$VERSION_ID"
               pacman -Q wayfire wlroots0.20 meson gcc rust python
+              pacman -Q
               printf "C++ compiler: "
               g++ --version | sed -n "1p"
               rustc --version
@@ -127,6 +138,7 @@ jobs:
             scottland-checks:phase1 \
             bash -euo pipefail -c '
               git rev-parse HEAD
+              git rev-parse HEAD^{tree}
               make tools-test
               tests/inertia-unit.sh
               tests/navigation-unit.sh
@@ -225,3 +237,55 @@ jobs:
                 tests/config-watch-missing-settings-test.sh "$PWD/build/config-watch-evidence"
               rmdir -- build/config-watch-scratch
             '
+
+  standalone:
+    name: Scottland 0.4 standalone rows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Prepare test environment
+        run: |
+          printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
+          docker pull archlinux:base-devel
+          base_ref="$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
+          printf 'SCOTTLAND_BASE_IMAGE_DIGEST=%s\n' "$base_ref" >> "$GITHUB_ENV"
+          docker build --pull \
+            --build-arg CI_UID="$(id -u)" \
+            --build-arg BASE_REF="$base_ref" \
+            --tag scottland-checks:standalone - <<'DOCKERFILE'
+          ARG BASE_REF
+          FROM ${BASE_REF}
+          ARG CI_UID
+          RUN pacman -Syu --noconfirm --needed \
+                archlinux-keyring fakeroot gcc git make python shadow \
+            && useradd --uid "$CI_UID" --gid 0 --create-home ci
+          DOCKERFILE
+          printf 'Container base image: %s\n' "$base_ref"
+          printf 'Prepared container image: %s\n' "$(docker image inspect scottland-checks:standalone --format '{{.Id}}')"
+
+      - name: Run standalone rows
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/home/ci \
+            --env GITHUB_REF \
+            --env SCOTTLAND_BASE_IMAGE_DIGEST \
+            --env SCOTTLAND_CONTAINER_ID="$(docker image inspect scottland-checks:standalone --format '{{.Id}}')" \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            scottland-checks:standalone \
+            bash .github/scripts/standalone-rows.sh
+
+      - name: Upload per-row evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-rows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/standalone-rows/
+          if-no-files-found: warn
