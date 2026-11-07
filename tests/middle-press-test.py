@@ -323,9 +323,10 @@ try:
     focus("B")
     settle("A", "B")
     a = geometry("A")
-    # Overlap B's client edge with A. The focused halo animates beyond the client,
-    # so derive the press point from its settled frame bounds below.
-    place("B", round(a["x"] + a["width"] - 17), a["y"], 360, 260)
+    a_frame = frame_state("A")
+    # A may be displayed scaled, so position B against A's reported frame edge.
+    # The focused halo animates beyond B's client; derive the press point below.
+    place("B", round(a_frame["x"] + a_frame["width"] - 17), a["y"], 360, 260)
     settle("A", "B")
     b_frame = frame_state("B")
     hover_x = round(b_frame["x"] - b_frame["thickness"] - 6)
