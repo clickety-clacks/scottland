@@ -107,7 +107,8 @@ def place(x=600, y=350, width=400, height=300):
     else:
         raise RuntimeError("could not place fixture window: " + str(geometry()))
     ipc("window-rules/focus-view", {"id": window()["id"]})
-    wait(lambda: ipc("window-rules/get-focused-view").get("info", {}).get("id") == window()["id"],
+    wait(lambda: (ipc("window-rules/get-focused-view").get("info") or {}).get("id") ==
+         window()["id"],
          what="fixture focus")
     settle()
 
