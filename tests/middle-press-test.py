@@ -69,7 +69,17 @@ def layout_view(title):
 
 
 def frame_state(title):
-    return layout_view(title)["frame"]
+    row = layout_view(title)
+    state = dict(row["frame"])
+    # In the isolated test model, scene_frame includes the live view transform.
+    # Use the compositor's scene geometry for fixture placement and input points.
+    state.update(row.get("scene_frame", {}))
+    return state
+
+
+def frame_diagnostic(title):
+    row = layout_view(title)
+    return {key: row.get(key) for key in ("frame", "scene_frame", "applied_scale")}
 
 
 def state():
@@ -348,8 +358,14 @@ try:
           x < b_halo_left < release_x < b_frame["x"] and
           b_frame["y"] - b_frame["thickness"] < y <
           b_frame["y"] + b_frame["height"] + b_frame["thickness"],
-          "fixture: A owns the press point and B's settled frame contains the 8 px release",
+          "fixture: A's scene frame contains the press point and B's settled frame contains the 8 px release",
           f"A frame={a_frame}; B frame={b_frame}; press=({x},{y}); release=({release_x},{y})")
+    print(f"INFO R3(b) input geometry: A={frame_diagnostic('A')}; "
+          f"B={frame_diagnostic('B')}; press=({x},{y}); release=({release_x},{y})", flush=True)
+    # Approach from A's center so the readiness check observes input at the press point.
+    pointer(round(a_frame["x"] + a_frame["width"] / 2), y)
+    wait(lambda: bool(pointer_events("A")), what="A surface at the R3(b) approach point")
+    clear_events()
     pointer(x, y)
     wait(lambda: bool(pointer_events("A")),
          what=f"original surface at ({x},{y}) with A frame={a_frame} and B frame={b_frame}")
