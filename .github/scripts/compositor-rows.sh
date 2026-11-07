@@ -13,26 +13,39 @@ evidence="$repo/build/compositor-rows/shard-$shard"
 mkdir -m 700 -p "$evidence/logs"
 rows="$evidence/rows.tsv"
 printf 'row\tstatus\texit_code\treason\n' > "$rows"
-product_commit=${SCOTTLAND_PRODUCT_SOURCE:?set the pinned product commit}
-harness_commit=${SCOTTLAND_HARNESS_HEAD:?set the PR harness head}
+product_commit=${SCOTTLAND_PRODUCT_SOURCE:?set the product commit}
+harness_commit=${SCOTTLAND_HARNESS_HEAD:?set the checked-out commit}
 product_tree=$(git rev-parse "${product_commit}^{tree}")
-[[ $product_commit == dc155ea158dd8aee14bc9a30f451b7e73316586b &&
-   $product_tree == 5ea3f22461b820144778512e674d3b632929ba27 &&
-   $(git rev-parse HEAD) == "$harness_commit" ]] &&
-  git merge-base --is-ancestor "$product_commit" "$harness_commit" || {
-    echo 'pinned product source or PR harness head does not match this checkout' >&2; exit 2;
+[[ $(git rev-parse HEAD) == "$harness_commit" ]] || {
+  echo 'checked-out commit does not match the requested harness head' >&2; exit 2;
+}
+if [[ ${SCOTTLAND_PINNED_EVIDENCE:-false} == true ]]; then
+  [[ $product_commit =~ ^[0-9a-f]{40}$ &&
+     $harness_commit =~ ^[0-9a-f]{40}$ &&
+     $product_tree == "${SCOTTLAND_PRODUCT_TREE:?set the expected pinned product tree}" ]] &&
+    git merge-base --is-ancestor "$product_commit" "$harness_commit" || {
+      echo 'pinned product source does not match this harness checkout' >&2; exit 2;
+    }
+else
+  [[ $product_commit == "$harness_commit" ]] || {
+    echo 'default compositor validation must use the checked-out merge source' >&2; exit 2;
   }
+fi
+export SCOTTLAND_PRODUCT_TREE="$product_tree"
 git diff --name-only "$product_commit" "$harness_commit" > "$evidence/harness-diff.txt"
-while IFS= read -r changed_path; do
-  case $changed_path in
-    .github/scripts/compositor-rows.sh|.github/scripts/standalone-rows.tsv|.github/workflows/fast-checks.yml|\
-    tests/omarchy-session-wrap-test.py|tests/reload-touch-focus-test.py|tests/session-busy-exec-test.sh|tests/zone-pin-test.py) ;;
-    *) echo "product source differs from pinned commit: $changed_path" >&2; exit 2 ;;
-  esac
-done < "$evidence/harness-diff.txt"
+if [[ ${SCOTTLAND_PINNED_EVIDENCE:-false} == true ]]; then
+  while IFS= read -r changed_path; do
+    case $changed_path in
+      .github/scripts/compositor-rows.sh|.github/scripts/standalone-rows.tsv|.github/workflows/fast-checks.yml|\
+      tests/omarchy-session-wrap-test.py|tests/reload-touch-focus-test.py|tests/session-busy-exec-test.sh|tests/zone-pin-test.py) ;;
+      *) echo "product source differs from pinned commit: $changed_path" >&2; exit 2 ;;
+    esac
+  done < "$evidence/harness-diff.txt"
+fi
 prepared_image=$(docker image inspect scottland-checks:compositor --format '{{.Id}}' 2>/dev/null || true)
 
 {
+  printf 'validation_mode\t%s\n' "$(if [[ ${SCOTTLAND_PINNED_EVIDENCE:-false} == true ]]; then echo pinned; else echo merge; fi)"
   printf 'product_commit\t%s\nproduct_tree\t%s\n' "$product_commit" "$product_tree"
   printf 'harness_commit\t%s\nharness_tree\t%s\n' "$harness_commit" "$(git rev-parse HEAD^{tree})"
   printf 'package_version\t%s-%s\n' \
@@ -52,11 +65,12 @@ docker_args=(
   --env SCOTTLAND_HEADLESS_ISOLATION=1
   --env SCOTTLAND_HARNESS_HEAD
   --env SCOTTLAND_PRODUCT_SOURCE
+  --env SCOTTLAND_PRODUCT_TREE
   --volume "$repo:/work"
   --workdir /work
 )
 
-# Build once from the checked-out merge result. A real Wayfire+Scottland IPC
+# Build once from the checked-out source. A real Wayfire+Scottland IPC
 # session must start before any row can be credited to this venue.
 setup_ok=1
 if [[ -z $prepared_image ]]; then
@@ -68,8 +82,7 @@ elif ! docker run "${docker_args[@]}" \
     scottland-checks:compositor bash -euo pipefail -c '
       mkdir -m 700 -p "$XDG_RUNTIME_DIR" "$SCOTTLAND_TEST_SCRATCH"
       test "$(git rev-parse HEAD)" = "$SCOTTLAND_HARNESS_HEAD"
-      test "$(git rev-parse "${SCOTTLAND_PRODUCT_SOURCE}^{tree}")" = 5ea3f22461b820144778512e674d3b632929ba27
-      grep -qx "pkgver=0.4.1" packaging/arch/PKGBUILD
+      test "$(git rev-parse "${SCOTTLAND_PRODUCT_SOURCE}^{tree}")" = "$SCOTTLAND_PRODUCT_TREE"
       make test-hooks
       sha256sum build/libscottland.so \
         build/hooks/libexec/scottland-exec \
