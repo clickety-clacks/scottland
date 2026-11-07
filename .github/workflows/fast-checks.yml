@@ -4,23 +4,10 @@ on:
   pull_request:
     branches:
       - '0.4'
+    types: [opened, synchronize, reopened, labeled]
   merge_group:
     branches:
       - '0.4'
-  workflow_dispatch:
-    inputs:
-      harness_ref:
-        description: Exact harness commit for a pinned evidence run
-        required: true
-        type: string
-      product_source:
-        description: Exact product source commit for a pinned evidence run
-        required: true
-        type: string
-      product_tree:
-        description: Expected product source tree for a pinned evidence run
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -28,7 +15,6 @@ permissions:
 jobs:
   build:
     name: Scottland 0.3 build
-    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
@@ -93,7 +79,6 @@ jobs:
             '
 
   unit:
-    if: github.event_name != 'workflow_dispatch'
     name: Scottland 0.3 unit
     runs-on: ubuntu-24.04
     steps:
@@ -171,7 +156,6 @@ jobs:
             '
 
   headless:
-    if: github.event_name != 'workflow_dispatch'
     name: Scottland 0.3 headless
     runs-on: ubuntu-24.04
     steps:
@@ -269,7 +253,6 @@ jobs:
             '
 
   standalone:
-    if: github.event_name != 'workflow_dispatch'
     name: Scottland 0.4 standalone rows
     runs-on: ubuntu-24.04
     timeout-minutes: 50
@@ -322,7 +305,7 @@ jobs:
           if-no-files-found: warn
 
   compositor_rows:
-    name: Scottland 0.4 compositor rows (${{ matrix.shard }})
+    name: Scottland 0.4 compositor rows (${{ matrix.mode }}, ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 210
     strategy:
@@ -330,12 +313,15 @@ jobs:
       max-parallel: 4
       matrix:
         shard: [0, 1, 2, 3]
+        # Pinned historical evidence requires an explicit PR label. Merge-source
+        # validation runs on every PR and merge-group event, including that label.
+        mode: ${{ fromJSON(github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'pinned-compositor-evidence') && '["merge","pinned"]' || '["merge"]') }}
     steps:
       - name: Check out source
         id: checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.harness_ref || github.sha }}
+          ref: ${{ matrix.mode == 'pinned' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -365,10 +351,10 @@ jobs:
       - name: Run compositor rows
         if: ${{ always() && steps.checkout.outcome == 'success' }}
         env:
-          SCOTTLAND_HARNESS_HEAD: ${{ github.event_name == 'workflow_dispatch' && inputs.harness_ref || github.sha }}
-          SCOTTLAND_PRODUCT_SOURCE: ${{ github.event_name == 'workflow_dispatch' && inputs.product_source || github.sha }}
-          SCOTTLAND_PRODUCT_TREE: ${{ inputs.product_tree || '' }}
-          SCOTTLAND_PINNED_EVIDENCE: ${{ github.event_name == 'workflow_dispatch' }}
+          SCOTTLAND_HARNESS_HEAD: ${{ matrix.mode == 'pinned' && github.event.pull_request.head.sha || github.sha }}
+          SCOTTLAND_PRODUCT_SOURCE: ${{ matrix.mode == 'pinned' && 'dc155ea158dd8aee14bc9a30f451b7e73316586b' || github.sha }}
+          SCOTTLAND_PRODUCT_TREE: ${{ matrix.mode == 'pinned' && '5ea3f22461b820144778512e674d3b632929ba27' || '' }}
+          SCOTTLAND_PINNED_EVIDENCE: ${{ matrix.mode == 'pinned' }}
         run: |
           if ! sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; then
             echo 'Could not enable user namespaces; the compositor preflight will report availability' >&2
