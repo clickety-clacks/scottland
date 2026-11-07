@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Acceptance checks for the pointer slice of middle-press window drag."""
+"""Acceptance checks for touchpad click-drag resize and mouse middle-button behavior."""
 import json
 import os
 from pathlib import Path
@@ -86,6 +86,19 @@ def pad_button(pressed):
 
 def pad_motion(x, y):
     return ipc("scottland/test-touchpad", {"event": "motion", "x": x, "y": y})
+
+
+def pad_swipe_begin(fingers=3):
+    return ipc("scottland/test-touchpad", {"event": "swipe_begin", "fingers": fingers})
+
+
+def pad_swipe_update(dx, dy=0):
+    return ipc("scottland/test-touchpad", {
+        "event": "swipe_update", "fingers": 3, "dx": dx, "dy": dy})
+
+
+def pad_swipe_end():
+    return ipc("scottland/test-touchpad", {"event": "swipe_end", "cancelled": False})
 
 
 def all_events():
@@ -241,7 +254,7 @@ try:
     x, y = a["x"] + a["width"] / 2, a["y"] + a["height"] / 2
     pointer(x, y)
     button("BTN_MIDDLE", True)
-    wait(lambda: state()["middle_pending"], what="pointer middle pending")
+    wait(lambda: state()["mouse_middle_pending"], what="pointer middle pending")
     check(not all_events(), "pointer: no client event arrives before the owner releases")
     pointer(x + 3, y)
     button("BTN_MIDDLE", False)
@@ -260,7 +273,7 @@ try:
     pointer(x, y)
     check(not pointer_events("A"), "halo: the press point is outside A's client surface")
     button("BTN_MIDDLE", True)
-    wait(lambda: state()["middle_pending"], what="halo middle pending")
+    wait(lambda: state()["mouse_middle_pending"], what="halo middle pending")
     button("BTN_MIDDLE", False)
     time.sleep(.1)
     check(not events("A"), "halo: a null client recipient is not replayed")
@@ -271,11 +284,11 @@ try:
     x, y = before["x"] + before["width"] / 2, before["y"] - 6
     pointer(x, y)
     button("BTN_MIDDLE", True)
-    wait(lambda: state()["middle_pending"], what="halo drag pending")
+    wait(lambda: state()["mouse_middle_pending"], what="halo drag pending")
     for step in range(1, 11):
         pointer(x + 20 * step, y)
         if step == 1:
-            wait(lambda: state()["middle_dragging"], what="halo live drag")
+            wait(lambda: state()["mouse_middle_dragging"], what="halo live drag")
         time.sleep(.02)
     check(not all_events(), "halo: dragging does not deliver middle input to A")
     time.sleep(.25)
@@ -302,7 +315,7 @@ try:
     x, y = a["x"] + a["width"] - 42, a["y"] + a["height"] / 2
     pointer(x, y)
     button("BTN_MIDDLE", True)
-    wait(lambda: state()["middle_pending"], what="cross-surface middle pending")
+    wait(lambda: state()["mouse_middle_pending"], what="cross-surface middle pending")
     pointer(x + 8, y)
     button("BTN_MIDDLE", False)
     wait(lambda: len(events("A")) == 2, what="original-surface replay")
@@ -329,7 +342,7 @@ try:
     a = geometry("A")
     pointer(a["x"] + a["width"] / 2, a["y"] + a["height"] / 2)
     button("BTN_MIDDLE", True)
-    wait(lambda: state()["middle_pending"], what="unmap middle pending")
+    wait(lambda: state()["mouse_middle_pending"], what="unmap middle pending")
     command("hide", "A")
     wait(lambda: not any(row.get("title") == "Middle-A" for row in views()), what="A unmap")
     button("BTN_MIDDLE", False)
@@ -339,55 +352,97 @@ try:
     wait(lambda: any(row.get("title") == "Middle-A" for row in views()), what="A remap")
     setup()
 
-    # R4, R1: a virtual pointer middle drag follows the same live move and suppresses client input.
+    # R4: ordinary mouse middle-drag follows the same live move and suppresses client input.
     movement_deltas = {}
-    for source in ("pointer", "touchpad"):
-        setup()
-        clear_events()
-        before = geometry("A")
-        x, y = before["x"] + before["width"] / 2, before["y"] + before["height"] / 2
-        pointer(x, y)
-        old_sample = (x - 60, y + 20)
-        before_shot = screenshot(source + "-middle-before")
-        check(is_fixture_pixel(pixel(before_shot, *old_sample)),
-              source + ": the fixture's mapped pixels are visible before dragging")
-        if source == "pointer":
-            button("BTN_MIDDLE", True)
-        else:
-            ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": False})
-            pad_button(True)
-        wait(lambda: state()["middle_pending"], what=source + " middle pending")
-        for step in range(1, 11):
-            if source == "pointer":
-                pointer(x + 20 * step, y)
-            else:
-                pad_motion(x + 20 * step, y)
-            if step == 1:
-                wait(lambda: state()["middle_dragging"], what=source + " live drag")
-            time.sleep(.02)
-        check(not all_events(), source + ": a drag sends no middle events to A")
-        time.sleep(.25)  # Stop at the final position so release-coast does not change the oracle.
-        if source == "pointer":
-            button("BTN_MIDDLE", False)
-        else:
-            pad_button(False)
-            ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": True})
-        wait(lambda: not state()["dragging"], what=source + " drag end")
-        settle("A", "B")
-        check(not all_events(), source + ": drag release sends no middle event to A")
-        after = geometry("A")
-        movement_deltas[source] = after["x"] - before["x"]
-        check(after["x"] >= before["x"] + 150 and
-              (after["width"], after["height"]) == (before["width"], before["height"]),
-              source + ": 200 px drag moves A and preserves its size",
-              f"{before} -> {after}")
-        after_shot = screenshot(source + "-middle-after")
-        new_sample = (after["x"] + after["width"] / 2 - 60,
-                      after["y"] + after["height"] / 2 + 20)
-        check(is_fixture_pixel(pixel(after_shot, *new_sample)),
-              source + ": composited client pixels follow the dragged window")
-        check(not is_fixture_pixel(pixel(after_shot, *old_sample)),
-              source + ": the old position no longer shows the moved client")
+    source = "mouse"
+    setup()
+    clear_events()
+    before = geometry("A")
+    x, y = before["x"] + before["width"] / 2, before["y"] + before["height"] / 2
+    pointer(x, y)
+    old_sample = (x - 60, y + 20)
+    before_shot = screenshot(source + "-middle-before")
+    check(is_fixture_pixel(pixel(before_shot, *old_sample)),
+          source + ": the fixture's mapped pixels are visible before dragging")
+    button("BTN_MIDDLE", True)
+    wait(lambda: state()["mouse_middle_pending"], what=source + " middle pending")
+    for step in range(1, 11):
+        pointer(x + 20 * step, y)
+        if step == 1:
+            wait(lambda: state()["mouse_middle_dragging"], what=source + " live drag")
+        time.sleep(.02)
+    check(not all_events(), source + ": a drag sends no middle events to A")
+    time.sleep(.25)  # Stop at the final position so release-coast does not change the oracle.
+    button("BTN_MIDDLE", False)
+    wait(lambda: not state()["dragging"], what=source + " drag end")
+    settle("A", "B")
+    check(not all_events(), source + ": drag release sends no middle event to A")
+    after = geometry("A")
+    movement_deltas[source] = after["x"] - before["x"]
+    check(after["x"] >= before["x"] + 150 and
+          (after["width"], after["height"]) == (before["width"], before["height"]),
+          source + ": 200 px drag moves A and preserves its size",
+          f"{before} -> {after}")
+    after_shot = screenshot(source + "-middle-after")
+    new_sample = (after["x"] + after["width"] / 2 - 60,
+                  after["y"] + after["height"] / 2 + 20)
+    check(is_fixture_pixel(pixel(after_shot, *new_sample)),
+          source + ": composited client pixels follow the dragged window")
+    check(not is_fixture_pixel(pixel(after_shot, *old_sample)),
+          source + ": the old position no longer shows the moved client")
+
+    # R1: clickfinger middle drag resizes around center, even when the separate swipe/hold
+    # setting is off. The first motion crosses the resize threshold; later motions resize.
+    setup()
+    clear_events()
+    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": False})
+    before = geometry("A")
+    x, y = before["x"] + before["width"] / 2, before["y"] + before["height"] / 2
+    pointer(x, y)
+    pad_button(True)
+    wait(lambda: state()["middle_pending"], what="touchpad resize pending")
+    for step in range(1, 11):
+        pad_motion(x + 20 * step, y)
+        if step == 1:
+            wait(lambda: state()["middle_resizing"], what="touchpad center resize start")
+        time.sleep(.02)
+    check(not all_events(), "touchpad click-drag: withheld middle button is not delivered")
+    pad_button(False)
+    wait(lambda: not state()["middle_resizing"], what="touchpad resize end")
+    settle("A", "B")
+    after = geometry("A")
+    before_center = (before["x"] + before["width"] / 2, before["y"] + before["height"] / 2)
+    after_center = (after["x"] + after["width"] / 2, after["y"] + after["height"] / 2)
+    check(after["width"] >= before["width"] + 80 and after["height"] == before["height"],
+          "touchpad click-drag: motion resizes A horizontally",
+          f"{before} -> {after}")
+    check(abs(after_center[0] - before_center[0]) <= 3 and
+          abs(after_center[1] - before_center[1]) <= 3,
+          "touchpad click-drag: resize keeps A centered",
+          f"{before_center} -> {after_center}")
+    check(not all_events(), "touchpad click-drag: release does not reach A")
+    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": True})
+
+    # L23: an unclicked three-finger swipe still moves the window and preserves its size.
+    setup()
+    clear_events()
+    before = geometry("A")
+    x, y = before["x"] + before["width"] / 2, before["y"] + before["height"] / 2
+    pointer(x, y)
+    pad_swipe_begin()
+    wait(lambda: state()["swipe_moving"], what="three-finger swipe begins window move")
+    for _ in range(10):
+        pad_swipe_update(20)
+        time.sleep(.02)
+    pad_swipe_end()
+    wait(lambda: not state()["dragging"], what="three-finger swipe move ends")
+    settle("A", "B")
+    after = geometry("A")
+    check(after["x"] >= before["x"] + 150 and
+          (after["width"], after["height"]) == (before["width"], before["height"]),
+          "three-finger swipe without click moves A and preserves its size",
+          f"{before} -> {after}")
+    check(not all_events(), "three-finger swipe without click sends no middle-button event")
 
     # R4's amount and grab point match the existing Super+left-drag path.
     setup()
@@ -418,11 +473,11 @@ try:
     x, y = before["x"] + before["width"] / 2, before["y"] + before["height"] / 2
     pointer(x, y)
     button("BTN_MIDDLE", True)
-    wait(lambda: state()["middle_pending"], what="Esc middle pending")
+    wait(lambda: state()["mouse_middle_pending"], what="Esc middle pending")
     for step in range(1, 11):
         pointer(x + 20 * step, y)
         if step == 1:
-            wait(lambda: state()["middle_dragging"], what="Esc live drag")
+            wait(lambda: state()["mouse_middle_dragging"], what="Esc live drag")
         time.sleep(.02)
     key("ESC", True)
     key("ESC", False)
