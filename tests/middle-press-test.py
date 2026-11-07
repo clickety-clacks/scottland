@@ -337,6 +337,21 @@ try:
     check([(event["edge"], event["button"]) for event in events("A")] ==
           [("press", 2), ("release", 2)], "touchpad: a quick click reaches A once, in order")
 
+    # Turning off touchpad gestures restores direct clickfinger passthrough, including middle click.
+    setup()
+    clear_events()
+    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": False})
+    a = geometry("A")
+    pointer(a["x"] + a["width"] / 2, a["y"] + a["height"] / 2)
+    pad_button(True)
+    wait(lambda: len(events("A")) == 1, what="disabled touchpad middle press passthrough")
+    check(not state()["middle_pending"], "touchpad setting off: middle press is not withheld")
+    pad_button(False)
+    wait(lambda: len(events("A")) == 2, what="disabled touchpad middle release passthrough")
+    check([(event["edge"], event["button"]) for event in events("A")] ==
+          [("press", 2), ("release", 2)], "touchpad setting off: middle click reaches the app directly")
+    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": True})
+
     # R3(c): if the original client unmaps during the withheld press, nobody gets the click.
     clear_events()
     a = geometry("A")
@@ -391,11 +406,11 @@ try:
     check(not is_fixture_pixel(pixel(after_shot, *old_sample)),
           source + ": the old position no longer shows the moved client")
 
-    # R1: clickfinger middle drag resizes around center, even when the separate swipe/hold
-    # setting is off. The first motion crosses the resize threshold; later motions resize.
+    # R1: clickfinger middle drag resizes around center while touchpad gestures are enabled.
+    # The first motion crosses the resize threshold; later motions resize.
     setup()
     clear_events()
-    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": False})
+    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": True})
     before = geometry("A")
     x, y = before["x"] + before["width"] / 2, before["y"] + before["height"] / 2
     pointer(x, y)
@@ -421,7 +436,6 @@ try:
           "touchpad click-drag: resize keeps A centered",
           f"{before_center} -> {after_center}")
     check(not all_events(), "touchpad click-drag: release does not reach A")
-    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": True})
 
     # L23: an unclicked three-finger swipe still moves the window and preserves its size.
     setup()

@@ -5932,8 +5932,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             if (ev->event->state == WL_POINTER_BUTTON_STATE_PRESSED)
             {
-                if ((ev->mode != wf::input_event_processing_mode_t::FULL) || middle_gesture_active() ||
-                    !ev->device || drag->view || pointer_focus_is_layer_shell())
+                if (!touchpad_gestures || (ev->mode != wf::input_event_processing_mode_t::FULL) ||
+                    middle_gesture_active() || !ev->device || drag->view || pointer_focus_is_layer_shell())
                 {
                     return;
                 }

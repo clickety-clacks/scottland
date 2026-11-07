@@ -238,3 +238,92 @@ jobs:
                 tests/config-watch-missing-settings-test.sh "$PWD/build/config-watch-evidence"
               rmdir -- build/config-watch-scratch
             '
+
+  wi727_base_replay_comparison:
+    name: WI-727 base replay comparison
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 192
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the exact 0.4 base
+        uses: actions/checkout@v4
+        with:
+          ref: bbf720db03fab52757477faf5c4381c7090436a3
+          persist-credentials: false
+
+      - name: Verify base source identity
+        run: |
+          test "$(git rev-parse HEAD)" = bbf720db03fab52757477faf5c4381c7090436a3
+          test "$(git rev-parse 'HEAD^{tree}')" = 0dec6413bbc131724134ad498be3ef4481e44bf8
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+
+      - name: Prepare focused comparison environment
+        run: |
+          printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
+          docker build --pull \
+            --build-arg CI_UID="$(id -u)" \
+            --tag scottland-base-replay:wi727 - <<'DOCKERFILE'
+          FROM archlinux:base-devel
+          ARG CI_UID
+          RUN pacman -Syu --noconfirm --needed \
+                archlinux-keyring bubblewrap dbus gdk-pixbuf2 git glm grim gtk4 gtk4-layer-shell imagemagick inotify-tools jq \
+                libglvnd libinput libxkbcommon mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
+                quickshell rust shadow wayfire wayland wayland-protocols wlroots0.20 cairo \
+            && useradd --uid "$CI_UID" --gid 0 --create-home ci \
+            && install -d -m 0700 -o ci -g 0 "/run/user/$CI_UID"
+          DOCKERFILE
+          printf 'Base image: %s\n' "$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
+          printf 'Prepared comparison image: %s\n' "$(docker image inspect scottland-base-replay:wi727 --format '{{.Id}}')"
+
+      - name: Report focused comparison toolchain
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/home/ci \
+            scottland-base-replay:wi727 \
+            bash -euo pipefail -c '
+              printf "Container operating system: "
+              . /etc/os-release
+              printf "%s %s\\n" "$NAME" "$VERSION_ID"
+              pacman -Q wayfire wlroots0.20 meson gcc rust python bubblewrap quickshell gtk4 gtk4-layer-shell imagemagick
+              printf "C++ compiler: "
+              g++ --version | sed -n "1p"
+              rustc --version
+              cargo --version
+              python3 --version
+              pkg-config --modversion wlroots-0.20
+              bwrap --version
+            '
+
+      - name: Run the one base comparison
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          docker run --rm --privileged \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/home/ci \
+            --env XDG_RUNTIME_DIR="/run/user/$(id -u)" \
+            --env SCOTTLAND_HEADLESS_ISOLATION=1 \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            scottland-base-replay:wi727 \
+            bash -euo pipefail -c '
+              mkdir -m 700 -p "$XDG_RUNTIME_DIR"
+              test "$(git rev-parse HEAD)" = bbf720db03fab52757477faf5c4381c7090436a3
+              test "$(git rev-parse 'HEAD^{tree}')" = 0dec6413bbc131724134ad498be3ef4481e44bf8
+              git rev-parse HEAD
+              git rev-parse 'HEAD^{tree}'
+              make test-hooks
+              mkdir -m 700 build/base-middle-press-fast-check-scratch
+              middle_log="$PWD/build/base-middle-press-console.log"
+              if SCOTTLAND_TEST_SCRATCH="$PWD/build/base-middle-press-fast-check-scratch" \
+                SCOTTLAND_HEADLESS_DIR="$PWD/build/base-middle-press-fast-check-scratch/session" \
+                timeout --signal=TERM --kill-after=30s 6m \
+                tests/middle-press-test.sh "$PWD/build/base-middle-press-evidence" >"$middle_log" 2>&1; then
+                cat "$middle_log"
+              else
+                test_status=$?
+                cat "$middle_log"
+                exit "$test_status"
+              fi
+              rmdir -- build/base-middle-press-fast-check-scratch
+            '
