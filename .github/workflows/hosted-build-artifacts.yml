@@ -1,0 +1,258 @@
+name: Scottland pinned build artifacts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.work_item }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - source_id: wi-e7-window-names
+            work_item: WI-e7 Window Names
+            source_commit: 74bb9135e2c1ccef384e69d6e7e04bb85aff9d64
+            source_tree: 71d766f633472ca4866fa458a24d067b881e9f9b
+            build_window_name_cli: true
+          - source_id: wi-727-gesture
+            work_item: WI-727 gesture
+            source_commit: 3e2b16355c81125b937abe9fe9dc7c289aae94d5
+            source_tree: 0787b34e2e12b8ce4d8eb086ea58cf87f63f5d21
+            build_window_name_cli: false
+    steps:
+      - name: Require an x86_64 hosted runner
+        run: test "$(uname -m)" = "x86_64"
+
+      - name: Check out the pinned source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.source_commit }}
+          path: source
+          persist-credentials: false
+
+      - name: Prepare the Arch build container
+        id: build_image
+        env:
+          SOURCE_ID: ${{ matrix.source_id }}
+        run: |
+          image_tag="scottland-pinned-build-${SOURCE_ID}:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker build --pull \
+            --build-arg CI_UID="$(id -u)" \
+            --tag "$image_tag" - <<'DOCKERFILE'
+          FROM archlinux:base-devel
+          ARG CI_UID
+          RUN pacman -Syu --noconfirm --needed \
+                archlinux-keyring cairo gcc git glib2 libglvnd libinput libxkbcommon \
+                meson ninja pango pkgconf rust wayfire wayland wlroots0.20 \
+            && useradd --uid "$CI_UID" --gid 0 --create-home ci
+          DOCKERFILE
+          base_digest="$(docker image inspect archlinux:base-devel --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}')"
+          image_id="$(docker image inspect "$image_tag" --format '{{.Id}}')"
+          printf 'image_tag=%s\n' "$image_tag" >> "$GITHUB_OUTPUT"
+          printf 'base_digest=%s\n' "$base_digest" >> "$GITHUB_OUTPUT"
+          printf 'image_id=%s\n' "$image_id" >> "$GITHUB_OUTPUT"
+
+      - name: Build this source and write its manifest
+        env:
+          BUILD_IMAGE_TAG: ${{ steps.build_image.outputs.image_tag }}
+          BASE_IMAGE_DIGEST: ${{ steps.build_image.outputs.base_digest }}
+          BUILD_IMAGE_ID: ${{ steps.build_image.outputs.image_id }}
+          SOURCE_ID: ${{ matrix.source_id }}
+          SOURCE_COMMIT: ${{ matrix.source_commit }}
+          SOURCE_TREE: ${{ matrix.source_tree }}
+          WORK_ITEM: ${{ matrix.work_item }}
+          BUILD_WINDOW_NAME_CLI: ${{ matrix.build_window_name_cli }}
+          ARTIFACT_NAME: scottland-${{ matrix.source_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          mkdir -p "artifacts/$SOURCE_ID"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env BASE_IMAGE_DIGEST="$BASE_IMAGE_DIGEST" \
+            --env BUILD_IMAGE_ID="$BUILD_IMAGE_ID" \
+            --env SOURCE_ID="$SOURCE_ID" \
+            --env SOURCE_COMMIT="$SOURCE_COMMIT" \
+            --env SOURCE_TREE="$SOURCE_TREE" \
+            --env WORK_ITEM="$WORK_ITEM" \
+            --env BUILD_WINDOW_NAME_CLI="$BUILD_WINDOW_NAME_CLI" \
+            --env ARTIFACT_NAME="$ARTIFACT_NAME" \
+            --env GITHUB_SERVER_URL \
+            --env GITHUB_REPOSITORY \
+            --env GITHUB_RUN_ID \
+            --env GITHUB_RUN_ATTEMPT \
+            --env GITHUB_REF \
+            --env GITHUB_SHA \
+            --env RUNNER_OS \
+            --env ImageOS \
+            --env ImageVersion \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            "$BUILD_IMAGE_TAG" \
+            bash -euo pipefail <<'CONTAINER'
+          source=/work/source
+          output="/work/artifacts/$SOURCE_ID"
+
+          test "$(uname -m)" = "x86_64"
+          test "$(git -C "$source" rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git -C "$source" rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+
+          pacman -Q | sort > "$output/system-packages.txt"
+          make -C "$source" plugin
+          meson introspect --dependencies "$source/build" > "$output/meson-dependencies.json"
+          cp "$source/build/libscottland.so" "$output/libscottland.so"
+
+          if [[ "$BUILD_WINDOW_NAME_CLI" == "true" ]]; then
+            cargo build --locked \
+              --manifest-path "$source/core/tools/Cargo.toml" \
+              --package scottland-window-name \
+              --release \
+              --target-dir "$source/build/cargo"
+            cargo tree --locked --prefix none --format '{p}' \
+              --manifest-path "$source/core/tools/Cargo.toml" \
+              --package scottland-window-name | sort -u > "$output/cargo-dependencies.txt"
+            cp "$source/build/cargo/release/scottland-window-name" "$output/scottland-window-name"
+          fi
+
+          python3 - "$source" "$output" <<'PY'
+          import hashlib
+          import json
+          import os
+          import platform
+          import subprocess
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          source, output_dir = map(Path, sys.argv[1:])
+
+          def first_line(command):
+              return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).splitlines()[0]
+
+          def sha256(path):
+              digest = hashlib.sha256()
+              with path.open("rb") as file:
+                  for block in iter(lambda: file.read(1024 * 1024), b""):
+                      digest.update(block)
+              return digest.hexdigest()
+
+          source_commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+          source_tree = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD^{tree}"], text=True).strip()
+          assert source_commit == os.environ["SOURCE_COMMIT"]
+          assert source_tree == os.environ["SOURCE_TREE"]
+
+          output_names = ["libscottland.so"]
+          cargo_lock = None
+          cargo_dependency_tree = None
+          if os.environ["BUILD_WINDOW_NAME_CLI"] == "true":
+              output_names.append("scottland-window-name")
+              lock_path = source / "core/tools/Cargo.lock"
+              lock = tomllib.loads(lock_path.read_text())
+              cargo_lock = {
+                  "sha256": sha256(lock_path),
+                  "lockedPackages": [
+                      {key: package[key] for key in ("name", "version", "source") if key in package}
+                      for package in lock.get("package", [])
+                  ],
+              }
+              cargo_dependency_tree = (output_dir / "cargo-dependencies.txt").read_text().splitlines()
+
+          binaries = [
+              {
+                  "file": name,
+                  "sizeBytes": (output_dir / name).stat().st_size,
+                  "sha256": sha256(output_dir / name),
+              }
+              for name in output_names
+          ]
+          run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          workflow = {
+              "ref": os.environ["GITHUB_REF"],
+              "commit": os.environ["GITHUB_SHA"],
+              "runId": os.environ["GITHUB_RUN_ID"],
+              "runAttempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "runUrl": run_url,
+          }
+          build_environment = {
+              "runner": {
+                  "os": os.environ["RUNNER_OS"],
+                  "imageOS": os.environ.get("ImageOS"),
+                  "imageVersion": os.environ.get("ImageVersion"),
+                  "architecture": platform.machine(),
+              },
+              "container": {
+                  "baseImage": "archlinux:base-devel",
+                  "baseImageDigest": os.environ.get("BASE_IMAGE_DIGEST") or None,
+                  "preparedImageId": os.environ["BUILD_IMAGE_ID"],
+                  "os": platform.freedesktop_os_release(),
+                  "architecture": platform.machine(),
+              },
+              "tools": {
+                  "gcc": first_line(["gcc", "--version"]),
+                  "g++": first_line(["g++", "--version"]),
+                  "meson": first_line(["meson", "--version"]),
+                  "ninja": first_line(["ninja", "--version"]),
+                  "pkgconf": first_line(["pkgconf", "--version"]),
+                  "cargo": first_line(["cargo", "--version"]),
+                  "rustc": first_line(["rustc", "--version"]),
+                  "python": first_line(["python3", "--version"]),
+                  "make": first_line(["make", "--version"]),
+                  "git": first_line(["git", "--version"]),
+              },
+              "systemPackages": (output_dir / "system-packages.txt").read_text().splitlines(),
+          }
+          manifest = {
+              "schemaVersion": 1,
+              "workItem": os.environ["WORK_ITEM"],
+              "source": {
+                  "repository": os.environ["GITHUB_REPOSITORY"],
+                  "commit": source_commit,
+                  "tree": source_tree,
+              },
+              "workflow": workflow,
+              "buildEnvironment": build_environment,
+              "mesonDependencies": json.loads((output_dir / "meson-dependencies.json").read_text()),
+              "cargoLock": cargo_lock,
+              "cargoDependencyTree": cargo_dependency_tree,
+              "outputs": binaries,
+              "artifact": {
+                  "name": os.environ["ARTIFACT_NAME"],
+                  "workflowRunUrl": run_url,
+                  "retrieval": "Open this workflow run and download the artifact with the recorded name.",
+              },
+              "limits": [
+                  "Build only; product tests were not run and built binaries were not executed.",
+                  "No package or release was produced.",
+              ],
+          }
+          (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          PY
+          CONTAINER
+
+      - name: Upload this source's artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: scottland-${{ matrix.source_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/${{ matrix.source_id }}/
+          if-no-files-found: error
+
+      - name: Publish this source's artifact pointer
+        env:
+          ARTIFACT_NAME: scottland-${{ matrix.source_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          {
+            echo "## ${{ matrix.work_item }} build artifact"
+            echo
+            echo "Source commit: \`${{ matrix.source_commit }}\` (tree \`${{ matrix.source_tree }}\`)"
+            echo "Artifact name: \`$ARTIFACT_NAME\`"
+            echo "Artifact ID: \`$ARTIFACT_ID\`"
+            echo "Artifact SHA-256: \`$ARTIFACT_DIGEST\`"
+            echo "Artifact URL: $ARTIFACT_URL"
+          } >> "$GITHUB_STEP_SUMMARY"
