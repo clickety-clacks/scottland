@@ -73,7 +73,7 @@ QtObject {
 
     onVisibleChanged: syncTimer()
 
-    FileView {
+    property FileView paletteFile: FileView {
         path: root.palettePath
         printErrors: false
         watchChanges: true
@@ -83,8 +83,7 @@ QtObject {
         }
     }
 
-    PanelWindow {
-        id: surface
+    property PanelWindow surface: PanelWindow {
         screen: root.screen
         visible: root.visible
         anchors { left: true; right: true; bottom: true }
@@ -180,8 +179,7 @@ QtObject {
         }
     }
 
-    Timer {
-        id: hideTimer
+    property Timer hideTimer: Timer {
         repeat: false
         onTriggered: root.timerElapsed()
     }
