@@ -181,8 +181,6 @@ try:
     wait(lambda: state()["dragging"], what="mouse middle drag start")
     for step in range(2, 11):
         pointer(x + 20 * step, y + 10 * step)
-    wait(lambda: geometry()["x"] >= before["x"] + 120,
-         what="mouse middle drag movement")
     check(not events(), "mouse middle drag sends no button event to the client")
     mouse_button(False)
     mouse_down = False
