@@ -70,7 +70,7 @@ jobs:
           ARTIFACT_NAME: scottland-${{ matrix.source_id }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           mkdir -p "artifacts/$SOURCE_ID"
-          docker run --rm \
+          docker run --rm -i \
             --user "$(id -u):$(id -g)" \
             --env BASE_IMAGE_DIGEST="$BASE_IMAGE_DIGEST" \
             --env BUILD_IMAGE_ID="$BUILD_IMAGE_ID" \
