@@ -198,7 +198,8 @@ Specified in windowing-keys.md WK36 and WP1.
 
 | Date | Ruling | Where |
 |---|---|---|
-| 10-06 | Ruled: “any real middle press drags the window; a stock pen does nothing until you remap a button with another tool.” `BTN_STYLUS` stays client input; Scottland adds no pen remapping or setting. R7 replaces L24's three-finger click-drag resize with a move. A quick middle click still reaches the app; R5 waits on WK39 hold forms. | L24; R1–R8 |
+| 10-06 | Ruled: “any real middle press drags the window; a stock pen does nothing until you remap a button with another tool.” For L24 this means ordinary mouse middle-button drag; it does not replace the touchpad's three-finger click-drag resize. `BTN_STYLUS` stays client input; Scottland adds no pen remapping or setting. A quick middle click still reaches the app; R5 waits on WK39 hold forms. | L24; R1–R8 |
+| 11-04 | Mike corrected the 10-06 interpretation: a three-finger click-drag on a touchpad resizes around the window center; a three-finger drag without a click still moves; ordinary mouse middle-button drag moves; quick middle click reaches the app; pen/tablet behavior is unchanged. The R7 clause that replaced touchpad resize is withdrawn. | L23–L24 |
 
 ## Testing
 
