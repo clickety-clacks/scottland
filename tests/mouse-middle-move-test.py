@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Focused middle-button move and adjacent touchpad gesture behavior.
 
-Mouse actions use stipc pointer/button input. Touchpad neighbors use Scottland's
-test-touchpad hook to emit the wlroots gesture/button events; they do not model
-physical libinput hardware.
+Mouse actions and pointer motion use stipc. Touchpad neighbors use Scottland's
+test-touchpad hook for supported gesture/button events; they do not model physical
+libinput hardware.
 """
 import json
 import os
@@ -218,7 +218,8 @@ try:
     pointer(*center)
     pad("button", button="middle", pressed=True)
     pad_down = True
-    pad("motion", x=center[0] + 80, y=center[1] + 60)
+    # test-touchpad models buttons and gestures; stipc supplies pointer motion.
+    pointer(center[0] + 80, center[1] + 60)
     wait(lambda: geometry() != before, what="touchpad click-drag resize")
     pad("button", button="middle", pressed=False)
     pad_down = False
