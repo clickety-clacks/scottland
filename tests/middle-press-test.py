@@ -11,6 +11,9 @@ import time
 
 out = Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)
+if len(sys.argv) > 2 and sys.argv[2] not in ("", "--skip-base-replay"):
+    raise SystemExit(f"unknown argument: {sys.argv[2]}")
+skip_base_replay = len(sys.argv) > 2 and sys.argv[2] == "--skip-base-replay"
 sock = socket.socket(socket.AF_UNIX)
 sock.settimeout(10)
 sock.connect(os.environ["WAYFIRE_SOCKET"])
@@ -308,7 +311,7 @@ try:
 
     # R3(b): the release is over B, but the click belongs only to the original surface A.
     # Keep the assertion in the suite; CI may omit only this pre-existing 0.3-base failure.
-    if os.environ.get("SCOTTLAND_TEST_SKIP_BASE_REPLAY") == "1":
+    if skip_base_replay:
         print("SKIP known 0.3-base failure: 8 px cross-surface original-surface replay", flush=True)
     else:
         setup(a_x=300, b_x=600)

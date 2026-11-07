@@ -14,6 +14,12 @@ esac
 }
 tmp_dir="${headless_dir}.tmp"
 [[ ! -e $tmp_dir ]] || { echo "TMPDIR occupied: $tmp_dir" >&2; exit 1; }
+skip_base_replay_arg=
+case ${SCOTTLAND_TEST_SKIP_BASE_REPLAY:-0} in
+  0) ;;
+  1) skip_base_replay_arg=--skip-base-replay ;;
+  *) echo 'SCOTTLAND_TEST_SKIP_BASE_REPLAY must be 0 or 1' >&2; exit 2 ;;
+esac
 mkdir -p "$tmp_dir"
 export SCOTTLAND_HEADLESS_DIR=$headless_dir TMPDIR=$tmp_dir
 artifacts=${1:-$PWD/build/middle-press-evidence}
@@ -36,4 +42,5 @@ cleanup() {
 trap cleanup EXIT
 started=1
 SCOTTLAND_TEST_OUTPUTS=1 tests/headless.sh start
-tests/headless.sh run python3 -u tests/middle-press-test.py "$artifacts" | tee "$artifacts/test.log"
+tests/headless.sh run python3 -u tests/middle-press-test.py \
+  "$artifacts" "$skip_base_replay_arg" | tee "$artifacts/test.log"
