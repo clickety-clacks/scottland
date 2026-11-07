@@ -244,16 +244,21 @@ jobs:
       - name: Prepare test environment
         run: |
           printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
+          docker pull archlinux:base-devel
+          base_ref="$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
+          printf 'SCOTTLAND_BASE_IMAGE_DIGEST=%s\n' "$base_ref" >> "$GITHUB_ENV"
           docker build --pull \
             --build-arg CI_UID="$(id -u)" \
+            --build-arg BASE_REF="$base_ref" \
             --tag scottland-checks:standalone - <<'DOCKERFILE'
-          FROM archlinux:base-devel
+          ARG BASE_REF
+          FROM ${BASE_REF}
           ARG CI_UID
           RUN pacman -Syu --noconfirm --needed \
                 archlinux-keyring fakeroot gcc git make python shadow \
             && useradd --uid "$CI_UID" --gid 0 --create-home ci
           DOCKERFILE
-          printf 'Container base image: %s\n' "$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
+          printf 'Container base image: %s\n' "$base_ref"
           printf 'Prepared container image: %s\n' "$(docker image inspect scottland-checks:standalone --format '{{.Id}}')"
 
       - name: Run standalone rows
@@ -262,7 +267,7 @@ jobs:
             --user "$(id -u):$(id -g)" \
             --env HOME=/home/ci \
             --env GITHUB_REF \
-            --env SCOTTLAND_BASE_IMAGE_DIGEST="$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')" \
+            --env SCOTTLAND_BASE_IMAGE_DIGEST \
             --env SCOTTLAND_CONTAINER_ID="$(docker image inspect scottland-checks:standalone --format '{{.Id}}')" \
             --volume "$GITHUB_WORKSPACE:/work" \
             --workdir /work \

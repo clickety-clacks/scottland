@@ -18,14 +18,21 @@ with tempfile.TemporaryDirectory(prefix="solar-package-") as temp:
     pkgroot = scratch/"packages"
     srcdir = scratch/"src"
     (srcdir/"tools/bin").mkdir(parents=True)
+    (srcdir/"tools/lib/agent_window_resolver").mkdir(parents=True)
+    (srcdir/"cargo/release").mkdir(parents=True)
+    for relative in ("tools/bin/scottland", "cargo/release/attentiond"):
+        artifact = srcdir/relative
+        artifact.write_text("#!/bin/sh\nexit 0\n")
+        artifact.chmod(0o755)
+    (srcdir/"base.bundle").write_text("package fixture\n")
+    (srcdir/"base.commit").write_text("package fixture\n")
 
     command = r'''
 set -e
 shopt -s nullglob
 startdir="$STARTDIR"
 source "$STARTDIR/PKGBUILD"
-pkgver=0.3.0
-pkgrel=1
+printf 'SOURCE_VERSION=%s-%s\n' "$pkgver" "$pkgrel"
 srcdir="$SRCDIR"
 pkgdir="$PKGROOT/core"
 pkgname=scottland
@@ -49,7 +56,10 @@ printf 'SUNLIGHT_OPTS=%s\n' "${optdepends[*]}"
     assert (sunlight/"libexec/scottland-solar-theme").is_file()
     assert "geoclue" not in next(line for line in result.stdout.splitlines() if line.startswith("CORE_OPTS="))
     assert "geoclue" in next(line for line in result.stdout.splitlines() if line.startswith("SUNLIGHT_OPTS="))
-    assert "scottland=0.3.0-1" in next(line for line in result.stdout.splitlines() if line.startswith("SUNLIGHT_DEPENDS="))
+    version = next(line.split("=", 1)[1] for line in result.stdout.splitlines()
+                   if line.startswith("SOURCE_VERSION="))
+    assert f"scottland={version}" in next(line for line in result.stdout.splitlines()
+                                            if line.startswith("SUNLIGHT_DEPENDS="))
     print("PASS core package excludes Sunlight hook/script and Geoclue optdepend")
     print("PASS standalone scottland-sunlight owns the hook/script and Geoclue optdepend")
     print("PASS standalone package requires the matching core version")
