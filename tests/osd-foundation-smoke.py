@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -486,11 +487,15 @@ def run_smoke(path):
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
     scratch.mkdir(mode=0o700)
+    owner = str(uuid.uuid4())
     env = os.environ.copy()
     env.update({
         "SCOTTLAND_HEADLESS_ISOLATION": "1",
         "SCOTTLAND_TEST_SCRATCH": str(scratch),
         "SCOTTLAND_HEADLESS_DIR": str(headless_dir),
+        "SCOTTLAND_HEADLESS_OWNER": owner,
+        "SCOTTLAND_HEADLESS_OWNER_DIR": str(scratch),
+        "SCOTTLAND_SESSION_DIR": str(headless_dir / "session"),
     })
     start_attempted = False
     started = False
