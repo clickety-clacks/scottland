@@ -432,7 +432,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: compositor-rows-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: compositor-rows-${{ matrix.mode }}-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             build/compositor-rows/shard-${{ matrix.shard }}/identity.txt
             build/compositor-rows/shard-${{ matrix.shard }}/harness-diff.txt
