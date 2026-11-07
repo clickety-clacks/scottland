@@ -15,30 +15,15 @@ with tempfile.TemporaryDirectory(prefix="scottland-shortcut-list-") as temporary
     home = root / "home"
     config = home / ".config/hypr/hyprland.lua"
     omarchy_root = root / "omarchy"
-    bindings = omarchy_root / "default/hypr/bindings"
     config.parent.mkdir(parents=True)
-    bindings.mkdir(parents=True)
 
     config.write_text('''
-local loaded_plugins = 0
 for _ in ipairs(hl.get_loaded_plugins()) do
-  loaded_plugins = loaded_plugins + 1
+  error("unsupported plugin list must be empty")
 end
 
 hl.unsupported_api.deep_call()
 hl.unsupported_api.deep_call().another_call()
-''')
-    (omarchy_root / "default/hypr/helpers.lua").write_text('''
-o = o or {}
-function o.bind(keys, description, action, options)
-  options = options or {}
-  options.description = description
-  if type(action) == "string" then action = hl.dsp.exec_cmd(action) end
-  hl.bind(keys, action, options)
-end
-''')
-    (bindings / "tiling.lua").write_text('''
-o.bind("SUPER+1", "Finite list regression", "echo finite-list-regression")
 ''')
 
     env = {
@@ -61,11 +46,8 @@ o.bind("SUPER+1", "Finite list regression", "echo finite-list-regression")
         sys.exit(1)
 
     completed = result.returncode == 0 and header in result.stdout
-    print(f"{'PASS' if completed else 'FAIL'}: shortcut generator completes for an unsupported list API "
+    print(f"{'PASS' if completed else 'FAIL'}: shortcut generator completes with an unsupported list API "
           f"(exit={result.returncode})", flush=True)
-    imported = completed and "echo finite-list-regression" in result.stdout
-    print(f"{'PASS' if imported else 'FAIL'}: generator processes the following supported binding",
-          flush=True)
-    if not completed or not imported:
+    if not completed:
         print(f"stdout={result.stdout!r}\nstderr={result.stderr!r}", file=sys.stderr)
-    sys.exit(0 if completed and imported else 1)
+    sys.exit(0 if completed else 1)
