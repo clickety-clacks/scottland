@@ -1,6 +1,9 @@
 name: Scottland 0.4 fast checks
 
 on:
+  push:
+    branches:
+      - '0.4'
   pull_request:
     branches:
       - '0.4'
@@ -144,6 +147,7 @@ jobs:
 
   headless:
     name: Scottland 0.3 headless
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
@@ -225,3 +229,50 @@ jobs:
                 tests/config-watch-missing-settings-test.sh "$PWD/build/config-watch-evidence"
               rmdir -- build/config-watch-scratch
             '
+
+  standalone:
+    name: Scottland 0.4 standalone rows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Prepare test environment
+        run: |
+          printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
+          docker build --pull \
+            --build-arg CI_UID="$(id -u)" \
+            --tag scottland-checks:standalone - <<'DOCKERFILE'
+          FROM archlinux:base-devel
+          ARG CI_UID
+          RUN pacman -Syu --noconfirm --needed \
+                archlinux-keyring fakeroot gcc git make python shadow \
+            && useradd --uid "$CI_UID" --gid 0 --create-home ci
+          DOCKERFILE
+          printf 'Container base image: %s\n' "$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
+          printf 'Prepared container image: %s\n' "$(docker image inspect scottland-checks:standalone --format '{{.Id}}')"
+
+      - name: Run standalone rows
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/home/ci \
+            --env GITHUB_REF \
+            --env SCOTTLAND_BASE_IMAGE_DIGEST="$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')" \
+            --env SCOTTLAND_CONTAINER_ID="$(docker image inspect scottland-checks:standalone --format '{{.Id}}')" \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            scottland-checks:standalone \
+            bash .github/scripts/standalone-rows.sh
+
+      - name: Upload per-row evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-rows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/standalone-rows/
+          if-no-files-found: warn
