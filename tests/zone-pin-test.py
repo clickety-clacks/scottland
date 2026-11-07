@@ -469,6 +469,7 @@ try:
     runtime = Path(os.environ['XDG_RUNTIME_DIR'])
     display = (Path(os.environ['SCOTTLAND_HEADLESS_DIR']) / 'display').read_text().strip()
     mark = runtime / 'scottland' / (display + '.reloading')
+    mark.parent.mkdir(mode=0o700, exist_ok=True)
     wayfire_log = Path(os.environ['SCOTTLAND_HEADLESS_DIR']) / 'wayfire.log'
     before_loaded = wayfire_log.read_text(errors='replace').count('scottland: plugin loaded')
     before_unloaded = wayfire_log.read_text(errors='replace').count('scottland: plugin unloaded')

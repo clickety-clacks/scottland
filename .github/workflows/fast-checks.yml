@@ -359,6 +359,7 @@ jobs:
           path: |
             build/compositor-rows/shard-${{ matrix.shard }}/identity.txt
             build/compositor-rows/shard-${{ matrix.shard }}/preflight.log
+            build/compositor-rows/shard-${{ matrix.shard }}/preflight/goo-state.json
             build/compositor-rows/shard-${{ matrix.shard }}/rows.tsv
             build/compositor-rows/shard-${{ matrix.shard }}/logs/*.log
           if-no-files-found: error
