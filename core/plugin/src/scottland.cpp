@@ -5484,32 +5484,60 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     }
 
     // Touchpad window gestures (L23, L24). A three-finger swipe moves the window under the pointer
-    // through the same live drag as Super+drag. A middle press from any pointer source waits for a
-    // click or a move; touchpad_gestures only controls the separate swipe and hold gestures.
+    // through the same live drag as Super+drag. A clickfinger middle press resizes around center;
+    // an ordinary mouse middle press moves. touchpad_gestures controls touchpad swipe, hold, and
+    // clickfinger resize.
     wf::option_wrapper_t<bool> touchpad_gestures{"scottland/touchpad_gestures"};
     bool swipe_moving = false;
-    bool middle_pending  = false;
-    bool middle_dragging = false;
+    bool middle_pending  = false;  // touchpad clickfinger press awaiting a resize or click
+    bool middle_resizing = false;
     bool middle_consumed = false;
     wf::pointf_t middle_origin;
     std::weak_ptr<wf::view_interface_t> middle_view;
     wlr_input_device *middle_device = nullptr;
     wlr_surface *middle_surface = nullptr;
+    bool mouse_middle_pending = false;
+    bool mouse_middle_dragging = false;
+    bool mouse_middle_consumed = false;
+    wf::pointf_t mouse_middle_origin;
+    std::weak_ptr<wf::view_interface_t> mouse_middle_view;
+    wlr_input_device *mouse_middle_device = nullptr;
+    wlr_surface *mouse_middle_surface = nullptr;
     bool test_touchpad_pointers = false;  // scottland/test-input: count every pointer as a touchpad
+
+    bool touchpad_middle_active() const
+    {
+        return middle_pending || middle_resizing || middle_consumed;
+    }
+
+    bool mouse_middle_active() const
+    {
+        return mouse_middle_pending || mouse_middle_dragging || mouse_middle_consumed;
+    }
 
     bool middle_gesture_active() const
     {
-        return middle_pending || middle_dragging || middle_consumed;
+        return touchpad_middle_active() || mouse_middle_active();
     }
 
-    void clear_middle_gesture()
+    void clear_touchpad_middle_gesture()
     {
         middle_pending = false;
-        middle_dragging = false;
+        middle_resizing = false;
         middle_consumed = false;
         middle_view.reset();
         middle_device = nullptr;
         middle_surface = nullptr;
+    }
+
+    void clear_mouse_middle_gesture()
+    {
+        mouse_middle_pending = false;
+        mouse_middle_dragging = false;
+        mouse_middle_consumed = false;
+        mouse_middle_view.reset();
+        mouse_middle_device = nullptr;
+        mouse_middle_surface = nullptr;
     }
 
     bool is_touchpad(wlr_input_device *device)
@@ -5730,6 +5758,60 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
+        if (is_touchpad(ev->device))
+        {
+            if (ev->event->state == WL_POINTER_BUTTON_STATE_PRESSED)
+            {
+                if (!touchpad_gestures || (ev->mode != wf::input_event_processing_mode_t::FULL) ||
+                    middle_gesture_active() || !ev->device || drag->view || pointer_focus_is_layer_shell())
+                {
+                    return;
+                }
+
+                auto view = middle_press_target();
+                if (!view || !scottland::can_resize(view))
+                {
+                    return;  // let an ordinary middle click reach a non-resizable window
+                }
+
+                auto seat = wf::get_core().get_current_seat();
+                middle_pending = true;
+                middle_origin  = wf::get_core().get_cursor_position();
+                middle_view    = view->weak_from_this();
+                middle_device  = ev->device;
+                middle_surface = seat ? seat->pointer_state.focused_surface : nullptr;
+                ev->mode = wf::input_event_processing_mode_t::IGNORE;
+            } else if ((ev->event->state == WL_POINTER_BUTTON_STATE_RELEASED) && (ev->device == middle_device))
+            {
+                if (middle_pending)
+                {
+                    auto release = wf::get_core().get_cursor_position();
+                    auto press = middle_origin;
+                    auto recipient = middle_surface;
+                    auto target = wf::toplevel_cast(middle_view.lock());
+                    clear_touchpad_middle_gesture();
+                    ev->mode = wf::input_event_processing_mode_t::IGNORE;
+                    replay_middle_click(press, release, recipient, target);
+                } else if (middle_resizing)
+                {
+                    // Let center_resize_t receive the owning button release and end the resize.
+                    clear_touchpad_middle_gesture();
+                } else if (middle_consumed)
+                {
+                    clear_touchpad_middle_gesture();
+                    ev->mode = wf::input_event_processing_mode_t::IGNORE;
+                }
+            }
+
+            return;
+        }
+
+        // Tablet tools and other non-mouse devices keep their native middle-button behavior.
+        if (!ev->device || (ev->device->type != WLR_INPUT_DEVICE_POINTER))
+        {
+            return;
+        }
+
         if (ev->event->state == WL_POINTER_BUTTON_STATE_PRESSED)
         {
             if ((ev->mode != wf::input_event_processing_mode_t::FULL) || middle_gesture_active() ||
@@ -5752,38 +5834,38 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             // Withhold a real middle press until it resolves to a click or a live move.
-            middle_pending = true;
-            middle_origin  = wf::get_core().get_cursor_position();
-            middle_view    = view->weak_from_this();
-            middle_device  = ev->device;
+            mouse_middle_pending = true;
+            mouse_middle_origin  = wf::get_core().get_cursor_position();
+            mouse_middle_view    = view->weak_from_this();
+            mouse_middle_device  = ev->device;
             // A press on the frame halo has no focused client surface, but can still start a
             // move. replay_middle_click() deliberately ignores a null recipient on release.
-            middle_surface = recipient;
+            mouse_middle_surface = recipient;
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
-        } else if ((ev->event->state == WL_POINTER_BUTTON_STATE_RELEASED) && (ev->device == middle_device))
+        } else if ((ev->event->state == WL_POINTER_BUTTON_STATE_RELEASED) && (ev->device == mouse_middle_device))
         {
-            if (middle_pending)
+            if (mouse_middle_pending)
             {
                 auto release = wf::get_core().get_cursor_position();
-                auto press = middle_origin;
-                auto recipient = middle_surface;
-                auto target = wf::toplevel_cast(middle_view.lock());
-                clear_middle_gesture();
+                auto press = mouse_middle_origin;
+                auto recipient = mouse_middle_surface;
+                auto target = wf::toplevel_cast(mouse_middle_view.lock());
+                clear_mouse_middle_gesture();
                 ev->mode = wf::input_event_processing_mode_t::IGNORE;
                 replay_middle_click(press, release, recipient, target);
-            } else if (middle_dragging)
+            } else if (mouse_middle_dragging)
             {
                 // The post-event handler ends the drag for this exact owner device.
                 ev->mode = wf::input_event_processing_mode_t::IGNORE;
-            } else if (middle_consumed)
+            } else if (mouse_middle_consumed)
             {
-                clear_middle_gesture();
+                clear_mouse_middle_gesture();
                 ev->mode = wf::input_event_processing_mode_t::IGNORE;
             }
         }
     };
 
-    void check_middle_drag(wlr_input_device *device)
+    void check_touchpad_middle_resize(wlr_input_device *device)
     {
         if (!middle_pending || (device != middle_device))
         {
@@ -5791,26 +5873,53 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         auto cursor = wf::get_core().get_cursor_position();
-        if (std::hypot(cursor.x - middle_origin.x, cursor.y - middle_origin.y) <= 12.0)
+        if (std::hypot(cursor.x - middle_origin.x, cursor.y - middle_origin.y) < 8.0)
         {
             return;
         }
 
         middle_pending = false;
         auto view = wf::toplevel_cast(middle_view.lock());
+        auto output = view ? view->get_output() : nullptr;
+        if (!drag->view && output && output_instance.count(output) &&
+            output_instance[output]->start(view, BTN_MIDDLE, 1, -1))
+        {
+            middle_resizing = true;
+        } else
+        {
+            // The withheld press must not be followed by an unmatched client release.
+            middle_consumed = true;
+        }
+    }
+
+    void check_mouse_middle_drag(wlr_input_device *device)
+    {
+        if (!mouse_middle_pending || (device != mouse_middle_device))
+        {
+            return;
+        }
+
+        auto cursor = wf::get_core().get_cursor_position();
+        if (std::hypot(cursor.x - mouse_middle_origin.x, cursor.y - mouse_middle_origin.y) <= 12.0)
+        {
+            return;
+        }
+
+        mouse_middle_pending = false;
+        auto view = wf::toplevel_cast(mouse_middle_view.lock());
         if (!drag->view && view && view->is_mapped() && (view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE))
         {
             // The move begins at the press point, so the window rejoins the cursor without a jump.
             drag->set_input(-1, true, BTN_MIDDLE, true);
-            drag->set_pending_drag(middle_origin);
+            drag->set_pending_drag(mouse_middle_origin);
             drag->start_drag(view);
         }
 
-        middle_dragging = bool(drag->view) && (drag->view == view);
-        middle_consumed = !middle_dragging;
-        if (middle_dragging)
+        mouse_middle_dragging = bool(drag->view) && (drag->view == view);
+        mouse_middle_consumed = !mouse_middle_dragging;
+        if (mouse_middle_dragging)
         {
-            model.drag.input_override = middle_origin;
+            model.drag.input_override = mouse_middle_origin;
             note_drag_start();
         }
     }
@@ -6362,8 +6471,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         reply["hold_pending"] = bool(touchpad_hold);
         reply["swipe_moving"] = swipe_moving;
         reply["middle_pending"] = middle_pending;
-        reply["middle_dragging"] = middle_dragging;
+        reply["middle_resizing"] = middle_resizing;
         reply["middle_consumed"] = middle_consumed;
+        reply["mouse_middle_pending"] = mouse_middle_pending;
+        reply["mouse_middle_dragging"] = mouse_middle_dragging;
+        reply["mouse_middle_consumed"] = mouse_middle_consumed;
         reply["dragging"] = bool(drag->view);
         return reply;
     };
@@ -6414,8 +6526,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto reply = wf::ipc::json_ok();
         reply["swipe_moving"]    = swipe_moving;
         reply["middle_pending"]  = middle_pending;
-        reply["middle_dragging"] = middle_dragging;
+        reply["middle_resizing"] = middle_resizing;
         reply["middle_consumed"] = middle_consumed;
+        reply["mouse_middle_pending"] = mouse_middle_pending;
+        reply["mouse_middle_dragging"] = mouse_middle_dragging;
+        reply["mouse_middle_consumed"] = mouse_middle_consumed;
         reply["hold_armed"] = hold_finger >= 0;
         if (getenv("SCOTTLAND_TEST_MODEL"))
         {
@@ -6435,11 +6550,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_motion_event>> on_motion =
         [=] (wf::post_input_event_signal<wlr_pointer_motion_event> *ev)
     {
-        check_middle_drag(ev->device);
-        if (middle_dragging && (ev->device == middle_device))
+        check_mouse_middle_drag(ev->device);
+        if (mouse_middle_dragging && (ev->device == mouse_middle_device))
         {
             drag->handle_motion(wf::get_core().get_cursor_position());
         }
+        check_touchpad_middle_resize(ev->device);
 
         track_pointer();
         update_note_visuals();
@@ -6447,11 +6563,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_motion_absolute_event>> on_motion_abs =
         [=] (wf::post_input_event_signal<wlr_pointer_motion_absolute_event> *ev)
     {
-        check_middle_drag(ev->device);
-        if (middle_dragging && (ev->device == middle_device))
+        check_mouse_middle_drag(ev->device);
+        if (mouse_middle_dragging && (ev->device == mouse_middle_device))
         {
             drag->handle_motion(wf::get_core().get_cursor_position());
         }
+        check_touchpad_middle_resize(ev->device);
 
         track_pointer();
         update_note_visuals();
@@ -6461,9 +6578,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (ev->event->state == WL_POINTER_BUTTON_STATE_RELEASED)
         {
-            if (middle_dragging && (ev->event->button == BTN_MIDDLE) && (ev->device == middle_device))
+            if (mouse_middle_dragging && (ev->event->button == BTN_MIDDLE) &&
+                (ev->device == mouse_middle_device))
             {
-                clear_middle_gesture();
+                clear_mouse_middle_gesture();
                 drag->handle_input_released();
             }
 
@@ -6490,12 +6608,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_device_removed_signal> on_middle_device_removed =
         [this] (wf::input_device_removed_signal *ev)
     {
-        if (ev->device && (ev->device->get_wlr_handle() == middle_device))
+        if (ev->device && (ev->device->get_wlr_handle() == mouse_middle_device))
         {
-            bool was_dragging = middle_dragging;
-            clear_middle_gesture();
+            bool was_dragging = mouse_middle_dragging;
+            clear_mouse_middle_gesture();
             if (was_dragging) drag->handle_input_released();
         }
+
+        if (ev->device && (ev->device->get_wlr_handle() == middle_device))
+            clear_touchpad_middle_gesture();
     };
 
     wf::option_wrapper_t<wf::buttonbinding_t> move_button{"scottland/move"};
