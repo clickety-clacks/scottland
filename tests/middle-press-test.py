@@ -63,6 +63,15 @@ def geometry(title):
     return view(title)["geometry"]
 
 
+def layout_view(title):
+    return next(row for row in ipc("scottland/layout-state")["views"]
+                if row.get("title") == "Middle-" + title)
+
+
+def frame_state(title):
+    return layout_view(title)["frame"]
+
+
 def state():
     return ipc("scottland/test-input")
 
@@ -192,8 +201,11 @@ def settle(*titles, timeout=5):
     stable = 0
     while time.monotonic() < end:
         rows = ipc("scottland/layout-state")["views"]
-        scales = {row["id"]: row.get("applied_scale", 1.0) for row in rows}
-        current = tuple((geometry(title), round(scales.get(view(title)["id"], 1.0), 4))
+        by_title = {row.get("title"): row for row in rows}
+        current = tuple((geometry(title),
+                         round(by_title["Middle-" + title].get("applied_scale", 1.0), 4),
+                         tuple(round(by_title["Middle-" + title]["frame"][key], 4)
+                               for key in ("x", "y", "width", "height", "thickness", "swell")))
                         for title in titles)
         if current == previous:
             stable += 1
@@ -311,15 +323,35 @@ try:
     focus("B")
     settle("A", "B")
     a = geometry("A")
-    # Put B's frame band just beyond A's press point: the focused swell can extend
-    # the band beyond the client edge, and an 8 px move enters it inside click slop.
+    # Overlap B's client edge with A. The focused halo animates beyond the client,
+    # so derive the press point from its settled frame bounds below.
     place("B", round(a["x"] + a["width"] - 17), a["y"], 360, 260)
+    settle("A", "B")
+    b_frame = frame_state("B")
+    hover_x = round(b_frame["x"] - b_frame["thickness"] - 6)
+    hover_y = round(b_frame["y"] + b_frame["height"] / 2)
+    pointer(hover_x, hover_y)
+    wait(lambda: frame_state("B")["swell"] >= .99,
+         what="B's reported halo swell after pointer dwell")
     settle("A", "B")
     clear_events()
     a = geometry("A")
-    x, y = a["x"] + a["width"] - 42, a["y"] + a["height"] / 2
+    a_frame = frame_state("A")
+    b_frame = frame_state("B")
+    b_halo_left = b_frame["x"] - b_frame["thickness"]
+    x = round(b_halo_left - 6)
+    y = round(a_frame["y"] + a_frame["height"] / 2)
+    release_x = x + 8
+    a_right = a_frame["x"] + a_frame["width"]
+    check(a_frame["x"] < x < release_x < a_right and
+          x < b_halo_left < release_x < b_frame["x"] and
+          b_frame["y"] - b_frame["thickness"] < y <
+          b_frame["y"] + b_frame["height"] + b_frame["thickness"],
+          "fixture: A owns the press point and B's settled frame contains the 8 px release",
+          f"A frame={a_frame}; B frame={b_frame}; press=({x},{y}); release=({release_x},{y})")
     pointer(x, y)
-    wait(lambda: bool(pointer_events("A")), what="original surface at cross-window press point")
+    wait(lambda: bool(pointer_events("A")),
+         what=f"original surface at ({x},{y}) with A frame={a_frame} and B frame={b_frame}")
     button("BTN_MIDDLE", True)
     wait(lambda: state()["mouse_middle_pending"], what="cross-surface middle pending")
     pointer(x + 8, y)
