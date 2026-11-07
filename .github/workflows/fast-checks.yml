@@ -38,7 +38,7 @@ jobs:
           RUN pacman -Syu --noconfirm --needed \
                 archlinux-keyring bubblewrap dbus gdk-pixbuf2 git glm grim inotify-tools jq \
                 libglvnd libinput libxkbcommon mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
-                quickshell rust shadow wayfire wayland wayland-protocols wlroots0.20 cairo \
+                quickshell rust shadow vulkan-headers wayfire wayland wayland-protocols wlroots0.20 cairo \
             && useradd --uid "$CI_UID" --gid 0 --create-home ci
           DOCKERFILE
           printf 'Container base image: %s\n' "$base_ref"
@@ -165,34 +165,49 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      - name: Initialize OSD foundation evidence
+        run: python3 tests/osd-foundation-smoke.py --initialize
+
       - name: Prepare build environment
         run: |
           printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
+          docker pull archlinux:base-devel
+          base_ref="$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
+          printf 'SCOTTLAND_BASE_IMAGE_REF=%s\n' "$base_ref" >> "$GITHUB_ENV"
           docker build --pull \
             --build-arg CI_UID="$(id -u)" \
+            --build-arg BASE_REF="$base_ref" \
             --tag scottland-checks:phase1 - <<'DOCKERFILE'
-          FROM archlinux:base-devel
+          ARG BASE_REF
+          FROM ${BASE_REF}
           ARG CI_UID
           RUN pacman -Syu --noconfirm --needed \
                 archlinux-keyring bubblewrap dbus gdk-pixbuf2 git glm grim gtk4 gtk4-layer-shell imagemagick inotify-tools jq \
                 libglvnd libinput libxkbcommon mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
-                quickshell rust shadow wayfire wayland wayland-protocols wlroots0.20 cairo \
+                quickshell rust shadow vulkan-headers wayfire wayland wayland-protocols wlroots0.20 cairo \
             && useradd --uid "$CI_UID" --gid 0 --create-home ci \
             && install -d -m 0700 -o ci -g 0 "/run/user/$CI_UID"
           DOCKERFILE
-          printf 'Container base image: %s\n' "$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
-          printf 'Prepared container image: %s\n' "$(docker image inspect scottland-checks:phase1 --format '{{.Id}}')"
+          image_id="$(docker image inspect scottland-checks:phase1 --format '{{.Id}}')"
+          printf 'SCOTTLAND_CHECKS_IMAGE_ID=%s\n' "$image_id" >> "$GITHUB_ENV"
+          printf 'Container base image: %s\n' "$base_ref"
+          printf 'Prepared container image: %s\n' "$image_id"
 
       - name: Report toolchain versions
         run: |
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             --env HOME=/home/ci \
+            --env SCOTTLAND_CHECKS_IMAGE_ID \
+            --env SCOTTLAND_BASE_IMAGE_REF \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
             scottland-checks:phase1 \
             bash -euo pipefail -c '
               printf "Container operating system: "
               . /etc/os-release
               printf "%s %s\n" "$NAME" "$VERSION_ID"
+              python3 tests/osd-foundation-smoke.py --record-versions
               pacman -Q wayfire wlroots0.20 meson gcc rust python bubblewrap quickshell
               printf "C++ compiler: "
               g++ --version | sed -n "1p"
@@ -217,13 +232,25 @@ jobs:
             bash -euo pipefail -c '
               mkdir -m 700 -p "$XDG_RUNTIME_DIR"
               git rev-parse HEAD
-              make test-hooks
+              mkdir -p build/osd-foundation-smoke
+              if make test-hooks; then
+                printf "PASS\\tmake test-hooks exited 0 (includes the Meson plugin build)\\n" >build/osd-foundation-smoke/hooks-build.outcome
+              else
+                status=$?
+                printf "FAIL\\tmake test-hooks exited %s\\n" "$status" >build/osd-foundation-smoke/hooks-build.outcome
+                exit "$status"
+              fi
+              mkdir -m 700 build/queue-headless-scratch
+              SCOTTLAND_TEST_SCRATCH="$PWD/build/queue-headless-scratch" \
+                SCOTTLAND_HEADLESS_DIR="$PWD/build/queue-headless-scratch/session" \
+                tests/transparency-toggle-test.sh "$PWD/build/queue-headless-evidence"
+              rmdir -- build/queue-headless-scratch
               mkdir -m 700 build/middle-press-fast-check-scratch
               middle_log="$PWD/build/middle-press-console.log"
               if SCOTTLAND_TEST_SCRATCH="$PWD/build/middle-press-fast-check-scratch" \
                 SCOTTLAND_HEADLESS_DIR="$PWD/build/middle-press-fast-check-scratch/session" \
                 timeout --signal=TERM --kill-after=30s 6m \
-                tests/middle-press-test.sh "$PWD/build/middle-press-evidence" --skip-cross-surface-replay >"$middle_log" 2>&1; then
+                tests/middle-press-test.sh "$PWD/build/middle-press-evidence" >"$middle_log" 2>&1; then
                 cat "$middle_log"
               else
                 test_status=$?
@@ -251,6 +278,44 @@ jobs:
                 tests/config-watch-missing-settings-test.sh "$PWD/build/config-watch-evidence"
               rmdir -- build/config-watch-scratch
             '
+
+      - name: Run OSD foundation smoke
+        if: ${{ always() && !cancelled() }}
+        continue-on-error: true
+        run: |
+          if docker image inspect scottland-checks:phase1 >/dev/null 2>&1; then
+            docker run --rm --privileged \
+              --user "$(id -u):$(id -g)" \
+              --env HOME=/home/ci \
+              --env XDG_RUNTIME_DIR="/run/user/$(id -u)" \
+              --env SCOTTLAND_HEADLESS_ISOLATION=1 \
+              --env GITHUB_REPOSITORY \
+              --env GITHUB_RUN_ID \
+              --env GITHUB_RUN_ATTEMPT \
+              --env GITHUB_SERVER_URL \
+              --env GITHUB_SHA \
+              --env GITHUB_REF \
+              --env GITHUB_EVENT_NAME \
+              --env GITHUB_BASE_REF \
+              --env GITHUB_HEAD_REF \
+              --env SCOTTLAND_CHECKS_IMAGE_ID \
+              --env SCOTTLAND_BASE_IMAGE_REF \
+              --volume "$GITHUB_WORKSPACE:/work" \
+              --workdir /work \
+              scottland-checks:phase1 \
+              python3 tests/osd-foundation-smoke.py --run
+          else
+            python3 tests/osd-foundation-smoke.py --not-run \
+              --reason 'the headless container image was not prepared; see the preparation step'
+          fi
+
+      - name: Upload OSD foundation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: osd-foundation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/osd-foundation-smoke/
+          if-no-files-found: warn
 
   standalone:
     name: Scottland 0.4 standalone rows

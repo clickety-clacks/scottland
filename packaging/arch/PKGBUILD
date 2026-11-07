@@ -4,9 +4,9 @@ pkgname=(scottland scottland-sunlight scottland-omarchy)
 pkgver=0.4.1
 pkgrel=1
 pkgdesc="Spatial desktop on Wayfire, after Scott Jenson's working-memory concept"
-arch=('x86_64')
+arch=('x86_64' 'aarch64')
 license=('MIT')
-makedepends=('meson' 'ninja' 'wayfire' 'glm' 'libinput' 'cairo' 'cargo' 'python')
+makedepends=('meson' 'ninja' 'wayfire' 'vulkan-headers' 'glm' 'libinput' 'cairo' 'cargo' 'python')
 options=('!debug')
 
 _root="$startdir/../.."
@@ -111,6 +111,7 @@ package_scottland() {
   install -Dm644 "$_root/core/widgets/card/widget.toml" "$pkgdir/usr/lib/scottland/widgets/card/widget.toml"
   install -Dm644 "$_root/core/widgets/card/shell.qml" "$pkgdir/usr/lib/scottland/widgets/card/shell.qml"
   install -Dm644 "$_root/core/widgets/session/shell.qml" "$pkgdir/usr/lib/scottland/widgets/session/shell.qml"
+  install -Dm644 "$_root/core/widgets/osd/OsdPanel.qml" "$pkgdir/usr/lib/scottland/widgets/osd/OsdPanel.qml"
   install -Dm755 "$_root/core/autostart.d/01-record-environment" "$pkgdir/usr/lib/scottland/autostart.d/01-record-environment"
   install -Dm755 "$_root/core/libexec/scottland-color-scheme" "$pkgdir/usr/lib/scottland/libexec/scottland-color-scheme"
   install -Dm644 "$_root/core/session-env.d/10-cursor-size.sh" "$pkgdir/usr/lib/scottland/session-env.d/10-cursor-size.sh"

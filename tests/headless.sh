@@ -1153,7 +1153,10 @@ PY
         name=$(cat "$dir/display")
         pid_file="$session_dir/$name.color-scheme.pid"
         helper=$(sed -n 1p "$pid_file" 2>/dev/null || true)
-        if [[ $helper =~ ^[0-9]+$ ]] && process_owns_session "$helper" "$name" "$session_dir" scottland-color-scheme; then
+        if [[ $helper =~ ^[0-9]+$ ]] && {
+          process_owns_session "$helper" "$name" "$session_dir" scottland-color-scheme ||
+            process_owns_session "$helper" "$name" "$session_dir" scottland-display
+        }; then
           if [[ $(ps -o pgid= -p "$helper" | tr -d ' ') == "$helper" ]]; then
             kill -- "-$helper" 2>/dev/null || true
           else

@@ -50,6 +50,7 @@ def make(name, layer=False):
     motion = Gtk.EventControllerMotion.new()
     motion.connect("enter", lambda _controller, x, y: record_pointer(name, "enter", x, y))
     motion.connect("motion", lambda _controller, x, y: record_pointer(name, "motion", x, y))
+    motion.connect("leave", lambda _controller: record_pointer(name, "leave", 0, 0))
     area.add_controller(motion)
     windows[name] = window
     window.present()
