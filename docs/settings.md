@@ -281,7 +281,8 @@ save does not overwrite the manual choice in the current period. Omarchy's stock
 timer and user configuration are not modified. The per-session desired mode remains published in
 `<XDG_STATE_HOME>/scottland/<WAYLAND_DISPLAY>.solar-mode` for compatibility. The Arch build now
 places the generic hook and core scheduler in the separate `scottland-sunlight` split package;
-the core desktop package does not own those files or the Geoclue optdepend.
+the core desktop package does not own those files. Core retains a Geoclue optdepend
+for Weather, and the Sunlight package has its own Geoclue optdepend.
 
 ## Hint background opacity (S23 / WK42, 2026-10-06)
 
