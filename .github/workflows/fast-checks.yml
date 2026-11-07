@@ -217,6 +217,11 @@ jobs:
               mkdir -m 700 -p "$XDG_RUNTIME_DIR"
               git rev-parse HEAD
               make test-hooks
+              mkdir -m 700 build/queue-headless-scratch
+              SCOTTLAND_TEST_SCRATCH="$PWD/build/queue-headless-scratch" \
+                SCOTTLAND_HEADLESS_DIR="$PWD/build/queue-headless-scratch/session" \
+                tests/transparency-toggle-test.sh "$PWD/build/queue-headless-evidence"
+              rmdir -- build/queue-headless-scratch
               mkdir -m 700 build/middle-press-fast-check-scratch
               middle_log="$PWD/build/middle-press-console.log"
               if SCOTTLAND_TEST_SCRATCH="$PWD/build/middle-press-fast-check-scratch" \

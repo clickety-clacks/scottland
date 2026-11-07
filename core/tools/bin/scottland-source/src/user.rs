@@ -630,8 +630,10 @@ fn prepare_clone(system: &System, _: Option<&str>) -> Result<Workspace> {
         if let Some(parent) = paths.working_clone.parent() {
             fs::create_dir_all(parent)?;
         }
+        // The package repository is intentionally owned by root, not this user.
+        // Scope Git's ownership exception to that repository for this command.
         git_command(
-            Path::new("/"),
+            &paths.source_repo,
             [
                 OsString::from("clone"),
                 OsString::from("--no-checkout"),
@@ -1061,3 +1063,7 @@ fn print_help(product: &str) {
            update [--continue | --abort] [--from <repository> --ref <full-commit> [--init]]"
     );
 }
+
+#[cfg(test)]
+#[path = "user_tests.rs"]
+mod tests;

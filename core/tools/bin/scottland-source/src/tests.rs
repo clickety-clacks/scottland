@@ -142,7 +142,7 @@ fn git_ok(directory: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
-fn create_workspace_repository(directory: &Path) -> (String, String) {
+pub(super) fn create_workspace_repository(directory: &Path) -> (String, String) {
     fs::create_dir_all(directory).unwrap();
     let initialized = git(directory, &["init", "--initial-branch=main"]);
     assert!(

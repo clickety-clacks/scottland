@@ -8,8 +8,9 @@ when it closes; they survive a marked plugin reload, but not a compositor restar
 The same `scottland-ctl` can launch a command with a note. It stages each note against the pending
 provenance token before exec. Pending notes stay out of the notes slice; when the token binds, one
 model publication adds the provenance record to the desktop slice and moves those note ids into the
-bound window's notes slice. A rejected note cancels that pending launch, and a declaration that
-expires without binding discards its staged notes.
+bound window's notes slice. A rejected note is omitted with a warning while the command still runs;
+if the provenance declaration is rejected, the command runs without a token and each requested note
+is warned as unattached. A declaration that expires without binding discards its staged notes.
 
 The plugin owns each note's id, writer and text in the desktop model. The `notes` subscription is
 a versioned, complete replacement of notes on every window that has them. Its changes do not
@@ -36,11 +37,11 @@ window.
 | NT-14 | Panels and stacks draw above windows and widgets. A hovered panel draws above a focused stack. Notes do not move windows or rearrange panels from different windows. |
 | NT-15 | Window mode hides all note visuals on every output. Fullscreen hides all note visuals on its output. Notes return unchanged when those states end. |
 | NT-16 | A window in widget form shows one noninteractive note dot on the lower corner away from the screen edge. It shows no note text; the widget card, state file and D-Bus properties stay unchanged. The dot hides when widgets are hidden. |
-| NT-17 | The Rust launch verb accepts one or more `--note` values with a writer, attaches them to the pending launch, and execs the command only after every note is accepted. A rejected note prevents exec and discards the pending launch. |
+| NT-17 | The Rust launch verb tries each `--note` against the pending declaration, then execs whether or not notes are accepted. Each rejected note is omitted with one warning naming its position and reason. If the declaration is rejected, each note is warned as unattached and the command still runs without a provenance token. |
 | NT-18 | When a pending declaration binds to a window, its notes move to that window in the same model change as provenance. Notes that never bind expire after 60 seconds. Pending notes are absent from the notes slice. |
 | NT-19 | The supported browser flow starts a new Chromium process with a user-data directory no running Chromium uses. When that process's page window binds, its launch note appears without another command. Reusing an already-running Chromium is outside this guarantee. |
 
 The plugin adds no service, dependency, settings, general metadata field or separate state store.
 The notes and launch verbs belong to the existing Rust `scottland-ctl`; the Python control script
-does not gain notes commands. Provenance rules stay unchanged. NT-17–NT-19 depend on the existing
-Rust launch path and provenance binding path; they are sequenced after those shared components.
+does not gain notes commands. Provenance rules stay unchanged. NT-17–NT-19 use the existing Rust
+launch path and provenance binding path.

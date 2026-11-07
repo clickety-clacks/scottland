@@ -112,15 +112,19 @@ def focused():
     return (ipc("window-rules/get-focused-view").get("info") or {}).get("id")
 
 
-def ctl(*args, input_text=None):
+def ctl(*args, input_text=None, env=None):
     return subprocess.run([str(repo / "build/tools/bin/scottland-ctl"), *map(str, args)],
-        input=input_text, text=True, capture_output=True, timeout=12)
+        input=input_text, text=True, capture_output=True, timeout=12, env=env)
 
 
-def ctl_start(*args, stdout_path, stderr_path):
+def ctl_start(*args, stdout_path, stderr_path, input_text=None):
     with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
         process = subprocess.Popen([str(repo / "build/tools/bin/scottland-ctl"), *map(str, args)],
+            stdin=subprocess.PIPE if input_text is not None else None,
             stdout=stdout, stderr=stderr)
+    if input_text is not None:
+        process.stdin.write(input_text.encode())
+        process.stdin.close()
     clients.append(process)
     return process
 
@@ -208,29 +212,48 @@ def launch_with_note_behavior():
     writer = f"notes-login-{os.getpid()}"
     title = f"Notes login {os.getpid()} {time.monotonic_ns()}"
     text = "notes agent opened this page; please log in to xyz"
-    marker = art / "rejected-note-command-started"
+    marker = art / "optional-note-command-started"
     marker.unlink(missing_ok=True)
 
-    rejected = ctl("launch", "--launcher", writer, "--writer", writer,
-        "--note", "x" * 1001, "--", sys.executable, "-c",
+    missing_writer = ctl("launch", "--launcher", writer,
+        "--note", "optional note without a writer", "--", sys.executable, "-c",
         "import pathlib,sys; pathlib.Path(sys.argv[1]).touch()", str(marker))
-    require("a rejected launch note prevents command execution",
-        rejected.returncode != 0 and "text" in rejected.stderr and not marker.exists(),
-        {"status": rejected.returncode, "stdout": rejected.stdout,
-         "stderr": rejected.stderr, "command_started": marker.exists()})
-    require("rejected pending note is absent from the Notes slice",
+    require("a launch note without a writer warns and still starts the command",
+        missing_writer.returncode == 0 and marker.exists() and
+            "launch note 1" in missing_writer.stderr and "--writer" in missing_writer.stderr,
+        {"status": missing_writer.returncode, "stdout": missing_writer.stdout,
+         "stderr": missing_writer.stderr, "command_started": marker.exists()})
+    require("a note without a writer is absent from the Notes slice",
         not any(note.get("writer") == writer for _, entries in note_rows(notes()) for note in entries),
         notes())
+
+    marker.unlink()
+    stale_token_env = os.environ.copy()
+    stale_token_env["XDG_ACTIVATION_TOKEN"] = "stale-token"
+    rejected_declaration = ctl("launch", "--sender", "not an id", "--writer", writer,
+        "--note", "optional note", "--", sys.executable, "-c",
+        "import os,pathlib,sys; pathlib.Path(sys.argv[1]).write_text(os.environ.get('XDG_ACTIVATION_TOKEN', 'missing'))",
+        str(marker), env=stale_token_env)
+    require("a rejected declaration warns and starts the command without a token",
+        rejected_declaration.returncode == 0 and marker.exists() and
+            marker.read_text(encoding="utf-8") == "missing" and
+            "provenance record was not attached" in rejected_declaration.stderr and
+            "launch note 1" in rejected_declaration.stderr and
+            "no declaration" in rejected_declaration.stderr,
+        {"status": rejected_declaration.returncode, "stdout": rejected_declaration.stdout,
+         "stderr": rejected_declaration.stderr,
+         "token_seen_by_command": marker.read_text(encoding="utf-8") if marker.exists() else None})
 
     profile = Path(tempfile.mkdtemp(prefix="chromium-user-data-", dir=art))
     temporary_dirs.append(profile)
     page = art / f"{profile.name}.html"
     page.write_text(f"<!doctype html><title>{title}</title><h1>{title}</h1>", encoding="utf-8")
     process = ctl_start("launch", "--name", title, "--launcher", writer,
-        "--writer", writer, "--note", text, "--", "chromium", "--ozone-platform=wayland",
+        "--writer", writer, "--note", "-", "--writer", writer, "--note", "x" * 1001,
+        "--", "chromium", "--ozone-platform=wayland",
         f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check",
         "--new-window", page.as_uri(), stdout_path=art / "nt17-chromium.stdout",
-        stderr_path=art / "nt17-chromium.stderr")
+        stderr_path=art / "nt17-chromium.stderr", input_text=text + "\n")
 
     def bound_note():
         desktop = ipc("scottland/desktop-model", {"slice": "desktop"})
@@ -239,7 +262,7 @@ def launch_with_note_behavior():
             return None
         note_slice = notes()
         window_notes = row_for(note_slice, view["id"])
-        if not window_notes:
+        if not window_notes or len(window_notes["notes"]) != 1:
             return None
         matches = [note for note in window_notes["notes"]
             if note.get("writer") == writer and note.get("text") == text]
@@ -253,6 +276,14 @@ def launch_with_note_behavior():
         raise AssertionError(f"{error}; ctl={process.poll()}; stderr="
             f"{(art / 'nt17-chromium.stderr').read_text(encoding='utf-8', errors='replace')!r}")
     desktop, note_slice, view, note = observed
+    launch_stderr = (art / "nt17-chromium.stderr").read_text(
+        encoding="utf-8", errors="replace")
+    rejected_note_warnings = [line for line in launch_stderr.splitlines()
+        if "warning: launch note" in line]
+    require("a rejected second launch note warns without blocking Chromium",
+        len(rejected_note_warnings) == 1 and "launch note 2" in rejected_note_warnings[0] and
+            "text" in rejected_note_warnings[0],
+        {"stderr": launch_stderr, "warnings": rejected_note_warnings})
     require("real Chromium launch publishes provenance and its note on the same window",
         view.get("provenance", {}).get("name") == title and
             row_for(note_slice, view["id"]) is not None,
