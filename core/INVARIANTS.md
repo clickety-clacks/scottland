@@ -252,6 +252,14 @@ Integrated behavior verification for this merged path remains pending.
 |---|---|---|
 | NL1 | `scottland-display night-light {on,off,toggle,status}` uses session-only request state, targets fixed 4000K, restores only outputs Night Light confirmed warm and owns, and reports per-output failures or unknown facts without claiming unknown outputs are warm. `on` and `toggle` do not mutate the request when the existing display watcher is unavailable; `off` clears the request but reports output state unknown until the watcher can act. Full integration and remaining contract rows: [../docs/night-light.md](../docs/night-light.md). | partial: pure command/state/status policy and focused behavior tests implemented; shared CLI and watcher integration pending |
 
+## On-screen display
+
+See [../docs/osd.md](../docs/osd.md): OSD1–OSD11.
+
+| ID | Invariant | Status |
+|---|---|---|
+| OSD | `scottland-widget osd` presents one transient, replaceable message on the focused screen, over fullscreen content, with an optional theme icon and progress, current palette and text scale, and a 1500 ms default lifetime. It acknowledges after showing, does not take focus or pointer input, and uses the existing session shell rather than a separate long-running process. | panel and package registration implemented; behavior verification pending |
+
 ## Window keys and contention-aware placement
 
 See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK42 (window mode: Alt-alone hold, hint holds and pairing, theme-derived Vimarchy hints with desktop text sizing, exterior widget attachment and independent hint-background opacity,
