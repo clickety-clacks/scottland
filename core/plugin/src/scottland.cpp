@@ -17,6 +17,7 @@
 #include <wayfire/plugins/common/input-grab.hpp>
 #include <wayfire/per-output-plugin.hpp>
 #include <wayfire/txn/transaction-manager.hpp>
+#include <wayland-server-core.h>
 #include <wayfire/toplevel.hpp>
 #include <wayfire/touch/touch.hpp>
 #include <wayfire/workspace-set.hpp>
@@ -73,6 +74,7 @@ extern "C" {
 #include "inertia.hpp"
 #include <chrono>
 #include "hint-overlay.hpp"
+#include "window-name-consumer.hpp"
 #include <wayfire/scene-operations.hpp>
 #include "key-layers.hpp"
 #include "session.hpp"
@@ -91,9 +93,6 @@ extern "C" {
 #include <optional>
 #include <tuple>
 #include <signal.h>
-extern "C" {
-#include <sys/pidfd.h>  // glibc declares it without C linkage for C++
-}
 #include <unistd.h>
 #include <sys/socket.h>
 #include <cstring>
@@ -1656,6 +1655,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
+            invalidate_window_name(toplevel->get_id());
             spread_mapped_views.erase(toplevel->get_id());
             auto disappearing_card = link_of_widget(toplevel);
             bool lost_entry = disappearing_card && entering_widget(disappearing_card->window_id);
@@ -4706,7 +4706,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::view_title_changed_signal> on_title =
         [=] (wf::view_title_changed_signal *ev)
     {
-        observe_view(wf::toplevel_cast(ev->view));
+        auto view = wf::toplevel_cast(ev->view);
+        observe_view(view);
+        refresh_window_name_source(view);
         publish_model();
         if (window_keys.active && !window_filter.query.empty()) update_window_filter();
     };
@@ -4714,7 +4716,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::view_app_id_changed_signal> on_app_id =
         [=] (wf::view_app_id_changed_signal *ev)
     {
-        observe_view(wf::toplevel_cast(ev->view));
+        auto view = wf::toplevel_cast(ev->view);
+        observe_view(view);
+        refresh_window_name_source(view);
         publish_model();
         if (window_keys.active && !window_filter.query.empty()) update_window_filter();
     };

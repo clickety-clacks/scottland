@@ -2,9 +2,11 @@
 #include <cairo.h>
 #include <array>
 #include <cmath>
+#include <utility>
 #include <wayfire/opengl.hpp>
 #include <sstream>
 #include <drm_fourcc.h>
+#include <pango/pangocairo.h>
 extern "C" {
 #include <wlr/render/wlr_texture.h>
 }
@@ -13,7 +15,8 @@ namespace scottland::windowing
 hint_node::hint_node() : node_t(false) {}
 bool hint_node::update(double x, double y, const std::string& text, double size, const std::string& family,
     hint_rgb color, double scale, hint_rgb background, double background_opacity,
-    bool goo, bool reduced_motion)
+    bool goo, bool reduced_motion, const std::string& caption, double text_scale,
+    double caption_width, double caption_height, hint_rgb caption_foreground)
 {
     reduced = reduced_motion;
     if (hiding) { from = pop; hiding = false; started = clock::now(); }
@@ -30,25 +33,135 @@ bool hint_node::update(double x, double y, const std::string& text, double size,
         std::chrono::duration<double>(clock::now() - resized).count() / .16, 0., 1.);
     diameter = size_from + (size_to - size_from) * resize_t * resize_t * (3 - 2 * resize_t);
     dye = color; padding = goo ? 0 : 8;
-    int logical_size = int(std::round(size));
-    int canvas_size = logical_size + 2 * padding;
+    const int logical_size = int(std::round(size));
+    text_scale = std::clamp(text_scale, 0.5, 3.0);
+    caption_width = std::max(0.0, caption_width);
+    caption_height = std::max(0.0, caption_height);
     std::ostringstream key;
     key << text << ':' << family << ':' << logical_size << ':' << color.r << ',' << color.g << ',' << color.b << ':' << scale << ':' << goo;
     background_opacity = std::clamp(background_opacity, 0.0, 1.0);
-    key << ':' << background_opacity << ':' << background.r << ',' << background.g << ',' << background.b;
+    key << ':' << background_opacity << ':' << background.r << ',' << background.g << ',' << background.b
+        << ":caption:" << caption.size() << ':' << caption << ':' << text_scale << ':' << caption_width << ':'
+        << caption_height << ':'
+        << caption_foreground.r << ',' << caption_foreground.g << ',' << caption_foreground.b;
     if (key.str() != appearance)
     {
         wf::scene::damage_node(this, box);
         drawn_opacity = -1;
         appearance = key.str(); texture.reset();
-        pixel_size = int(std::ceil(canvas_size * std::max(1.0, scale)));
-        pixels.assign(pixel_size * pixel_size * 4, 0);
+        double caption_gap = caption.empty() ? 0.0 : 3.0;
+        const double caption_padding_x = caption.empty() ? 0.0 : 4.0;
+        const double caption_padding_y = caption.empty() ? 0.0 : 2.0;
+        const double nominal_caption_size = 15.0 * text_scale;
+        const double minimum_caption_size = 12.0 * text_scale;
+        double caption_draw_width = 0, caption_draw_height = 0;
+        PangoLayout *caption_layout = nullptr;
+        PangoFontDescription *caption_font = nullptr;
+        cairo_surface_t *measure_surface = nullptr;
+        cairo_t *measure_cr = nullptr;
+        caption_feasible = true;
+        caption_ellipsis_width = 0;
+        auto set_caption_font = [&] (double pixels)
+        {
+            pango_font_description_set_absolute_size(caption_font, int(std::round(pixels * PANGO_SCALE)));
+            pango_layout_set_font_description(caption_layout, caption_font);
+        };
+        auto layout_size = [&] ()
+        {
+            PangoLayoutLine *line = pango_layout_get_line_readonly(caption_layout, 0);
+            if (!line) return std::pair{0.0, 0.0};
+            PangoRectangle logical{};
+            pango_layout_line_get_extents(line, nullptr, &logical);
+            return std::pair{double(logical.width) / PANGO_SCALE,
+                double(logical.height) / PANGO_SCALE};
+        };
+        if (!caption.empty())
+        {
+            measure_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+            measure_cr = cairo_create(measure_surface);
+            caption_layout = pango_cairo_create_layout(measure_cr);
+            caption_font = pango_font_description_new();
+            pango_font_description_set_family(caption_font, family.empty() ? "sans-serif" : family.c_str());
+            pango_font_description_set_weight(caption_font, PANGO_WEIGHT_NORMAL);
+            pango_layout_set_single_paragraph_mode(caption_layout, TRUE);
+            pango_layout_set_height(caption_layout, -1);
+            pango_layout_set_alignment(caption_layout, PANGO_ALIGN_CENTER);
+            pango_layout_set_text(caption_layout, caption.c_str(), int(caption.size()));
+
+            const double text_width_limit = std::max(0.0, caption_width - 2 * caption_padding_x);
+            set_caption_font(nominal_caption_size);
+            if (layout_size().first > text_width_limit)
+            {
+                set_caption_font(minimum_caption_size);
+                if (layout_size().first <= text_width_limit)
+                {
+                    // Find the largest measured size that fits between the approved floor and nominal.
+                    double low = minimum_caption_size, high = nominal_caption_size;
+                    for (int pass = 0; pass < 20; ++pass)
+                    {
+                        const double middle = (low + high) / 2;
+                        set_caption_font(middle);
+                        if (layout_size().first <= text_width_limit) low = middle;
+                        else high = middle;
+                    }
+                    set_caption_font(low);
+                } else if (text_width_limit > 0)
+                {
+                    // Pango lays out one line and applies ellipsis at a grapheme boundary.
+                    set_caption_font(minimum_caption_size);
+                    pango_layout_set_width(caption_layout,
+                        int(std::floor(text_width_limit * PANGO_SCALE)));
+                    pango_layout_set_ellipsize(caption_layout, PANGO_ELLIPSIZE_END);
+                    PangoLayout *ellipsis = pango_cairo_create_layout(measure_cr);
+                    pango_layout_set_single_paragraph_mode(ellipsis, TRUE);
+                    pango_layout_set_text(ellipsis, "…", -1);
+                    pango_layout_set_font_description(ellipsis, caption_font);
+                    int ew = 0, eh = 0;
+                    pango_layout_get_size(ellipsis, &ew, &eh);
+                    caption_ellipsis_width = double(ew) / PANGO_SCALE;
+                    g_object_unref(ellipsis);
+                    caption_feasible = caption_ellipsis_width <= text_width_limit;
+                } else
+                {
+                    caption_feasible = false;
+                }
+            }
+
+            if (caption_feasible)
+            {
+                auto [text_width, text_height] = layout_size();
+                caption_draw_width = std::min(caption_width,
+                    text_width + 2 * caption_padding_x);
+                caption_draw_height = text_height + 2 * caption_padding_y;
+                caption_feasible = caption_draw_height <= caption_height;
+                if (!caption_feasible)
+                {
+                    caption_draw_width = 0;
+                    caption_draw_height = 0;
+                }
+            }
+        }
+
+        if (!caption_feasible) caption_gap = 0.0;
+
+        const double badge_canvas_width = logical_size + 2 * padding;
+        canvas_width = std::max(badge_canvas_width, caption_draw_width);
+        canvas_height = badge_canvas_width + caption_gap + caption_draw_height;
+        const double raster_scale = std::max(1.0, scale);
+        pixel_width = std::max(1, int(std::ceil(canvas_width * raster_scale)));
+        pixel_height = std::max(1, int(std::ceil(canvas_height * raster_scale)));
+        // Snap both logical extents to the same raster scale. Independent x/y fitting would
+        // slightly distort the circular badge whenever one canvas dimension rounds differently.
+        canvas_width = pixel_width / raster_scale;
+        canvas_height = pixel_height / raster_scale;
+        pixels.assign(pixel_width * pixel_height * 4, 0);
         auto surface = cairo_image_surface_create_for_data(pixels.data(), CAIRO_FORMAT_ARGB32,
-            pixel_size, pixel_size, pixel_size * 4);
+            pixel_width, pixel_height, pixel_width * 4);
         auto cr = cairo_create(surface);
-        cairo_scale(cr, double(pixel_size) / canvas_size, double(pixel_size) / canvas_size);
-        double mid = canvas_size / 2.0, radius = logical_size / 2.0;
-        cairo_arc(cr, mid, mid, radius, 0, 2 * 3.141592653589793);
+        cairo_scale(cr, raster_scale, raster_scale);
+        double mid_x = canvas_width / 2.0, mid_y = padding + logical_size / 2.0;
+        double radius = logical_size / 2.0;
+        cairo_arc(cr, mid_x, mid_y, radius, 0, 2 * 3.141592653589793);
         // One backing for window and exterior widget hints alike: the palette background under
         // the usual hint-color tint, at the hint background opacity (WK42: 1 is solid, 0 none).
         auto fill = hint_mix(background, color, hint_badge_opacity);
@@ -61,12 +174,12 @@ bool hint_node::update(double x, double y, const std::string& text, double size,
             // wash out the antialiased rim.
             for (int band = 7; band >= 1; --band)
             {
-                cairo_arc(cr, mid, mid, radius + band / 2.0, 0, 2 * M_PI);
+                cairo_arc(cr, mid_x, mid_y, radius + band / 2.0, 0, 2 * M_PI);
                 cairo_set_line_width(cr, band);
                 cairo_set_source_rgba(cr, color.r, color.g, color.b, .035);
                 cairo_stroke(cr);
             }
-            cairo_arc(cr, mid, mid, radius + 1, 0, 2 * M_PI);
+            cairo_arc(cr, mid_x, mid_y, radius + 1, 0, 2 * M_PI);
             cairo_set_line_width(cr, 2);
             cairo_set_source_rgb(cr, color.r, color.g, color.b); cairo_stroke(cr);
         }
@@ -74,10 +187,43 @@ bool hint_node::update(double x, double y, const std::string& text, double size,
             CAIRO_FONT_WEIGHT_BOLD);
         cairo_set_font_size(cr, std::round(logical_size * (text.size() > 1 ? 0.46 : 0.62)));
         cairo_text_extents_t ext; cairo_text_extents(cr, text.c_str(), &ext);
-        cairo_move_to(cr, mid - ext.width / 2 - ext.x_bearing, mid - ext.height / 2 - ext.y_bearing);
+        cairo_move_to(cr, mid_x - ext.width / 2 - ext.x_bearing, mid_y - ext.height / 2 - ext.y_bearing);
         cairo_set_source_rgb(cr, color.r, color.g, color.b);
         cairo_show_text(cr, text.c_str());
+
+        if (!caption.empty() && caption_feasible && caption_layout)
+        {
+            const double plate_x = (canvas_width - caption_draw_width) / 2;
+            const double plate_y = badge_canvas_width + caption_gap;
+            const double plate_radius = std::min(3.0, caption_draw_height / 2);
+            cairo_new_sub_path(cr);
+            cairo_arc(cr, plate_x + caption_draw_width - plate_radius, plate_y + plate_radius,
+                plate_radius, -M_PI / 2, 0);
+            cairo_arc(cr, plate_x + caption_draw_width - plate_radius,
+                plate_y + caption_draw_height - plate_radius, plate_radius, 0, M_PI / 2);
+            cairo_arc(cr, plate_x + plate_radius, plate_y + caption_draw_height - plate_radius,
+                plate_radius, M_PI / 2, M_PI);
+            cairo_arc(cr, plate_x + plate_radius, plate_y + plate_radius,
+                plate_radius, M_PI, 3 * M_PI / 2);
+            cairo_close_path(cr);
+            cairo_set_source_rgba(cr, background.r, background.g, background.b, 0.84);
+            cairo_fill(cr);
+
+            const auto [text_width, text_height] = layout_size();
+            const int layout_width = pango_layout_get_width(caption_layout);
+            const double layout_box_width = layout_width > 0 ?
+                double(layout_width) / PANGO_SCALE : text_width;
+            cairo_move_to(cr, (canvas_width - layout_box_width) / 2,
+                plate_y + (caption_draw_height - text_height) / 2);
+            cairo_set_source_rgb(cr, caption_foreground.r, caption_foreground.g, caption_foreground.b);
+            pango_cairo_update_layout(cr, caption_layout);
+            pango_cairo_show_layout(cr, caption_layout);
+        }
         cairo_destroy(cr); cairo_surface_flush(surface); cairo_surface_destroy(surface);
+        if (caption_layout) g_object_unref(caption_layout);
+        if (caption_font) pango_font_description_free(caption_font);
+        if (measure_cr) cairo_destroy(measure_cr);
+        if (measure_surface) cairo_surface_destroy(measure_surface);
     }
     const bool popping = animate();
     return popping || (!reduced && (t < 1.0 || resize_t < 1.0));
@@ -87,7 +233,8 @@ void hint_node::geometry()
     double size = diameter * pop;
     circle = {cx - size / 2, cy - size / 2, size, size};
     double pad = padding * pop;
-    wf::geometry_t next{circle.x - pad, circle.y - pad, size + 2 * pad, size + 2 * pad};
+    wf::geometry_t next{cx - canvas_width * pop / 2, circle.y - pad,
+        canvas_width * pop, canvas_height * pop};
     if (next == box && opacity == drawn_opacity) return;
     wf::scene::damage_node(this, box);
     box = next; drawn_opacity = opacity;
@@ -119,7 +266,7 @@ class hint_render : public wf::scene::simple_render_instance_t<hint_node>
         if (!self->texture && !self->pixels.empty())
         {
             auto tex = wlr_texture_from_pixels(data.pass->get_wlr_renderer(), DRM_FORMAT_ARGB8888,
-                self->pixel_size * 4, self->pixel_size, self->pixel_size, self->pixels.data());
+                self->pixel_width * 4, self->pixel_width, self->pixel_height, self->pixels.data());
             if (tex) self->texture = wf::texture_t::from_texture(tex);
         }
         if (self->texture && self->opacity > 0 && self->box.width > 0)
