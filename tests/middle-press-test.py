@@ -217,10 +217,10 @@ def settle(*titles, timeout=5):
             previous, stable = None, 0
             time.sleep(.05)
             continue
+        # Frame swell animates independently of layout. Scenario-specific checks
+        # wait for the frame state they use; general setup waits on view geometry.
         current = tuple((geometry(title),
-                         round(by_title["Middle-" + title].get("applied_scale", 1.0), 4),
-                         tuple(round(by_title["Middle-" + title]["frame"][key], 4)
-                               for key in ("x", "y", "width", "height", "thickness", "swell")))
+                         round(by_title["Middle-" + title].get("applied_scale", 1.0), 4))
                         for title in titles)
         if current == previous:
             stable += 1
