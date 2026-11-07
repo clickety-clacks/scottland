@@ -3,16 +3,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 run_id=$$
-headless_dir=$PWD/build/headless-mouse-middle-$run_id
+scratch=$PWD/build/mouse-middle-scratch-$run_id
+headless_dir=$scratch/session
 artifacts=$PWD/build/mouse-middle-evidence-$run_id
 tmp_dir=$headless_dir.tmp
-[[ ! -e $headless_dir && ! -e $artifacts && ! -e $tmp_dir ]] || {
+[[ ! -e $scratch && ! -e $artifacts && ! -e $tmp_dir ]] || {
   echo "test scratch already exists" >&2
   exit 1
 }
-mkdir -p "$artifacts" "$tmp_dir"
-chmod 700 "$tmp_dir"
-export SCOTTLAND_HEADLESS_DIR=$headless_dir TMPDIR=$tmp_dir SCOTTLAND_TEST_OUTPUTS=1
+mkdir -m 700 -- "$scratch" "$artifacts" "$tmp_dir"
+export SCOTTLAND_HEADLESS_DIR=$headless_dir TMPDIR=$tmp_dir \
+  SCOTTLAND_TEST_SCRATCH=$scratch SCOTTLAND_TEST_OUTPUTS=1
 started=1
 cleanup() {
   status=$?
@@ -33,6 +34,10 @@ cleanup() {
   fi
   if ((stopped)); then
     rm -rf -- "$tmp_dir"
+    if ! rmdir -- "$scratch"; then
+      echo "headless cleanup left owned scratch; preserving it" >&2
+      status=1
+    fi
   fi
   exit "$status"
 }
