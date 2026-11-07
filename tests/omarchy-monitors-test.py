@@ -102,6 +102,8 @@ subprocess.run(["cc", "-shared", "-fPIC", "-O1", "-o", str(names), str(REPO / "t
 wrap = root / "wrap-compositor"
 wrap.write_text(f'''#!/bin/sh
 # The compositor in its own mount namespace, where the lid state file is the test's.
+export OMARCHY_PATH='{OMARCHY}'
+export PATH="$OMARCHY_PATH/bin:$PATH"
 exec bwrap --dev-bind / / --tmpfs /proc/acpi --dir /proc/acpi/button/lid/LID0 \\
   --bind '{lid_state}' /proc/acpi/button/lid/LID0/state \\
   env LD_PRELOAD='{names}' SCOTTLAND_TEST_OUTPUT_NAMES=HEADLESS-1=eDP-1,HEADLESS-2=DP-1,HEADLESS-3=DP-1 \\
