@@ -25,7 +25,7 @@ cat "$evidence/identity.txt"
 
 printf 'row\tstatus\texit_code\treason\n' > "$evidence/rows.tsv"
 failed=0
-while IFS=$'\t' read -r row venue; do
+while IFS=$'\t' read -r row venue dependency; do
   [[ -z "$row" || "$row" == \#* ]] && continue
   log="$evidence/${row##*/}.log"
   if [[ "$venue" == standalone ]]; then
@@ -41,9 +41,9 @@ while IFS=$'\t' read -r row venue; do
     printf '%s %s (exit %s)\n' "$status" "$row" "$code"
     cat "$log"
   elif [[ "$venue" == headless ]]; then
-    printf 'Requires a compositor session; reserved for the headless route.\n' > "$log"
-    printf '%s\tNOT_RUN\t-\theadless_compositor\n' "$row" >> "$evidence/rows.tsv"
-    printf 'NOT_RUN %s (headless compositor)\n' "$row"
+    printf 'Requires %s; reserved for the separate compositor route.\n' "$dependency" > "$log"
+    printf '%s\tNOT_RUN\t-\t%s\n' "$row" "$dependency" >> "$evidence/rows.tsv"
+    printf 'NOT_RUN %s (%s)\n' "$row" "$dependency"
   else
     printf 'Unknown venue for %s: %s\n' "$row" "$venue" >&2
     exit 2
