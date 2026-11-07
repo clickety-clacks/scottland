@@ -79,7 +79,8 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     std::unique_ptr<wf::input_grab_t> grab;
     wf::output_t *grab_output = nullptr;
     int finger = -1;
-    bool gesture = false;
+    bool pointer_motion_managed_externally = false;
+    bool pointer_release_managed_externally = false;
     uint32_t button = BTN_LEFT;
     bool finishing = false;
     bool transferring = false;
@@ -125,11 +126,14 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     ~live_drag_t() { handle_input_released(); }
     bool is_live() const { return bool(transform); }
     void set_pending_drag(wf::pointf_t p) { pending = p; }
-    void set_input(int touch_finger = -1, bool swipe = false, uint32_t pointer_button = BTN_LEFT)
+    void set_input(int touch_finger = -1, bool manage_pointer_motion_externally = false,
+        uint32_t pointer_button = BTN_LEFT,
+        bool manage_pointer_release_externally = false)
     {
         finger = touch_finger;
-        gesture = swipe;
+        pointer_motion_managed_externally = manage_pointer_motion_externally;
         button = pointer_button;
+        pointer_release_managed_externally = manage_pointer_release_externally;
     }
     void start_drag(wayfire_toplevel_view target)
     {
@@ -226,11 +230,13 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     }
     void handle_pointer_motion(wf::pointf_t, uint32_t) override
     {
-        if (finger < 0 && !gesture) handle_motion(wf::get_core().get_cursor_position());
+        if (finger < 0 && !pointer_motion_managed_externally)
+            handle_motion(wf::get_core().get_cursor_position());
     }
     void handle_pointer_button(const wlr_pointer_button_event& ev) override
     {
-        if (finger < 0 && ev.button == button && ev.state == WL_POINTER_BUTTON_STATE_RELEASED)
+        if (finger < 0 && !pointer_release_managed_externally && ev.button == button &&
+            ev.state == WL_POINTER_BUTTON_STATE_RELEASED)
             handle_input_released();
     }
     void handle_touch_motion(uint32_t, int id, wf::pointf_t) override
