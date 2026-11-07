@@ -212,6 +212,11 @@ def settle(*titles, timeout=5):
     while time.monotonic() < end:
         rows = ipc("scottland/layout-state")["views"]
         by_title = {row.get("title"): row for row in rows}
+        if any("Middle-" + title not in by_title or
+               "frame" not in by_title["Middle-" + title] for title in titles):
+            previous, stable = None, 0
+            time.sleep(.05)
+            continue
         current = tuple((geometry(title),
                          round(by_title["Middle-" + title].get("applied_scale", 1.0), 4),
                          tuple(round(by_title["Middle-" + title]["frame"][key], 4)
