@@ -47,7 +47,7 @@ jobs:
           FROM archlinux:base-devel
           ARG CI_UID
           RUN pacman -Syu --noconfirm --needed \
-                archlinux-keyring cairo gcc git glib2 libglvnd libinput libxkbcommon \
+                archlinux-keyring cairo gcc git glib2 glm libglvnd libinput libxkbcommon \
                 meson ninja pango pkgconf rust wayfire wayland wlroots0.20 \
             && useradd --uid "$CI_UID" --gid 0 --create-home ci
           DOCKERFILE
