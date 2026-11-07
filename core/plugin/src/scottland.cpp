@@ -93,9 +93,6 @@ extern "C" {
 #include <optional>
 #include <tuple>
 #include <signal.h>
-extern "C" {
-#include <sys/pidfd.h>  // glibc declares it without C linkage for C++
-}
 #include <unistd.h>
 #include <sys/socket.h>
 #include <cstring>

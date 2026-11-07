@@ -12,7 +12,10 @@
 #include <signal.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
+// glibc declares these functions without C linkage for C++.
+extern "C" {
 #include <sys/pidfd.h>
+}
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
