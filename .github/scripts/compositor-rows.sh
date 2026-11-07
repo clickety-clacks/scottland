@@ -13,11 +13,28 @@ evidence="$repo/build/compositor-rows/shard-$shard"
 mkdir -m 700 -p "$evidence/logs"
 rows="$evidence/rows.tsv"
 printf 'row\tstatus\texit_code\treason\n' > "$rows"
+product_commit=${SCOTTLAND_PRODUCT_SOURCE:?set the pinned product commit}
+harness_commit=${SCOTTLAND_HARNESS_HEAD:?set the PR harness head}
+product_tree=$(git rev-parse "${product_commit}^{tree}")
+[[ $product_commit == dc155ea158dd8aee14bc9a30f451b7e73316586b &&
+   $product_tree == 5ea3f22461b820144778512e674d3b632929ba27 &&
+   $(git rev-parse HEAD) == "$harness_commit" ]] &&
+  git merge-base --is-ancestor "$product_commit" "$harness_commit" || {
+    echo 'pinned product source or PR harness head does not match this checkout' >&2; exit 2;
+  }
+git diff --name-only "$product_commit" "$harness_commit" > "$evidence/harness-diff.txt"
+while IFS= read -r changed_path; do
+  case $changed_path in
+    .github/scripts/compositor-rows.sh|.github/scripts/standalone-rows.tsv|.github/workflows/fast-checks.yml|\
+    tests/omarchy-session-wrap-test.py|tests/reload-touch-focus-test.py|tests/session-busy-exec-test.sh|tests/zone-pin-test.py) ;;
+    *) echo "product source differs from pinned commit: $changed_path" >&2; exit 2 ;;
+  esac
+done < "$evidence/harness-diff.txt"
 prepared_image=$(docker image inspect scottland-checks:compositor --format '{{.Id}}' 2>/dev/null || true)
 
 {
-  printf 'source_commit\t%s\n' "$(git rev-parse HEAD)"
-  printf 'source_tree\t%s\n' "$(git rev-parse HEAD^{tree})"
+  printf 'product_commit\t%s\nproduct_tree\t%s\n' "$product_commit" "$product_tree"
+  printf 'harness_commit\t%s\nharness_tree\t%s\n' "$harness_commit" "$(git rev-parse HEAD^{tree})"
   printf 'package_version\t%s-%s\n' \
     "$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)" \
     "$(sed -n 's/^pkgrel=//p' packaging/arch/PKGBUILD)"
@@ -33,7 +50,8 @@ docker_args=(
   --env HOME=/home/ci
   --env XDG_RUNTIME_DIR="/run/user/$(id -u)"
   --env SCOTTLAND_HEADLESS_ISOLATION=1
-  --env GITHUB_SHA
+  --env SCOTTLAND_HARNESS_HEAD
+  --env SCOTTLAND_PRODUCT_SOURCE
   --volume "$repo:/work"
   --workdir /work
 )
@@ -49,7 +67,8 @@ elif ! docker run "${docker_args[@]}" \
     --env SCOTTLAND_HEADLESS_DIR="/work/build/compositor-rows/shard-$shard/preflight/session" \
     scottland-checks:compositor bash -euo pipefail -c '
       mkdir -m 700 -p "$XDG_RUNTIME_DIR" "$SCOTTLAND_TEST_SCRATCH"
-      test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      test "$(git rev-parse HEAD)" = "$SCOTTLAND_HARNESS_HEAD"
+      test "$(git rev-parse "${SCOTTLAND_PRODUCT_SOURCE}^{tree}")" = 5ea3f22461b820144778512e674d3b632929ba27
       grep -qx "pkgver=0.4.1" packaging/arch/PKGBUILD
       make test-hooks
       sha256sum build/libscottland.so \
@@ -125,8 +144,9 @@ while IFS=$'\t' read -r row_name venue dependency; do
           mkdir -m 700 -p "$XDG_RUNTIME_DIR" "$SCOTTLAND_TEST_SCRATCH"
           mkdir -m 700 "$SCOTTLAND_TEST_SCRATCH/tmp"
           export TMPDIR="$SCOTTLAND_TEST_SCRATCH/tmp"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          printf "source_commit=%s\nsource_tree=%s\n" \
+          test "$(git rev-parse HEAD)" = "$SCOTTLAND_HARNESS_HEAD"
+          printf "product_commit=%s\nproduct_tree=%s\nharness_commit=%s\nharness_tree=%s\n" \
+            "$SCOTTLAND_PRODUCT_SOURCE" "$(git rev-parse "${SCOTTLAND_PRODUCT_SOURCE}^{tree}")" \
             "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
           sha256sum build/libscottland.so
           timeout --signal=TERM --kill-after=45s 20m bash -euo pipefail -c '\''
