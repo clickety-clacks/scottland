@@ -14,6 +14,7 @@
 #                                         all thread stacks into wayfire.log, then resumes
 #                                         --stock omits Scottland for a protocol control
 #                                         SCOTTLAND_TEST_PRELOAD=LIB preloads LIB into Wayfire only
+#                                         SCOTTLAND_TEST_WRAP=EXE prefixes Wayfire during test startup
 #   tests/headless.sh run CMD [ARGS...]   run CMD inside it (scottland-exec: its own environment)
 #   tests/headless.sh ipc METHOD [JSON]   call its Wayfire IPC (e.g. stipc/feed_key)
 #   tests/headless.sh stop [--preserve-scratch]
@@ -44,6 +45,16 @@ inside=0
 if [[ ${1:-} == __scottland_headless_private_runtime ]]; then
   inside=1
   shift
+fi
+test_wrap=${SCOTTLAND_TEST_WRAP:-}
+unset SCOTTLAND_TEST_WRAP
+compositor_command=(wayfire)
+wrapper_env_args=()
+if [[ ${1:-} == start && -n $test_wrap ]]; then
+  compositor_command=("$test_wrap" wayfire)
+  if ((inside == 0)); then
+    wrapper_env_args=(--setenv SCOTTLAND_TEST_WRAP "$test_wrap")
+  fi
 fi
 case "$dir/" in
   "$build"/*) ;;
@@ -207,6 +218,9 @@ if ((inside == 0)); then
   fi
   bwrap_args+=(--bind "$runtime_scratch" "$runtime" --bind "$tmp_scratch" /tmp
     --setenv XDG_RUNTIME_DIR "$runtime" --setenv TMPDIR "$tmp_scratch")
+  if ((${#wrapper_env_args[@]})); then
+    bwrap_args+=("${wrapper_env_args[@]}")
+  fi
   # Explicitly bind /dev in the root-bind namespace so Bash can open /dev/null and the
   # compositor can see its render node. Reuse a live session's user namespace for later
   # invocations so run processes retain access to that session's /proc entries; runtime and
@@ -649,7 +663,8 @@ WRAPPER
       fi
       WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=$test_outputs \
         WAYFIRE_PLUGIN_PATH="$repo/build" WAYFIRE_PLUGIN_XML_PATH="$repo/core/plugin/metadata:/usr/share/wayfire/metadata" \
-        setsid ${private_bus:+dbus-run-session --} "${debugger[@]}" "${preload[@]}" wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
+        setsid ${private_bus:+dbus-run-session --} "${debugger[@]}" "${preload[@]}" \
+        "${compositor_command[@]}" -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
       echo $! >"$dir/pid"
     )
     for _ in $(seq 100); do
