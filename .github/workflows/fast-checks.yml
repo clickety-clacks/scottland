@@ -302,3 +302,63 @@ jobs:
           name: standalone-rows-${{ github.run_id }}-${{ github.run_attempt }}
           path: build/standalone-rows/
           if-no-files-found: warn
+
+  compositor_rows:
+    name: Scottland 0.4 compositor rows (${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - name: Check out source
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Prepare compositor environment
+        run: |
+          printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
+          docker pull archlinux:base-devel
+          base_ref="$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
+          printf 'SCOTTLAND_BASE_IMAGE_DIGEST=%s\n' "$base_ref" >> "$GITHUB_ENV"
+          docker build --pull \
+            --build-arg CI_UID="$(id -u)" \
+            --build-arg BASE_REF="$base_ref" \
+            --tag scottland-checks:compositor - <<'DOCKERFILE'
+          ARG BASE_REF
+          FROM ${BASE_REF}
+          ARG CI_UID
+          RUN pacman -Syu --noconfirm --needed \
+                archlinux-keyring bubblewrap dbus foot gdk-pixbuf2 git glm grim gtk4 inotify-tools jq \
+                libglvnd libinput libxkbcommon lua mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
+                quickshell rust shadow wayfire wayland wayland-protocols wf-recorder wlroots0.20 cairo \
+            && useradd --uid "$CI_UID" --gid 0 --create-home ci \
+            && install -d -m 0700 -o ci -g 0 "/run/user/$CI_UID"
+          DOCKERFILE
+          printf 'Container base image: %s\n' "$base_ref"
+          printf 'Prepared container image: %s\n' "$(docker image inspect scottland-checks:compositor --format '{{.Id}}')"
+
+      - name: Run compositor rows
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
+        run: |
+          if ! sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; then
+            echo 'Could not enable user namespaces; the compositor preflight will report availability' >&2
+          fi
+          bash .github/scripts/compositor-rows.sh "${{ matrix.shard }}" 4
+
+      - name: Upload compositor row evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compositor-rows-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/compositor-rows/shard-${{ matrix.shard }}/identity.txt
+            build/compositor-rows/shard-${{ matrix.shard }}/preflight.log
+            build/compositor-rows/shard-${{ matrix.shard }}/rows.tsv
+            build/compositor-rows/shard-${{ matrix.shard }}/logs/*.log
+          if-no-files-found: error

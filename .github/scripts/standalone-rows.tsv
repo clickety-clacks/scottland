@@ -1,4 +1,5 @@
-# Contract script rows. Every row remains required; compositor rows are recorded NOT_RUN here.
+# Contract script rows. The standalone job records compositor rows NOT_RUN;
+# the separate compositor job records their hosted outcomes.
 tests/agent-skills-hook-test.py	standalone	none
 tests/attention-color-family-test.sh	headless	tests/headless.sh
 tests/ctl-core-test.py	headless	tests/headless.sh
