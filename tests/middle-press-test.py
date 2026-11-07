@@ -308,11 +308,12 @@ try:
 
     # R3(b): the release is over B's frame, but the click belongs only to A's original surface.
     setup(a_x=300, b_x=600)
+    focus("B")
+    settle("A", "B")
     a = geometry("A")
     # Put B's frame band just beyond A's press point: the focused swell can extend
     # the band beyond the client edge, and an 8 px move enters it inside click slop.
     place("B", round(a["x"] + a["width"] - 17), a["y"], 360, 260)
-    focus("B")
     settle("A", "B")
     clear_events()
     a = geometry("A")
