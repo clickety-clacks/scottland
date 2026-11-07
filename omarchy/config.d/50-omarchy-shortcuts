@@ -128,7 +128,13 @@ local function dsp_proxy(path)
 end
 
 local noop
-noop = setmetatable({}, { __index = function() return noop end, __call = function() return noop end })
+noop = setmetatable({}, {
+  __index = function(_, key)
+    if type(key) == "number" then return nil end
+    return noop
+  end,
+  __call = function() return noop end,
+})
 
 hl = setmetatable({
   dsp = dsp_proxy("hl.dsp"),
