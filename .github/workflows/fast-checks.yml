@@ -33,7 +33,7 @@ jobs:
           RUN pacman -Syu --noconfirm --needed \
                 archlinux-keyring bubblewrap dbus gdk-pixbuf2 git glm grim inotify-tools jq \
                 libglvnd libinput libxkbcommon mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
-                quickshell rust shadow vulkan-headers wayfire wayland wayland-protocols wlroots0.20 cairo \
+                quickshell rust shadow wayfire wayland wayland-protocols wlroots0.20 cairo \
             && useradd --uid "$CI_UID" --gid 0 --create-home ci
           DOCKERFILE
           printf 'Container base image: %s\n' "$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
@@ -163,7 +163,7 @@ jobs:
           RUN pacman -Syu --noconfirm --needed \
                 archlinux-keyring bubblewrap dbus gdk-pixbuf2 git glm grim gtk4 gtk4-layer-shell imagemagick inotify-tools jq \
                 libglvnd libinput libxkbcommon mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
-                quickshell rust shadow wayfire wayland wayland-protocols wlroots0.20 cairo \
+                quickshell rust shadow vulkan-headers wayfire wayland wayland-protocols wlroots0.20 cairo \
             && useradd --uid "$CI_UID" --gid 0 --create-home ci \
             && install -d -m 0700 -o ci -g 0 "/run/user/$CI_UID"
           DOCKERFILE
