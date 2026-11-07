@@ -170,8 +170,8 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 
 Plain-text notes, their independent model slice, display rules and launch integration are in
 [../docs/notes.md](../docs/notes.md) (NT-1–NT-19). NT-1–NT-7 and NT-9–NT-16 are implemented;
-shared-runner acceptance is pending. NT-8 and NT-17–NT-19 follow the existing Rust controller and
-provenance launch path.
+shared-runner acceptance is pending. NT-8 and rev5 NT-17–NT-19 use the existing Rust controller
+and provenance launch path; exact behavior acceptance is pending.
 
 ## Key layers
 
