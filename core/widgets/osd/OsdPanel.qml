@@ -4,10 +4,10 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 
-Item {
+QtObject {
     id: root
-    visible: false
 
+    property bool visible: false
     property var screen: null
     property string message: ""
     property string iconName: ""
