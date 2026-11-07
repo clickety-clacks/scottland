@@ -366,47 +366,95 @@ pub fn run(args: &[String]) -> Result<u8> {
 
 fn launch_command(args: &[String]) -> Result<u8> {
     let (declaration, staged_notes, command_args) = parse_launch_args(args)?;
-    let session = current_session()?;
-    let mut ctl = Ctl::connect_to(&session)?;
-    let reply = ctl.call("scottland/provenance-declare", declaration)?;
-    if let Some(error) = reply.get("error") {
-        return Err(error
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| error.to_string())
-            .lines()
-            .collect::<Vec<_>>()
-            .join(" "));
-    }
-    let token = reply
-        .get("token")
-        .and_then(Value::as_str)
-        .filter(|token| !token.is_empty())
-        .ok_or_else(|| "Scottland returned no provenance token".to_string())?;
+    let session = current_session();
+    let declaration_result = session
+        .as_ref()
+        .map_err(|error| error.clone())
+        .and_then(Ctl::connect_to)
+        .and_then(|mut ctl| {
+            let reply = ctl.call("scottland/provenance-declare", declaration)?;
+            if let Some(error) = reply.get("error") {
+                return Err(error
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| error.to_string()));
+            }
+            let token = reply
+                .get("token")
+                .and_then(Value::as_str)
+                .filter(|token| !token.is_empty())
+                .ok_or_else(|| "Scottland returned no provenance token".to_string())?;
+            Ok((ctl, token.to_string()))
+        });
 
-    for (writer, text) in staged_notes {
-        let reply = call_notes(
-            &mut ctl,
-            json!({"action": "stage", "token": token, "writer": writer, "text": text}),
-        )?;
-        if reply
-            .get("id")
-            .and_then(Value::as_i64)
-            .filter(|id| *id > 0)
-            .is_none()
-        {
-            return Err("Scottland returned no note id for the staged note".to_string());
+    let (mut ctl, token) = match declaration_result {
+        Ok((ctl, token)) => (Some(ctl), Some(token)),
+        Err(error) => {
+            eprintln!(
+                "warning: provenance record was not attached: {}",
+                one_line_reason(&error)
+            );
+            for (index, _) in staged_notes.iter().enumerate() {
+                eprintln!(
+                    "warning: launch note {} was not attached: no declaration to attach it to",
+                    index + 1
+                );
+            }
+            (None, None)
+        }
+    };
+
+    if let Some(token) = token.as_deref() {
+        if let Some(ctl) = ctl.as_mut() {
+            for (index, (writer, text)) in staged_notes.iter().enumerate() {
+                let result = match (writer, text) {
+                    (None, _) => Err("--writer is missing".to_string()),
+                    (Some(_), Err(error)) => Err(error.clone()),
+                    (Some(writer), Ok(text)) => call_notes(
+                        ctl,
+                        json!({"action": "stage", "token": token, "writer": writer, "text": text}),
+                    )
+                    .and_then(|reply| {
+                        reply
+                            .get("id")
+                            .and_then(Value::as_i64)
+                            .filter(|id| *id > 0)
+                            .map(|_| ())
+                            .ok_or_else(|| "Scottland returned no note id".to_string())
+                    }),
+                };
+                if let Err(reason) = result {
+                    eprintln!(
+                        "warning: launch note {} was not attached: {}",
+                        index + 1,
+                        one_line_reason(&reason)
+                    );
+                }
+            }
         }
     }
 
-    let mut command = session_command(&session, &command_args[0]);
+    let mut command = match &session {
+        Ok(session) => session_command(session, &command_args[0]),
+        Err(_) => Command::new(&command_args[0]),
+    };
     command.args(&command_args[1..]);
-    command.env("XDG_ACTIVATION_TOKEN", token);
+    if let Some(token) = token {
+        command.env("XDG_ACTIVATION_TOKEN", token);
+    } else {
+        command.env_remove("XDG_ACTIVATION_TOKEN");
+    }
     let error = command.exec();
     Err(format!("cannot execute launch command: {error}"))
 }
 
-fn parse_launch_args(args: &[String]) -> Result<(Value, Vec<(String, String)>, Vec<String>)> {
+fn one_line_reason(reason: &str) -> String {
+    reason.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn parse_launch_args(
+    args: &[String],
+) -> Result<(Value, Vec<(Option<String>, Result<String>)>, Vec<String>)> {
     let separator = args
         .iter()
         .position(|arg| arg == "--")
@@ -450,13 +498,10 @@ fn parse_launch_args(args: &[String]) -> Result<(Value, Vec<(String, String)>, V
                 index += 1;
             }
             "--note" => {
-                let writer = pending_writer
-                    .take()
-                    .ok_or_else(|| "launch --note requires a preceding --writer".to_string())?;
                 let text = options
                     .get(index)
                     .ok_or_else(|| "launch --note requires text".to_string())?;
-                staged_notes.push((writer, text.clone()));
+                staged_notes.push((pending_writer.take(), read_note_text(text)));
                 index += 1;
             }
             _ => return Err(format!("unknown launch option {option}")),
