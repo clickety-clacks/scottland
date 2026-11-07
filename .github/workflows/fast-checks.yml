@@ -173,7 +173,7 @@ jobs:
           FROM archlinux:base-devel
           ARG CI_UID
           RUN pacman -Syu --noconfirm --needed \
-                archlinux-keyring bubblewrap dbus gdk-pixbuf2 git glm grim gtk4 inotify-tools jq \
+                archlinux-keyring bubblewrap dbus gdk-pixbuf2 git glm grim gtk4 gtk4-layer-shell imagemagick inotify-tools jq \
                 libglvnd libinput libxkbcommon mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
                 quickshell rust shadow wayfire wayland wayland-protocols wlroots0.20 cairo \
             && useradd --uid "$CI_UID" --gid 0 --create-home ci \
@@ -217,6 +217,19 @@ jobs:
               mkdir -m 700 -p "$XDG_RUNTIME_DIR"
               git rev-parse HEAD
               make test-hooks
+              mkdir -m 700 build/middle-press-fast-check-scratch
+              middle_log="$PWD/build/middle-press-console.log"
+              if SCOTTLAND_TEST_SCRATCH="$PWD/build/middle-press-fast-check-scratch" \
+                SCOTTLAND_HEADLESS_DIR="$PWD/build/middle-press-fast-check-scratch/session" \
+                timeout --signal=TERM --kill-after=30s 6m \
+                tests/middle-press-test.sh "$PWD/build/middle-press-evidence" --skip-cross-surface-replay >"$middle_log" 2>&1; then
+                cat "$middle_log"
+              else
+                test_status=$?
+                cat "$middle_log"
+                exit "$test_status"
+              fi
+              rmdir -- build/middle-press-fast-check-scratch
               mkdir -m 700 build/fast-checks-headless-scratch
               console_log="$PWD/build/hint-background-opacity-console.log"
               if SCOTTLAND_WIDGET_SCOPE=0 \

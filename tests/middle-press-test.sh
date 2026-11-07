@@ -36,4 +36,4 @@ cleanup() {
 trap cleanup EXIT
 started=1
 SCOTTLAND_TEST_OUTPUTS=1 tests/headless.sh start
-tests/headless.sh run python3 -u tests/middle-press-test.py "$artifacts" | tee "$artifacts/test.log"
+tests/headless.sh run python3 -u tests/middle-press-test.py "$artifacts" "${@:2}" | tee "$artifacts/test.log"
