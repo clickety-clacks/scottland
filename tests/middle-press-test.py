@@ -11,9 +11,6 @@ import time
 
 out = Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)
-if len(sys.argv) > 2 and sys.argv[2] not in ("", "--skip-base-replay"):
-    raise SystemExit(f"unknown argument: {sys.argv[2]}")
-skip_base_replay = len(sys.argv) > 2 and sys.argv[2] == "--skip-base-replay"
 sock = socket.socket(socket.AF_UNIX)
 sock.settimeout(10)
 sock.connect(os.environ["WAYFIRE_SOCKET"])
@@ -64,6 +61,25 @@ def layer_surface():
 
 def geometry(title):
     return view(title)["geometry"]
+
+
+def layout_view(title):
+    return next(row for row in ipc("scottland/layout-state")["views"]
+                if row.get("title") == "Middle-" + title)
+
+
+def frame_state(title):
+    row = layout_view(title)
+    state = dict(row["frame"])
+    # In the isolated test model, scene_frame includes the live view transform.
+    # Use the compositor's scene geometry for fixture placement and input points.
+    state.update(row.get("scene_frame", {}))
+    return state
+
+
+def frame_diagnostic(title):
+    row = layout_view(title)
+    return {key: row.get(key) for key in ("frame", "scene_frame", "applied_scale")}
 
 
 def state():
@@ -309,29 +325,58 @@ try:
           f"{before} -> {after}")
     check(not all_events(), "halo: middle drag release is not replayed to A")
 
-    # R3(b): the release is over B, but the click belongs only to the original surface A.
-    # Keep the assertion in the suite; CI may omit only this pre-existing 0.3-base failure.
-    if skip_base_replay:
-        print("SKIP known 0.3-base failure: 8 px cross-surface original-surface replay", flush=True)
-    else:
-        setup(a_x=300, b_x=600)
-        a = geometry("A")
-        # Put B's frame over A's right edge so an 8 px move leaves A's surface for
-        # B's frame while remaining inside L24's 12 px click-slop boundary.
-        place("B", round(a["x"] + a["width"] - 26), a["y"], 360, 260)
-        focus("B")
-        settle("A", "B")
-        clear_events()
-        a = geometry("A")
-        x, y = a["x"] + a["width"] - 42, a["y"] + a["height"] / 2
-        pointer(x, y)
-        button("BTN_MIDDLE", True)
-        wait(lambda: state()["mouse_middle_pending"], what="cross-surface middle pending")
-        pointer(x + 8, y)
-        button("BTN_MIDDLE", False)
-        wait(lambda: len(events("A")) == 2, what="original-surface replay")
-        check(len(events("B")) == 0, "pointer: crossing onto B never transfers A's click")
-        check(geometry("A") == a, "pointer: an 8 px click ending over B's frame does not drag")
+    # R3(b): the release is over B's frame, but the click belongs only to A's original surface.
+    setup(a_x=300, b_x=600)
+    focus("B")
+    settle("A", "B")
+    a = geometry("A")
+    a_frame = frame_state("A")
+    # A may be displayed scaled, so position B against A's reported frame edge.
+    # The focused halo animates beyond B's client; derive the press point below.
+    place("B", round(a_frame["x"] + a_frame["width"] - 17), a["y"], 360, 260)
+    settle("A", "B")
+    b_frame = frame_state("B")
+    hover_x = round(b_frame["x"] - b_frame["thickness"] - 6)
+    hover_y = round(b_frame["y"] + b_frame["height"] / 2)
+    pointer(hover_x, hover_y)
+    wait(lambda: frame_state("B")["swell"] >= .99,
+         what="B's reported halo swell after pointer dwell")
+    settle("A", "B")
+    clear_events()
+    a = geometry("A")
+    a_frame = frame_state("A")
+    b_frame = frame_state("B")
+    b_halo_left = b_frame["x"] - b_frame["thickness"]
+    x = round(b_halo_left - 6)
+    y = round(a_frame["y"] + a_frame["height"] / 2)
+    release_x = x + 8
+    a_right = a_frame["x"] + a_frame["width"]
+    check(a_frame["x"] < x < release_x < a_right and
+          x < b_halo_left < release_x < b_frame["x"] and
+          b_frame["y"] - b_frame["thickness"] < y <
+          b_frame["y"] + b_frame["height"] + b_frame["thickness"],
+          "fixture: A's scene frame contains the press point and B's settled frame contains the 8 px release",
+          f"A frame={a_frame}; B frame={b_frame}; press=({x},{y}); release=({release_x},{y})")
+    print(f"INFO R3(b) input geometry: A={frame_diagnostic('A')}; "
+          f"B={frame_diagnostic('B')}; press=({x},{y}); release=({release_x},{y})", flush=True)
+    # Approach from A's center so the readiness check observes input at the press point.
+    pointer(round(a_frame["x"] + a_frame["width"] / 2), y)
+    wait(lambda: bool(pointer_events("A")), what="A surface at the R3(b) approach point")
+    clear_events()
+    pointer(x, y)
+    wait(lambda: bool(pointer_events("A")),
+         what=f"original surface at ({x},{y}) with A frame={a_frame} and B frame={b_frame}")
+    button("BTN_MIDDLE", True)
+    wait(lambda: state()["mouse_middle_pending"], what="cross-surface middle pending")
+    pointer(x + 8, y)
+    wait(lambda: any(event["edge"] == "leave" for event in pointer_events("A")),
+         what="8 px move leaves A's surface for B's frame")
+    button("BTN_MIDDLE", False)
+    wait(lambda: len(events("A")) == 2, what="original-surface replay")
+    check([(event["edge"], event["button"]) for event in events("A")] ==
+          [("press", 2), ("release", 2)], "pointer: cross-window replay sends one ordered click to A")
+    check(len(events("B")) == 0, "pointer: crossing onto B never transfers A's click")
+    check(geometry("A") == a, "pointer: an 8 px click ending over B's frame does not drag")
 
     # R3(a), R1: the virtual touchpad's middle button uses the same replay path.
     setup()
