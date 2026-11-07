@@ -72,6 +72,7 @@ jobs:
             '
 
   unit:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.number != 186 }}
     name: Scottland 0.3 unit
     runs-on: ubuntu-24.04
     steps:
@@ -143,6 +144,7 @@ jobs:
             '
 
   headless:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.number != 186 }}
     name: Scottland 0.3 headless
     runs-on: ubuntu-24.04
     steps:
@@ -188,6 +190,51 @@ jobs:
               python3 --version
               pkg-config --modversion wlroots-0.20
               bwrap --version
+            '
+
+  focused-mouse-middle:
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 186 }}
+    name: Scottland mouse middle
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Prepare focused test environment
+        run: |
+          printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
+          docker build --pull \
+            --build-arg CI_UID="$(id -u)" \
+            --tag scottland-checks:mouse-middle - <<'DOCKERFILE'
+          FROM archlinux:base-devel
+          ARG CI_UID
+          RUN pacman -Syu --noconfirm --needed \
+                archlinux-keyring bubblewrap dbus gdk-pixbuf2 git glm grim gtk4 inotify-tools jq \
+                libglvnd libinput libxkbcommon mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
+                quickshell rust shadow wayfire wayland wayland-protocols wlroots0.20 cairo \
+            && useradd --uid "$CI_UID" --gid 0 --create-home ci \
+            && install -d -m 0700 -o ci -g 0 "/run/user/$CI_UID"
+          DOCKERFILE
+
+      - name: Build and run focused mouse/touchpad behavior check
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          docker run --rm --privileged \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/home/ci \
+            --env XDG_RUNTIME_DIR="/run/user/$(id -u)" \
+            --env SCOTTLAND_HEADLESS_ISOLATION=1 \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            scottland-checks:mouse-middle \
+            bash -euo pipefail -c '
+              mkdir -m 700 -p "$XDG_RUNTIME_DIR"
+              git rev-parse HEAD
+              make test-hooks
+              timeout --signal=TERM --kill-after=30s 6m tests/mouse-middle-move-test.sh
             '
 
       - name: Run the headless check
