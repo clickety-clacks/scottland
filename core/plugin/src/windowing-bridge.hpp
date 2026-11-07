@@ -47,6 +47,14 @@
     struct hint_visual
     {
         std::weak_ptr<wf::view_interface_t> view;
+        uint64_t name_object_generation = 0;
+        uint64_t name_eligibility_generation = 0;
+        uint64_t name_request_generation = 0;
+        bool name_eligible = false, name_fingerprint_valid = false;
+        bool name_has_result = false, name_is_null = false;
+        std::string name_title, name_app_id, resolved_name;
+        std::string caption_issue_signature;
+        int64_t name_pid = 0;
         std::shared_ptr<scottland::windowing::hint_node> hint;
         wf::output_t *hint_output = nullptr;
         std::shared_ptr<scottland::windowing::fullscreen_hint_node> fullscreen_tint;
@@ -70,6 +78,10 @@
         std::chrono::steady_clock::time_point settle_deadline{};
     };
     std::map<uint64_t, hint_visual> hint_visuals; // by represented application id
+    scottland::window_names::consumer_t *window_name_consumer = nullptr;
+    wl_event_source *window_name_event = nullptr;
+    wf::wl_timer<false> window_name_join_tick;
+    uint64_t window_name_mode_generation = 0;
     std::string declutter_signature;
     // The same layout key per output, so a change on one screen restarts only its own pass.
     std::map<std::string, std::string> declutter_output_signatures;
@@ -336,6 +348,258 @@
     void clear_hint_dye(wf::view_interface_t *view)
     {
         if (auto frame = frame_of(wf::toplevel_cast(view), false)) frame->set_hint_dye(std::nullopt);
+    }
+
+    void invalidate_window_name(uint64_t id, hint_visual& visual)
+    {
+        if (window_name_consumer) window_name_consumer->cancel_pending(id);
+        visual.name_eligible = false;
+        visual.name_fingerprint_valid = false;
+        visual.name_has_result = false;
+        visual.name_is_null = false;
+        visual.resolved_name.clear();
+        if (window_name_consumer)
+        {
+            visual.name_eligibility_generation = window_name_consumer->next_generation();
+            visual.name_request_generation = window_name_consumer->next_generation();
+        }
+    }
+
+    void invalidate_all_window_names()
+    {
+        if (window_name_consumer)
+        {
+            window_name_mode_generation = window_name_consumer->next_generation();
+            window_name_consumer->cancel_all_pending();
+        }
+        for (auto& [id, visual] : hint_visuals) invalidate_window_name(id, visual);
+    }
+
+    void invalidate_window_name(uint64_t id)
+    {
+        auto found = hint_visuals.find(id);
+        if (found != hint_visuals.end()) invalidate_window_name(id, found->second);
+        else if (window_name_consumer) window_name_consumer->cancel_pending(id);
+    }
+
+    void request_window_name(wayfire_toplevel_view view, hint_visual& visual, bool force = false)
+    {
+        if (!view) return;
+        if (link_of_widget(view))
+        {
+            invalidate_window_name(view->get_id(), visual);
+            return;
+        }
+        if (!window_keys.active)
+        {
+            return;
+        }
+        if (!view->is_mapped() || !view->get_output())
+        {
+            invalidate_window_name(view->get_id(), visual);
+            return;
+        }
+        const bool eligible = std::any_of(window_keys.entries.begin(), window_keys.entries.end(),
+            [&] (const auto& entry) { return entry.id == view->get_id(); });
+        if (!eligible)
+        {
+            invalidate_window_name(view->get_id(), visual);
+            return;
+        }
+        if (!window_name_consumer || !window_name_consumer->ready)
+        {
+            if (visual.name_eligible || visual.name_fingerprint_valid || visual.name_has_result ||
+                visual.name_is_null || !visual.resolved_name.empty())
+                invalidate_window_name(view->get_id(), visual);
+            return;
+        }
+        auto state = model.windows.find(view->get_id());
+        if (state == model.windows.end())
+        {
+            invalidate_window_name(view->get_id(), visual);
+            return;
+        }
+        if (state->second.pid != view_pid(view))
+        {
+            invalidate_window_name(view->get_id(), visual);
+            observe_view(view);
+            state = model.windows.find(view->get_id());
+            if (state == model.windows.end()) return;
+        }
+
+        const std::string title = view->get_title();
+        const std::string app_id = view->get_app_id();
+        const int64_t pid = state->second.pid;
+        const bool same_request = visual.name_fingerprint_valid && visual.name_title == title &&
+            visual.name_app_id == app_id && visual.name_pid == pid;
+        if (!force && visual.name_eligible && same_request) return;
+
+        if (!visual.name_eligible)
+            visual.name_eligibility_generation = window_name_consumer->next_generation();
+        visual.name_eligible = true;
+        visual.name_fingerprint_valid = true;
+        visual.name_title = title;
+        visual.name_app_id = app_id;
+        visual.name_pid = pid;
+        visual.name_request_generation = window_name_consumer->next_generation();
+        visual.name_has_result = false;
+        visual.name_is_null = false;
+        visual.resolved_name.clear();
+        window_name_consumer->request({view->get_id(), window_name_mode_generation,
+            visual.name_object_generation, visual.name_eligibility_generation,
+            visual.name_request_generation});
+    }
+
+    bool apply_window_name_events()
+    {
+        if (!window_name_consumer) return false;
+        if (window_name_consumer->mpris_needs_join())
+        {
+            if (!window_name_consumer->reap_mpris_observer())
+            {
+                // A try-join may observe the observer in its return epilogue. Retry later rather
+                // than blocking Wayfire's main loop, and keep the old module reference meanwhile.
+            } else if (window_keys.active && window_name_consumer->mpris_restart_requested)
+            {
+                if (!window_name_consumer->start_mpris_observer())
+                    std::fprintf(stderr, "scottland-window-name: MPRIS change observation unavailable\n");
+            }
+        }
+        auto mpris_generation = window_name_consumer->mpris_generation();
+        bool refresh_all = mpris_generation != window_name_consumer->mpris_seen;
+        if (refresh_all)
+        {
+            window_name_consumer->mpris_seen = mpris_generation;
+            if (window_keys.active)
+            {
+                for (const auto& entry : window_keys.entries)
+                {
+                    auto found = hint_visuals.find(entry.id);
+                    auto view = wf::toplevel_cast(represented_view(entry.id));
+                    if (found != hint_visuals.end() && view)
+                        request_window_name(view, found->second, true);
+                }
+            }
+        }
+
+        auto completed = window_name_consumer->take_settled();
+        bool scene_changed = false;
+        for (auto& result : completed)
+        {
+            if (!window_keys.active || result.request.mode_generation != window_name_mode_generation)
+                continue;
+            auto found = hint_visuals.find(result.request.window);
+            auto view = wf::toplevel_cast(represented_view(result.request.window));
+            if (found == hint_visuals.end() || !view || !view->is_mapped() || !view->get_output())
+                continue;
+            auto& visual = found->second;
+            if (visual.view.lock().get() != view.get() || link_of_widget(view))
+            {
+                invalidate_window_name(result.request.window, visual);
+                scene_changed = true;
+                continue;
+            }
+            const bool eligible = std::any_of(window_keys.entries.begin(), window_keys.entries.end(),
+                [&] (const auto& entry) { return entry.id == result.request.window; });
+            if (!eligible || !visual.name_eligible ||
+                visual.name_object_generation != result.request.object_generation ||
+                visual.name_eligibility_generation != result.request.eligibility_generation ||
+                visual.name_request_generation != result.request.request_generation)
+                continue;
+            auto state = model.windows.find(result.request.window);
+            if (state == model.windows.end() || view->get_title() != visual.name_title ||
+                view->get_app_id() != visual.name_app_id || state->second.pid != visual.name_pid ||
+                view_pid(view) != visual.name_pid)
+            {
+                request_window_name(view, visual);
+                scene_changed = true;
+                continue;
+            }
+
+            visual.name_has_result = result.has_row;
+            visual.name_is_null = result.has_row && result.suppress_caption;
+            visual.resolved_name = result.has_row && !result.suppress_caption ?
+                std::move(result.name) : std::string{};
+            scene_changed = true;
+        }
+        if (scene_changed || refresh_all) refresh_layout_avoidance(true);
+        return window_name_consumer->has_unjoined_completions() ||
+            window_name_consumer->mpris_needs_join();
+    }
+
+    void arm_window_name_join_tick()
+    {
+        if (window_name_join_tick.is_connected()) return;
+        // The callback's return keeps retries alive; resetting a timer from inside a false-return
+        // callback would disconnect the replacement when the current callback finishes.
+        window_name_join_tick.set_timeout(8, [=] () { return apply_window_name_events(); });
+    }
+
+    void refresh_window_name_source(wayfire_toplevel_view view)
+    {
+        if (!window_keys.active || !view) return;
+        auto found = hint_visuals.find(view->get_id());
+        if (found == hint_visuals.end()) return;
+        request_window_name(view, found->second, true);
+        refresh_layout_avoidance(true);
+    }
+
+    void init_window_name_consumer()
+    {
+        auto& core = wf::get_core();
+        auto *consumer = core.get_data<scottland::window_names::consumer_t>(
+            scottland::window_names::consumer_t::DATA_KEY).get();
+        if (!consumer)
+        {
+            core.store_data(std::make_unique<scottland::window_names::consumer_t>(),
+                scottland::window_names::consumer_t::DATA_KEY);
+            consumer = core.get_data<scottland::window_names::consumer_t>(
+                scottland::window_names::consumer_t::DATA_KEY).get();
+        }
+        window_name_consumer = consumer;
+        if (!consumer) return;
+        consumer->ready = consumer->state->event_fd >= 0 && consumer->module_pin;
+        if (!consumer->ready)
+        {
+            std::fprintf(stderr, "scottland-window-name: asynchronous captions unavailable\n");
+            return;
+        }
+
+        window_name_event = wl_event_loop_add_fd(wf::get_core().ev_loop,
+            consumer->state->event_fd, WL_EVENT_READABLE, [] (int fd, uint32_t mask, void *data)
+        {
+            auto self = static_cast<scottland_plugin_t*>(data);
+            if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR))
+            {
+                if (self->window_name_consumer)
+                {
+                    self->invalidate_all_window_names();
+                    self->window_name_consumer->stop_mpris_observer();
+                }
+                self->fini_window_name_watch();
+                if (self->window_keys.active) self->refresh_layout_avoidance(true);
+                return 0;
+            }
+            uint64_t count;
+            while (read(fd, &count, sizeof(count)) > 0) {}
+            if (self->apply_window_name_events()) self->arm_window_name_join_tick();
+            else self->window_name_join_tick.disconnect();
+            return 0;
+        }, this);
+        if (!window_name_event)
+        {
+            consumer->ready = false;
+            std::fprintf(stderr, "scottland-window-name: asynchronous caption event source unavailable\n");
+        }
+    }
+
+    void fini_window_name_watch()
+    {
+        window_name_join_tick.disconnect();
+        if (window_name_event) wl_event_source_remove(window_name_event);
+        window_name_event = nullptr;
+        if (window_name_consumer) window_name_consumer->ready = false;
+        window_name_consumer = nullptr;
     }
 
     scottland::windowing::zone window_zone(wayfire_toplevel_view view)
@@ -1132,6 +1396,8 @@
             {
                 hint_visual visual; visual.view = view->weak_from_this();
                 visual.offset = std::make_shared<scottland::view_2d_t>(view);
+                if (window_name_consumer)
+                    visual.name_object_generation = window_name_consumer->next_generation();
                 hint_visuals[e.id] = std::move(visual);
             }
             auto found = hint_visuals.find(e.id);
@@ -1139,6 +1405,7 @@
             auto& visual = found->second;
             if (visual.view.lock().get() != view.get())
             {
+                invalidate_window_name(e.id, visual);
                 if (auto old = visual.view.lock()) { clear_hint_dye(old.get());
                     if (visual.offset_attached)
                         old->get_transformed_node()->rem_transformer("scottland-hint-offset"); }
@@ -1147,7 +1414,10 @@
                 visual.fullscreen_tint.reset(); visual.view = view->weak_from_this();
                 visual.offset = std::make_shared<scottland::view_2d_t>(view);
                 visual.offset_attached = false;
+                visual.name_object_generation = window_name_consumer ?
+                    window_name_consumer->next_generation() : 0;
             }
+            request_window_name(view, visual);
             // Window avoidance is a visual-only reservation for hint circles. It normally
             // runs only with visible hints; the opt-in setting also keeps it active between
             // requests. The legacy option remains an alias for existing user config.
@@ -1562,6 +1832,7 @@
             auto& visual = it->second; auto view = wf::toplevel_cast(visual.view.lock());
             if (!view || !represented.count(it->first))
             {
+                invalidate_window_name(it->first, visual);
                 if (view) { clear_hint_dye(view.get());
                     if (visual.offset_attached)
                         view->get_transformed_node()->rem_transformer("scottland-hint-offset"); }
@@ -1708,13 +1979,50 @@
                 } else remove_hint_outline(visual);
                 if (visual.hint)
                 {
+                    std::string caption;
+                    if (!widget && window_keys.active && visual.name_has_result)
+                    {
+                        if (!visual.name_is_null) caption = visual.resolved_name;
+                    } else if (!widget && window_keys.active)
+                    {
+                        caption = view->get_title().empty() ? view->get_app_id() : view->get_title();
+                    }
+                    const double label_x = anchor.x + offset->translation_x + visual.label_offset.x;
+                    const double label_y = anchor.y + offset->translation_y + visual.label_offset.y;
+                    const double badge_size = widget ? hint_size(view) : visual.label_size;
+                    const double badge_pad = model.goo_outputs.count(view->get_output()) ? 0.0 : 8.0;
+                    const auto output_bounds = view->get_output()->get_relative_geometry();
+                    constexpr double caption_output_padding = 8.0;
+                    constexpr double caption_gap = 3.0;
+                    const double left_room = label_x - output_bounds.x - caption_output_padding;
+                    const double right_room = output_bounds.x + output_bounds.width - label_x - caption_output_padding;
+                    const double caption_width = 2 * std::max(0.0, std::min(left_room, right_room));
+                    const double caption_height = std::max(0.0, output_bounds.y + output_bounds.height -
+                        (label_y + badge_size / 2 + badge_pad + caption_gap + caption_output_padding));
                     const bool hint_moving = visual.hint->update(anchor.x + offset->translation_x + visual.label_offset.x,
                         anchor.y + offset->translation_y + visual.label_offset.y, text,
-                        widget ? hint_size(view) : visual.label_size,
+                        badge_size,
                         hints_palette.font_family, color,
                         view->get_output()->get_scale(), hints_palette.background,
                         std::clamp(double(hint_background_opacity), 0.0, 100.0) / 100,
-                        model.goo_outputs.count(view->get_output()), hints_reduced_motion);
+                        model.goo_outputs.count(view->get_output()), hints_reduced_motion, caption,
+                        hints_palette.text_scale, caption_width, caption_height, hints_palette.foreground);
+                    if (!caption.empty() && !visual.hint->caption_feasible)
+                    {
+                        std::ostringstream issue;
+                        issue << view->get_output()->to_string() << ':' << output_bounds.width << 'x' <<
+                            output_bounds.height << ':' << std::round(label_x) << ',' << std::round(label_y) <<
+                            ':' << std::round(badge_size) << ':' << std::round(caption_width) << 'x' <<
+                            std::round(caption_height) << ':' << std::round(visual.hint->caption_ellipsis_width);
+                        auto current_issue = issue.str();
+                        if (current_issue != visual.caption_issue_signature)
+                            LOGI("scottland: window-name caption does not fit output window=", it->first,
+                                " bounds=", current_issue);
+                        visual.caption_issue_signature = std::move(current_issue);
+                    } else
+                    {
+                        visual.caption_issue_signature.clear();
+                    }
                     moving |= hint_moving;
                     animation_moving |= hint_moving;
                 }
@@ -1814,6 +2122,7 @@
     }
     void end_window_keys()
     {
+        invalidate_all_window_names();
         window_keys.interrupt(); // Alt release: a focused window's waiting press acts first
         arrow_repeats.clear();
         window_keys.end(); declutter_signature.clear();
@@ -1835,6 +2144,12 @@
     void begin_window_keys(bool latch = false)
     {
         if (alt_bypassed || drag->view || (!latch && (alt_keys.empty() || held_keys.size() != 1))) return;
+        invalidate_all_window_names();
+        if (window_name_consumer && window_name_consumer->ready &&
+            !window_name_consumer->start_mpris_observer())
+            std::fprintf(stderr, "scottland-window-name: MPRIS change observation unavailable\n");
+        if (window_name_consumer)
+            window_name_consumer->mpris_seen = window_name_consumer->mpris_generation();
         capture_chord = true; keyboard_selection = false;
         if (latch) window_filter.latched = true;
         auto active = wf::get_core().seat->get_active_view();
@@ -2182,6 +2497,7 @@
     };
     void init_window_keys()
     {
+        init_window_name_consumer();
         // Upgrade from the pre-model Alt branch: read its handover once, never write it again.
         auto path = runtime_file(".window-positions.json"); std::ifstream in(path);
         if (in)
@@ -2230,6 +2546,22 @@
     }
     void fini_window_keys()
     {
+        invalidate_all_window_names();
+        auto *consumer = window_name_consumer;
+        if (consumer) consumer->stop_mpris_observer();
+        fini_window_name_watch();
+        if (consumer)
+        {
+            consumer->reap_mpris_observer();
+            if (consumer->idle_for_removal())
+            {
+                void *module_pin = consumer->take_module_pin_for_removal();
+                wf::get_core().erase_data(scottland::window_names::consumer_t::DATA_KEY);
+                // fini_window_keys runs while this plugin's loader reference is still held, so
+                // removing the core-owned manager cannot unload code currently executing here.
+                if (module_pin) dlclose(module_pin);
+            }
+        }
         on_window_key.disconnect(); alt_hold.disconnect(); hints_tick.disconnect(); deferred_cycle.disconnect();
         hint_hold.disconnect(); hint_hold_retry.disconnect(); deferred_pair.disconnect(); deferred_pair_ready.disconnect();
         hint_registration.disconnect(); deferred_ready.disconnect();

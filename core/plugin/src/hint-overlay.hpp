@@ -15,7 +15,8 @@ class hint_node : public wf::scene::node_t
     hint_node();
     bool update(double x, double y, const std::string& text, double size, const std::string& family,
         hint_rgb color, double scale, hint_rgb background, double background_opacity,
-        bool goo, bool reduced_motion);
+        bool goo, bool reduced_motion, const std::string& caption, double text_scale,
+        double caption_width, double caption_height, hint_rgb caption_foreground);
     void hide(bool reduced_motion);
     bool animate();
     void relocate() { relocating = true; }
@@ -28,13 +29,16 @@ class hint_node : public wf::scene::node_t
     wf::geometry_t box{0, 0, 72, 72};
     std::shared_ptr<wf::texture_t> texture;
     std::vector<unsigned char> pixels;
-    int pixel_size = 72;
+    int pixel_width = 72, pixel_height = 72;
+    bool caption_feasible = true;
+    double caption_ellipsis_width = 0;
   private:
     std::string appearance;
     using clock = std::chrono::steady_clock;
     clock::time_point started = clock::now(), moved = started, resized = started;
     bool hiding = false, reduced = false, relocating = false;
     double from = 0, cx = 0, cy = 0, diameter = 72, padding = 0;
+    double canvas_width = 72, canvas_height = 72;
     double move_x = 0, move_y = 0, drawn_opacity = -1, size_from = 0, size_to = 0;
     void geometry();
 };
