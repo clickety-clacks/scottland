@@ -98,6 +98,7 @@ def reload_plugin():
     plugins = ipc.call('wayfire/get-config-option', {'option': 'core/plugins'})['value']
     changed = ' '.join(str(fresh) if p == 'scottland' or '/libscottland-' in p else p for p in plugins.split())
     mark = Path(os.environ['XDG_RUNTIME_DIR']) / 'scottland' / (os.environ['WAYLAND_DISPLAY'] + '.reloading')
+    mark.parent.mkdir(mode=0o700, exist_ok=True)
     mark.touch()
     try:
         ipc.call('wayfire/set-config-options', {'core/plugins': changed})

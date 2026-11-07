@@ -16,7 +16,7 @@ make test-hooks >"$artifacts/build.log" 2>&1 || { echo "make test-hooks failed; 
   { echo "this checkout's test helpers are missing after make test-hooks" >&2; exit 1; }
 cleanup() {
   cp "$SCOTTLAND_HEADLESS_DIR/wayfire.log" "$artifacts/wayfire.log" 2>/dev/null || true
-  tests/headless.sh stop >/dev/null 2>&1
+  tests/headless.sh stop
 }
 trap cleanup EXIT
 tests/headless.sh stop >/dev/null 2>&1

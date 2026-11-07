@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - '0.4'
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   merge_group:
     branches:
       - '0.4'
@@ -367,3 +368,76 @@ jobs:
           name: standalone-rows-${{ github.run_id }}-${{ github.run_attempt }}
           path: build/standalone-rows/
           if-no-files-found: warn
+
+  compositor_rows:
+    name: Scottland 0.4 compositor rows (${{ matrix.mode }}, ${{ matrix.shard }})
+    # These rows remain a separate acceptance gate while the hosted renderer
+    # and failing behaviors are resolved. A label requests an evidence run.
+    if: ${{ github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'compositor-rows-evidence') || contains(github.event.pull_request.labels.*.name, 'pinned-compositor-evidence')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+        # The pinned label also runs the current merge source for comparison.
+        mode: ${{ fromJSON(github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'pinned-compositor-evidence') && '["merge","pinned"]' || '["merge"]') }}
+    steps:
+      - name: Check out source
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.mode == 'pinned' && '4990c79e9066efe33cef683b50287f3b5ff94d55' || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prepare compositor environment
+        run: |
+          printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
+          docker pull archlinux:base-devel
+          base_ref="$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')"
+          printf 'SCOTTLAND_BASE_IMAGE_DIGEST=%s\n' "$base_ref" >> "$GITHUB_ENV"
+          docker build --pull \
+            --build-arg CI_UID="$(id -u)" \
+            --build-arg BASE_REF="$base_ref" \
+            --tag scottland-checks:compositor - <<'DOCKERFILE'
+          ARG BASE_REF
+          FROM ${BASE_REF}
+          ARG CI_UID
+          RUN pacman -Syu --noconfirm --needed \
+                archlinux-keyring bubblewrap dbus foot gdk-pixbuf2 git glm grim gtk4 gtk4-layer-shell hyprland imagemagick inotify-tools jq \
+                libglvnd libinput libxkbcommon lua mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
+                quickshell rust shadow vulkan-headers wayfire wayland wayland-protocols wf-recorder wlroots0.20 cairo \
+            && useradd --uid "$CI_UID" --gid 0 --create-home ci \
+            && install -d -m 0700 -o ci -g 0 "/run/user/$CI_UID"
+          DOCKERFILE
+          printf 'Container base image: %s\n' "$base_ref"
+          printf 'Prepared container image: %s\n' "$(docker image inspect scottland-checks:compositor --format '{{.Id}}')"
+
+      - name: Run compositor rows
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
+        env:
+          SCOTTLAND_HARNESS_HEAD: ${{ matrix.mode == 'pinned' && '4990c79e9066efe33cef683b50287f3b5ff94d55' || github.sha }}
+          SCOTTLAND_PRODUCT_SOURCE: ${{ matrix.mode == 'pinned' && 'dc155ea158dd8aee14bc9a30f451b7e73316586b' || github.sha }}
+          SCOTTLAND_PRODUCT_TREE: ${{ matrix.mode == 'pinned' && '5ea3f22461b820144778512e674d3b632929ba27' || '' }}
+          SCOTTLAND_PINNED_EVIDENCE: ${{ matrix.mode == 'pinned' }}
+        run: |
+          if ! sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; then
+            echo 'Could not enable user namespaces; the compositor preflight will report availability' >&2
+          fi
+          bash .github/scripts/compositor-rows.sh "${{ matrix.shard }}" 4
+
+      - name: Upload compositor row evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compositor-rows-${{ matrix.mode }}-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/compositor-rows/shard-${{ matrix.shard }}/identity.txt
+            build/compositor-rows/shard-${{ matrix.shard }}/harness-diff.txt
+            build/compositor-rows/shard-${{ matrix.shard }}/preflight.log
+            build/compositor-rows/shard-${{ matrix.shard }}/preflight/goo-state.json
+            build/compositor-rows/shard-${{ matrix.shard }}/rows.tsv
+            build/compositor-rows/shard-${{ matrix.shard }}/logs/*.log
+          if-no-files-found: error
