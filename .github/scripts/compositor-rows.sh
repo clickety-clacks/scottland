@@ -208,14 +208,18 @@ while IFS=$'\t' read -r row_name venue dependency; do
             row_reason='private runtime reload marker parent absent; failed assertions retained in row log'
           fi ;;
         tests/session-busy-exec-test.sh)
-          if grep -Fq '7 passed, 0 failed' "$log"; then
-            row_status=NOT_RUN
-            row_reason='all named checks passed but isolated session cleanup returned nonzero'
+          if grep -Fq 'Fatal error: Segmentation fault' "$log"; then
+            row_reason='Wayfire segfaulted with Scottland loaded; cause unresolved'
+          elif grep -Fq '7 passed, 0 failed' "$log"; then
+            row_reason='named checks passed but the session exited nonzero; cause unresolved'
           fi ;;
         tests/settings-help-test.sh)
           if grep -Fq 'Signals.SIGBUS: 7' "$log"; then
-            row_status=NOT_RUN
-            row_reason='grim crashed with SIGBUS; earlier failed assertions retained in row log'
+            if grep -q '^FAIL ' "$log"; then
+              row_reason='input assertions failed before grim SIGBUS; cause unresolved'
+            else
+              row_reason='grim crashed with SIGBUS; cause unresolved'
+            fi
           fi ;;
       esac
     elif [[ $row_name == tests/omarchy-session-wrap-test.py && $row_status == PASS ]]; then
