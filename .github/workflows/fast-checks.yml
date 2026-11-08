@@ -182,7 +182,7 @@ jobs:
           FROM ${BASE_REF}
           ARG CI_UID
           RUN pacman -Syu --noconfirm --needed \
-                archlinux-keyring bubblewrap dbus foot gdk-pixbuf2 git glm grim gtk4 gtk4-layer-shell imagemagick inotify-tools jq \
+                archlinux-keyring bubblewrap dbus foot gdk-pixbuf2 git glm grim gtk4 gtk4-layer-shell imagemagick inotify-tools jq lua \
                 libglvnd libinput libxkbcommon mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
                 quickshell rust shadow vulkan-headers wayfire wayland wayland-protocols wlroots0.20 cairo \
             && useradd --uid "$CI_UID" --gid 0 --create-home ci \
