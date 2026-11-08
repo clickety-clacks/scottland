@@ -92,6 +92,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | The focused window's hint acts on key release, so a hold can solo without first moving it. | WK35 |
 | 10-04 | Double-tap must work at human timing (measured from release to next press). | WK15 |
 | 10-07 | "maybe doubletap is a reasonable delay between mouse up's. if there's a hold on the second tap, it should automatically expire the double-tap". A double-tap is two releases within the double-tap delay (replacing the 10-04 measure from release to next press); if the second press becomes a hold, the double-tap expires and the hold solos or pairs. A hint hold that does nothing says why in Scottland's log. (Reported issue: "i think i know what it is i think i am double-tap-holding (tap to select, tap and hold to solo) is being read as a double-tap and converting it to a widget".) | WK15, WK39 |
+| 10-07 | “After cycling through widget/periphery/center, it also cycles through the widget/periphery on the OTHER side, when cycling using the hints.” The five steps keep the start zone and side fixed; WG1-ineligible dialogs skip both widget steps and a no-op repeat preserves their cycle; a widget start sent back to its own rail resumes at center. | WK7–WK9, WK15 |
 
 ## Pairing (WK36)
 

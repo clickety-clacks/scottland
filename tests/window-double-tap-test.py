@@ -179,6 +179,23 @@ try:
             wait(lambda: view(primary)['widgetized'])
             print('PASS '+text+' focused-widget human double-tap returns to rail',flush=True)
             key('LEFTALT',False)
+            time.sleep(.1)
+            ipc('window-rules/focus-view',{'id':widget})
+            key('LEFTALT',True); wait(lambda: hints()['active'])
+            assert hints()['selected']==primary, 'widget-start cycle fixture'
+            text=label(primary)
+            sequence(text,.08)
+            wait(lambda: not view(primary)['widgetized'])
+            sequence(text,.08)
+            wait(lambda: view(primary)['widgetized'])
+            time.sleep(.35)
+            sequence(text,.08)
+            wait(lambda: not view(primary)['widgetized'])
+            resumed=view(primary)
+            assert resumed['zone']=='center' and resumed['applied_scale']>.99, \
+                'widget-start double-tap did not resume at center'
+            print('PASS '+text+' widget-start double-tap returns to rail and resumes at center',flush=True)
+            key('LEFTALT',False)
         subprocess.run(['grim',str(art/('width-'+str(width)+'.png'))],check=True)
     (art/'results.json').write_text(json.dumps(results,indent=2))
     assert all(r['widgetized']==r['expect'] and r['hints_active'] and r['first_selected']==r['target'] for r in results)
