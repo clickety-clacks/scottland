@@ -50,7 +50,7 @@ matching core version. The associated `gooarchy-flavorings` package is 0.2.2-1.
    transaction before accepting it:
 
    ```sh
-   sudo pacman -Syu scottland=0.3.7-1 scottland-omarchy=0.3.7-1 gooarchy-flavorings=0.2.2-1
+   sudo pacman -Syu scottland scottland-omarchy gooarchy-flavorings=0.2.2-1
    ```
 
    Do not add `agentd` or `agentd-attention` to the command; pacman resolves
