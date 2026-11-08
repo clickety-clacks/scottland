@@ -75,7 +75,7 @@ jobs:
           evidence="$RUNNER_TEMP/scottland-arm-package-build"
           useradd --create-home builder
           chown -R builder:builder "$GITHUB_WORKSPACE" "$evidence"
-          runuser --login builder -- env \
+          runuser --login --command='exec env "$0" "$@"' builder -- \
             GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
             GITHUB_SHA="$GITHUB_SHA" \
             GITHUB_REF="$GITHUB_REF" \
