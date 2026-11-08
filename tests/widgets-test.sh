@@ -144,13 +144,108 @@ export SCOTTLAND_WIDGET_PATH=$test_widgets
 tests/headless.sh stop >/dev/null 2>&1
 tests/headless.sh start --widgets >/dev/null || { echo "couldn't start headless Scottland"; exit 1; }
 monitor_pid=
+watcher=
+# Keep this test-owned watcher group from outliving its private session or scratch.
+stop_test_watcher_group() {
+  local pid=${1:-} expected_session=${2:-} expected_display=${3:-}
+  [[ $pid =~ ^[1-9][0-9]*$ && -n $expected_session && -n $expected_display ]] || {
+    echo 'widgets-test cleanup: watcher identity is incomplete' >&2
+    return 1
+  }
+  python3 - "$pid" "$expected_session" "$expected_display" <<'PY'
+import os
+import pathlib
+import signal
+import sys
+import time
+
+group = int(sys.argv[1])
+expected = {
+    b"SCOTTLAND_SESSION_DIR": sys.argv[2].encode(),
+    b"WAYLAND_DISPLAY": sys.argv[3].encode(),
+}
+
+def group_members():
+    members = []
+    for entry in pathlib.Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw_stat = (entry / "stat").read_bytes()
+        except FileNotFoundError:
+            continue
+        fields = raw_stat[raw_stat.rfind(b")") + 2:].split()
+        if len(fields) < 3 or fields[0] in (b"Z", b"X"):
+            continue
+        try:
+            process_group = int(fields[2])
+        except ValueError as error:
+            raise RuntimeError(f"cannot verify process group member {entry.name}") from error
+        if process_group != group:
+            continue
+        try:
+            environment = dict(item.split(b"=", 1) for item in
+                               (entry / "environ").read_bytes().split(b"\0") if b"=" in item)
+            command = (entry / "cmdline").read_bytes().split(b"\0")
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise RuntimeError(f"cannot verify process group member {entry.name}: {error}")
+        if any(environment.get(key) != value for key, value in expected.items()):
+            raise RuntimeError("watcher process group contains a process outside this test session")
+        members.append((int(entry.name), command))
+    if any(pid == group for pid, _ in members):
+        leader = next(command for pid, command in members if pid == group)
+        if not any(b"scottland-color-scheme" in arg or b"scottland-display" in arg for arg in leader):
+            raise RuntimeError("recorded watcher PID no longer identifies the color-scheme watcher")
+    return members
+
+def wait_for_group_exit(seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not group_members():
+            return True
+        time.sleep(0.1)
+    return not group_members()
+
+try:
+    if not group_members():
+        raise SystemExit(0)
+    os.killpg(group, signal.SIGTERM)
+    if wait_for_group_exit(3):
+        raise SystemExit(0)
+    os.killpg(group, signal.SIGKILL)
+    if wait_for_group_exit(3):
+        raise SystemExit(0)
+    raise RuntimeError("color-scheme watcher process group did not exit")
+except ProcessLookupError:
+    if not group_members():
+        raise SystemExit(0)
+    raise RuntimeError("watcher process group changed while stopping")
+except RuntimeError as error:
+    print(f"widgets-test cleanup: {error}", file=sys.stderr)
+    raise SystemExit(1)
+except OSError as error:
+    print(f"widgets-test cleanup: could not stop watcher group: {error}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
 cleanup() {
+  local cleanup_failed=0
   [ -n "$monitor_pid" ] && kill "$monitor_pid" 2>/dev/null
   cp "$headless_dir/wayfire.log" "$artifacts/wayfire-final.log" 2>/dev/null
   cp "$headless_dir/state/scottland/widgets.log" "$artifacts/widgets.log" 2>/dev/null
   tests/headless.sh stop >/dev/null 2>&1
+  if [[ -n ${watcher:-} ]]; then
+    stop_test_watcher_group "$watcher" "${session_dir:-}" "${display:-}" || \
+      { echo 'widgets-test cleanup: could not reap its color-scheme watcher' >&2; cleanup_failed=1; }
+  fi
   rm -rf "$test_widgets"
   if [[ -n ${src:-} ]]; then rm -rf "$src"; fi
+  if ((cleanup_failed)); then
+    trap - EXIT
+    exit 1
+  fi
 }
 trap cleanup EXIT
 display=$(cat "$headless_dir/display")
@@ -1074,6 +1169,8 @@ fi
 cp "$headless_dir/wayfire.log" "$artifacts/wayfire.log"
 tests/headless.sh stop >/dev/null 2>&1
 check "stopping the test session ends its color-scheme watcher" bash -c "[ -n '$watcher' ] && ! kill -0 '$watcher' 2>/dev/null"
+stop_test_watcher_group "$watcher" "$session_dir" "$display" || exit 1
+watcher=
 SCOTTLAND_WIDGET_SCOPE=0 tests/headless.sh start --widgets >/dev/null || { echo "couldn't restart headless Scottland"; exit 1; }
 h wayfire/set-config-options '{"scottland/sounds":false}'
 (tests/headless.sh run foot --app-id scottland-test-sleeper -T fallback-app -W 40x10 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
