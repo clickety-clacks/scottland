@@ -65,6 +65,20 @@ def geometry(title):
     return view(title)["geometry"]
 
 
+def hold_offer():
+    return ipc("scottland/spread-state")["hold_offer"]
+
+
+def geometry_pair():
+    return tuple(tuple(geometry(title)[key] for key in ("x", "y", "width", "height"))
+                 for title in ("Tablet-Middle-A", "Tablet-Middle-B"))
+
+
+def geometry_pair_matches(left, right, tolerance=1):
+    return all(abs(a - b) <= tolerance for old, new in zip(left, right)
+               for a, b in zip(old, new))
+
+
 def frame_state(title):
     row = layout_view(title)
     state = dict(row["frame"])
@@ -562,6 +576,187 @@ try:
           "tablet Escape restores A's starting geometry", f"{before} -> {geometry('Tablet-Middle-A')}")
     check(not button_events("Tablet-Middle-A") and not button_events("Tablet-Middle-B"),
           "tablet Escape sends no middle event to either client")
+
+    # R5: a still tablet BTN_MIDDLE uses the same WK39 hold offer as Super+press.
+    ipc("wayfire/set-config-options", {"scottland/window_hold_delay": 600})
+    setup()
+    clear_events("Tablet-Middle-A", "Tablet-Middle-B")
+    before_pair = geometry_pair()
+    a = geometry("Tablet-Middle-A")
+    press = (a["x"] + a["width"] // 2, a["y"] + a["height"] // 2)
+    at_surface("Tablet-Middle-A", *press)
+    tablet_button(274, True)
+    wait(lambda: ipc("scottland/test-input")["tablet_middle_pending"],
+         what="R5 focused tablet middle pending")
+    wait(lambda: hold_offer().get("active") and
+         ipc("scottland/test-input")["tablet_middle_dragging"],
+         timeout=5, what="R5 focused tablet solo offer")
+    check(hold_offer().get("solo") is True, "R5 tablet (a): focused target offers a solo")
+    check(not button_events("Tablet-Middle-A"),
+          "R5 tablet: the held press sends no middle event while offered")
+    check(geometry_pair_matches(before_pair, geometry_pair()),
+          "R5 tablet: the offer leaves true geometry unchanged while held")
+    tablet_button(274, False)
+    wait(lambda: not ipc("scottland/test-input")["dragging"],
+         what="R5 focused tablet offer release")
+    settle("Tablet-Middle-A", "Tablet-Middle-B")
+    tablet_solo = geometry_pair()
+    check(not button_events("Tablet-Middle-A"),
+          "R5 tablet (a): the held middle press and release never reach A")
+    if tool_in_range:
+        tablet_proximity(0, 0, False)
+
+    setup()
+    focus("Tablet-Middle-A")
+    a = geometry("Tablet-Middle-A")
+    press = (a["x"] + a["width"] // 2, a["y"] + a["height"] // 2)
+    pointer_motion(*press)
+    key("LEFTMETA", True)
+    pointer_button("BTN_LEFT", True)
+    wait(lambda: hold_offer().get("active"), timeout=5,
+         what="WK39 focused Super+press solo offer")
+    pointer_button("BTN_LEFT", False)
+    key("LEFTMETA", False)
+    wait(lambda: not ipc("scottland/test-input")["dragging"],
+         what="WK39 focused Super+press release")
+    settle("Tablet-Middle-A", "Tablet-Middle-B")
+    check(geometry_pair_matches(tablet_solo, geometry_pair(), 2),
+          "R5 tablet (a): focused result matches the WK39 Super+press solo oracle")
+
+    setup()
+    focus("Tablet-Middle-A")
+    clear_events("Tablet-Middle-A", "Tablet-Middle-B")
+    before_pair = geometry_pair()
+    b = geometry("Tablet-Middle-B")
+    press = (b["x"] + b["width"] // 2, b["y"] + b["height"] // 2)
+    at_surface("Tablet-Middle-B", *press)
+    tablet_button(274, True)
+    wait(lambda: ipc("scottland/test-input")["tablet_middle_pending"],
+         what="R5 unfocused tablet middle pending")
+    wait(lambda: hold_offer().get("active") and
+         ipc("scottland/test-input")["tablet_middle_dragging"],
+         timeout=5, what="R5 unfocused tablet pair offer")
+    check(hold_offer().get("solo") is False, "R5 tablet (b): unfocused target offers a pair")
+    check(geometry_pair_matches(before_pair, geometry_pair()),
+          "R5 tablet (b): pair preview leaves true geometry unchanged")
+    tablet_button(274, False)
+    wait(lambda: not ipc("scottland/test-input")["dragging"],
+         what="R5 unfocused tablet offer release")
+    settle("Tablet-Middle-A", "Tablet-Middle-B")
+    tablet_pair = geometry_pair()
+    check(not button_events("Tablet-Middle-B"),
+          "R5 tablet (b): held middle press and release never reach B")
+    if tool_in_range:
+        tablet_proximity(0, 0, False)
+
+    setup()
+    focus("Tablet-Middle-A")
+    b = geometry("Tablet-Middle-B")
+    press = (b["x"] + b["width"] // 2, b["y"] + b["height"] // 2)
+    pointer_motion(*press)
+    key("LEFTMETA", True)
+    pointer_button("BTN_LEFT", True)
+    wait(lambda: hold_offer().get("active"), timeout=5,
+         what="WK39 unfocused Super+press pair offer")
+    pointer_button("BTN_LEFT", False)
+    key("LEFTMETA", False)
+    wait(lambda: not ipc("scottland/test-input")["dragging"],
+         what="WK39 unfocused Super+press release")
+    settle("Tablet-Middle-A", "Tablet-Middle-B")
+    check(geometry_pair_matches(tablet_pair, geometry_pair(), 2),
+          "R5 tablet (b): unfocused result matches the WK39 Super+press pair oracle")
+
+    # Movement beyond the hotspot refuses the pair and keeps the owner's drag live.
+    setup()
+    focus("Tablet-Middle-A")
+    clear_events("Tablet-Middle-A", "Tablet-Middle-B")
+    a_before = geometry("Tablet-Middle-A")
+    b_before = geometry("Tablet-Middle-B")
+    press = (b_before["x"] + b_before["width"] // 2,
+             b_before["y"] + b_before["height"] // 2)
+    at_surface("Tablet-Middle-B", *press)
+    tablet_button(274, True)
+    wait(lambda: hold_offer().get("active"), timeout=5,
+         what="R5 tablet drag offer")
+    for distance in (20, 40, 60, 80):
+        tablet_axis(press[0] + distance, press[1])
+        time.sleep(.03)
+    wait(lambda: not hold_offer().get("active") and
+         ipc("scottland/test-input")["dragging"],
+         what="R5 tablet offer refusal resumes the live drag")
+    time.sleep(.25)
+    tablet_button(274, False)
+    wait(lambda: not ipc("scottland/test-input")["dragging"],
+         what="R5 tablet continued drag release")
+    settle("Tablet-Middle-A", "Tablet-Middle-B")
+    a_after = geometry("Tablet-Middle-A")
+    b_after = geometry("Tablet-Middle-B")
+    check(all(abs(a_before[k] - a_after[k]) <= 1 for k in ("x", "y", "width", "height")),
+          "R5 tablet (c): refusing the offer does not commit the pair")
+    check(b_after["x"] >= b_before["x"] + 40 and
+          (b_after["width"], b_after["height"]) == (b_before["width"], b_before["height"]),
+          "R5 tablet (c): movement after the offer continues the tablet drag",
+          f"{b_before} -> {b_after}")
+    check(not button_events("Tablet-Middle-A") and not button_events("Tablet-Middle-B"),
+          "R5 tablet (c): continued drag sends no client middle event")
+    if tool_in_range:
+        tablet_proximity(0, 0, False)
+
+    # Esc refuses an active offer; the tablet grab stays until the owner releases.
+    setup()
+    clear_events("Tablet-Middle-A", "Tablet-Middle-B")
+    before_pair = geometry_pair()
+    a = geometry("Tablet-Middle-A")
+    press = (a["x"] + a["width"] // 2, a["y"] + a["height"] // 2)
+    at_surface("Tablet-Middle-A", *press)
+    tablet_button(274, True)
+    wait(lambda: hold_offer().get("active"), timeout=5,
+         what="R5 tablet Esc offer")
+    key("ESC", True)
+    key("ESC", False)
+    wait(lambda: not ipc("scottland/test-input")["dragging"],
+         what="R5 tablet Esc cancels the offer")
+    tablet_button(274, False)
+    wait(lambda: not ipc("scottland/test-input")["tablet_middle_dragging"],
+         what="R5 tablet owner release after Esc")
+    settle("Tablet-Middle-A", "Tablet-Middle-B")
+    check(geometry_pair_matches(before_pair, geometry_pair()),
+          "R5 tablet (d): Esc leaves layout unchanged")
+    check(not button_events("Tablet-Middle-A") and not button_events("Tablet-Middle-B"),
+          "R5 tablet (d): Esc and owner release send no client middle event")
+    if tool_in_range:
+        tablet_proximity(0, 0, False)
+
+    # A virtual mouse middle click is unrelated to the tablet offer and cannot take it over.
+    setup()
+    focus("Tablet-Middle-A")
+    clear_events("Tablet-Middle-A", "Tablet-Middle-B")
+    press_b = geometry("Tablet-Middle-B")
+    press = (press_b["x"] + press_b["width"] // 2,
+             press_b["y"] + press_b["height"] // 2)
+    at_surface("Tablet-Middle-B", *press)
+    tablet_button(274, True)
+    wait(lambda: hold_offer().get("active"), timeout=5,
+         what="R5 tablet virtual-mouse noninterference offer")
+    a = geometry("Tablet-Middle-A")
+    pointer_motion(a["x"] + a["width"] // 2, a["y"] + a["height"] // 2)
+    pointer_button("BTN_MIDDLE", True)
+    pointer_button("BTN_MIDDLE", False)
+    wait(lambda: hold_offer().get("active") and
+         ipc("scottland/test-input")["tablet_middle_dragging"],
+         what="R5 tablet offer remains owned after unrelated virtual mouse click")
+    check(not button_events("Tablet-Middle-B"),
+          "R5 tablet (e): unrelated mouse click does not deliver the held tablet button to B")
+    tablet_button(274, False)
+    wait(lambda: not ipc("scottland/test-input")["dragging"],
+         what="R5 tablet owner release commits the pair")
+    settle("Tablet-Middle-A", "Tablet-Middle-B")
+    check(geometry_pair_matches(tablet_pair, geometry_pair(), 2),
+          "R5 tablet (e): owner release commits the still-offered pair")
+    check(not button_events("Tablet-Middle-B"),
+          "R5 tablet (e): original tablet recipient receives no middle event")
+    if tool_in_range:
+        tablet_proximity(0, 0, False)
 
     # Other tablet buttons are not intercepted or remapped by the middle-button path.
     setup()

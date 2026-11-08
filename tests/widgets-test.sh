@@ -71,6 +71,9 @@ cover_drag() {  # cover_drag x1 y1 x2 y2 expected-view-id; don't move a differen
   h stipc/move_cursor "{\"x\":$1,\"y\":$2}"; sleep 0.2
   h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'
   h stipc/feed_button '{"combo":"BTN_LEFT","mode":"press"}'
+  # Cross the 12 px wobble before the state query can consume the hold delay.
+  local first_x=$(( $1 + 13 ))
+  h stipc/move_cursor "{\"x\":$first_x,\"y\":$2}"
   local selected
   selected=$(ipc scottland/desktop-model | python3 -c 'import json,sys; print((json.load(sys.stdin).get("drag") or {}).get("window",-1))')
   if [ "$selected" != "$5" ]; then
@@ -80,7 +83,7 @@ cover_drag() {  # cover_drag x1 y1 x2 y2 expected-view-id; don't move a differen
     return 1
   fi
   for i in 1 2 3 4 5 6 7 8 9 10; do
-    h stipc/move_cursor "{\"x\":$(( $1 + ($3 - $1) * i / 10 )),\"y\":$(( $2 + ($4 - $2) * i / 10 ))}"; sleep 0.03
+    h stipc/move_cursor "{\"x\":$(( first_x + ($3 - first_x) * i / 10 )),\"y\":$(( $2 + ($4 - $2) * i / 10 ))}"; sleep 0.03
   done
   sleep 0.3
   h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'
