@@ -163,10 +163,15 @@ pub fn select(
     }
 }
 
-/// [`select`] in the standard runtime directory, honouring the caller's `WAYFIRE_SOCKET`.
+/// [`select`] in `$SCOTTLAND_SESSION_DIR` when non-empty, otherwise the standard runtime
+/// directory, honouring the caller's `WAYFIRE_SOCKET`.
 pub fn current(display: Option<&str>) -> Result<Session, SessionError> {
     let caller = std::env::var_os("WAYFIRE_SOCKET");
-    select(&crate::dirs::runtime_dir(), display, caller.as_deref())
+    let runtime = std::env::var_os("SCOTTLAND_SESSION_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(crate::dirs::runtime_dir);
+    select(&runtime, display, caller.as_deref())
 }
 
 #[cfg(test)]
