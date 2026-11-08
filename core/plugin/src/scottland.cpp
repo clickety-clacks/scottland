@@ -6317,7 +6317,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 return;
             }
 
-            drag->set_input(-1, true, BTN_MIDDLE, true, ev->device);
+            drag->set_input(-1, true, BTN_MIDDLE, true, ev->device, false, true);
             drag->set_pending_drag(press);
             tablet_middle_pending = true;
             tablet_middle_origin = press;
@@ -8573,7 +8573,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             model.drag.cancelled = true;
             ev->mode = wf::input_event_processing_mode_t::IGNORE;  // the app under it doesn't get it
-            drag->handle_input_released(true, !(tablet_middle_dragging || mouse_middle_dragging));
+            drag->handle_input_released(true, !tablet_middle_dragging);
         }
     };
 

@@ -147,6 +147,8 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     int finger = -1;
     bool pointer_motion_managed_externally = false;
     bool pointer_release_managed_externally = false;
+    // Tablet BTN_MIDDLE release is handled after the input grab's button callback.
+    bool keep_grab_for_external_release = false;
     bool gesture = false;
     uint32_t button = BTN_LEFT;
     wlr_input_device *owner = nullptr;
@@ -157,7 +159,7 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
         .capabilities = wf::CAPABILITY_GRAB_INPUT | wf::CAPABILITY_MANAGE_DESKTOP,
     };
     wf::signal::connection_t<wf::view_unmapped_signal> unmap =
-        [this] (auto *) { handle_input_released(true, !pointer_release_managed_externally); };
+        [this] (auto *) { handle_input_released(true, !keep_grab_for_external_release); };
     wf::signal::connection_t<wf::output_removed_signal> removed =
         [this] (auto *ev)
     {
@@ -207,7 +209,7 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     live_drag_t()
     {
         activation.cancel = [this]
-        { handle_input_released(true, !pointer_release_managed_externally); };
+        { handle_input_released(true, !keep_grab_for_external_release); };
         legacy->connect(&legacy_output);
         legacy->connect(&legacy_motion);
         legacy->connect(&legacy_done);
@@ -252,12 +254,13 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     void set_input(int touch_finger = -1, bool manage_pointer_motion_externally = false,
         uint32_t pointer_button = BTN_LEFT,
         bool manage_pointer_release_externally = false, wlr_input_device *device = nullptr,
-        bool pointer_gesture = false)
+        bool pointer_gesture = false, bool retain_grab_until_external_release = false)
     {
         finger = touch_finger;
         pointer_motion_managed_externally = manage_pointer_motion_externally;
         button = pointer_button;
         pointer_release_managed_externally = manage_pointer_release_externally;
+        keep_grab_for_external_release = retain_grab_until_external_release;
         owner = device;
         gesture = pointer_gesture;
     }
