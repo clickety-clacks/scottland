@@ -163,6 +163,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Initialize OSD foundation evidence
@@ -315,6 +316,66 @@ jobs:
         with:
           name: osd-foundation-${{ github.run_id }}-${{ github.run_attempt }}
           path: build/osd-foundation-smoke/
+          if-no-files-found: warn
+
+      # This label is applied only after independent review of the exact PR head.
+      - name: Run reviewed OSD shown-ACK check
+        if: ${{ always() && github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'osd-shown-ack-reviewed' && github.event.pull_request.base.ref == '0.4' && !cancelled() }}
+        env:
+          SCOTTLAND_PRODUCT_SOURCE: bbd89461b18f97ee0387f6433f0e14bebbf12016
+          SCOTTLAND_PRODUCT_TREE: e71eb27bbe8c65aee3ac62b68d79e0af0fae4dea
+          SCOTTLAND_REVIEWED_HEAD: ${{ github.event.pull_request.head.sha }}
+          SCOTTLAND_PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SCOTTLAND_EVENT_ACTION: ${{ github.event.action }}
+          SCOTTLAND_SHOWN_ACK_LABEL: ${{ github.event.label.name }}
+        run: |
+          report=build/osd-shown-ack-evidence/report.json
+          if ! docker image inspect scottland-checks:phase1 >/dev/null 2>&1; then
+            python3 tests/osd-foundation-smoke.py --initialize --shown-ack --report "$report"
+            python3 tests/osd-foundation-smoke.py --not-run \
+              --reason 'the hosted component image was unavailable before the shown-ACK step' \
+              --report "$report"
+            exit 1
+          fi
+          git fetch --no-tags --depth=1 origin "$SCOTTLAND_PRODUCT_SOURCE"
+          docker run --rm --privileged \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/home/ci \
+            --env XDG_RUNTIME_DIR="/run/user/$(id -u)" \
+            --env GITHUB_REPOSITORY \
+            --env GITHUB_RUN_ID \
+            --env GITHUB_RUN_ATTEMPT \
+            --env GITHUB_SERVER_URL \
+            --env GITHUB_SHA \
+            --env GITHUB_REF \
+            --env GITHUB_EVENT_NAME \
+            --env GITHUB_BASE_REF \
+            --env GITHUB_HEAD_REF \
+            --env SCOTTLAND_PRODUCT_SOURCE \
+            --env SCOTTLAND_PRODUCT_TREE \
+            --env SCOTTLAND_REVIEWED_HEAD \
+            --env SCOTTLAND_PULL_REQUEST_BASE_SHA \
+            --env SCOTTLAND_EVENT_ACTION \
+            --env SCOTTLAND_SHOWN_ACK_LABEL \
+            --env SCOTTLAND_CHECKS_IMAGE_ID \
+            --env SCOTTLAND_BASE_IMAGE_REF \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            scottland-checks:phase1 \
+            bash -euo pipefail -c '
+              mkdir -m 700 -p "$XDG_RUNTIME_DIR"
+              report=build/osd-shown-ack-evidence/report.json
+              python3 tests/osd-foundation-smoke.py --initialize --shown-ack --report "$report"
+              python3 tests/osd-foundation-smoke.py --record-versions --report "$report"
+              python3 tests/osd-foundation-smoke.py --run --shown-ack --report "$report"
+            '
+
+      - name: Upload OSD shown-ACK evidence
+        if: ${{ always() && github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'osd-shown-ack-reviewed' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: osd-shown-ack-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/osd-shown-ack-evidence/
           if-no-files-found: warn
 
   standalone:
