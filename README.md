@@ -46,8 +46,10 @@ matching core version. The associated `gooarchy-flavorings` package is 0.2.2-1.
    instructions rather than duplicating them here.
    <!-- Confirm the Gooarchy README has its enrollment, trust, and Flavorings sections before landing this link. -->
 2. Install the matched Scottland packages and Gooarchy Flavorings together in
-   one full system upgrade transaction. Inspect the complete proposed
-   transaction before accepting it:
+   one full system upgrade transaction. This single command synchronizes the
+   package databases, upgrades the system, and installs all three targets;
+   don't split it into a separate sync followed by installation. Inspect the
+   complete proposed transaction before accepting it:
 
    ```sh
    sudo pacman -Syu scottland scottland-omarchy gooarchy-flavorings
