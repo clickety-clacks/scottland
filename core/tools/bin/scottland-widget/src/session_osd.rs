@@ -2,7 +2,7 @@ use serde_json::{Map, Value, json};
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MAX_WAYFIRE_FRAME: usize = 16 * 1024 * 1024;
 const MAX_OSD_REPLY: usize = 64 * 1024;
@@ -129,6 +129,7 @@ fn osd_socket_path(session: &scottland::session::Session) -> PathBuf {
 }
 
 fn present_at(socket_path: &Path, request: &OsdRequest) -> Result<(), String> {
+    osd_trace(format_args!("connect socket={socket_path:?} timeout={HOST_TIMEOUT:?}"));
     let mut stream = UnixStream::connect(socket_path)
         .map_err(|error| format!("could not contact the session OSD host: {error}"))?;
     stream
@@ -138,9 +139,11 @@ fn present_at(socket_path: &Path, request: &OsdRequest) -> Result<(), String> {
     let mut message = serde_json::to_vec(&request.wire_value())
         .map_err(|error| format!("could not encode the OSD request: {error}"))?;
     message.push(b'\n');
+    osd_trace(format_args!("request bytes={} json={:?}", message.len(), String::from_utf8_lossy(&message)));
     stream
         .write_all(&message)
         .map_err(|error| format!("could not send the OSD request: {error}"))?;
+    osd_trace(format_args!("request write complete; awaiting newline ACK"));
     let response = read_line_limited(&mut stream, MAX_OSD_REPLY)
         .map_err(|error| format!("could not read the OSD host acknowledgement: {error}"))?;
     let value: Value = serde_json::from_slice(&response)
@@ -169,12 +172,22 @@ fn mock_exchange(
     accept_ack(response)
 }
 
+fn osd_trace(message: std::fmt::Arguments<'_>) {
+    // Diagnostics must not turn a failed stderr write into a protocol failure.
+    let _ = writeln!(io::stderr(), "scottland-widget osd: {message}");
+}
+
 fn read_line_limited(stream: &mut UnixStream, limit: usize) -> io::Result<Vec<u8>> {
     let mut line = Vec::new();
+    let started = Instant::now();
     while line.len() < limit {
         let mut byte = [0_u8; 1];
-        stream.read_exact(&mut byte)?;
+        stream.read_exact(&mut byte).map_err(|error| {
+            osd_trace(format_args!("ACK read error elapsed={:?} receive_timeout={HOST_TIMEOUT:?} bytes={} partial={:?} kind={:?} errno={:?}", started.elapsed(), line.len(), String::from_utf8_lossy(&line), error.kind(), error.raw_os_error()));
+            error
+        })?;
         if byte[0] == b'\n' {
+            osd_trace(format_args!("ACK complete elapsed={:?} bytes={} json={:?}", started.elapsed(), line.len() + 1, String::from_utf8_lossy(&line)));
             return Ok(line);
         }
         line.push(byte[0]);

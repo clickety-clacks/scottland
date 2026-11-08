@@ -14,14 +14,22 @@ Item {
     property var panelComponent: null
     property var panelInstance: null
 
+    function trace(stage, detail) {
+        console.info("OSD " + stage + " " + JSON.stringify(detail))
+    }
+
     function reply(client, value) {
+        trace("reply-attempt", {connected: !!client && client.connected, value: value})
         if (!client || !client.connected) return
         client.write(JSON.stringify(value) + "\n")
+        trace("reply-write-returned", value)
         client.flush()
+        trace("reply-flush-returned", value)
         client.connected = false
     }
 
     function failCurrent(reason) {
+        trace("failure", {reason: reason, current: !!current})
         if (!current) return
         readyTimer.stop()
         reply(current.client, {error: reason})
@@ -33,6 +41,7 @@ Item {
     function finishShown() {
         if (!current || !panelInstance) return
         const panel = panelInstance
+        trace("panel-state", {visible: panel.visible, backingWindowVisible: panel.backingWindowVisible, message: panel.message, progress: panel.progress, screen: panel.screen ? panel.screen.name : null, focusedScreen: focusedScreen ? focusedScreen.name : null})
         const expectedProgress = current.data.progress === undefined ? -1 : current.data.progress
         if (panel.visible && panel.backingWindowVisible
                 && panel.message === current.data.message
@@ -68,6 +77,7 @@ Item {
     }
 
     function focusedOutputDone(exitCode, exitStatus, outputName) {
+        trace("focused-output-done", {exitCode: exitCode, exitStatus: exitStatus, output: outputName})
         if (!current) return
         if (exitCode !== 0 || exitStatus !== 0) {
             failCurrent("could not determine the focused output")
@@ -81,6 +91,7 @@ Item {
     }
 
     function beginPanel(request, outputName) {
+        trace("begin-panel", {output: outputName, screens: Quickshell.screens.map(screen => screen.name)})
         let screen = null
         for (let index = 0; index < Quickshell.screens.length; index++) {
             const candidate = Quickshell.screens[index]
@@ -114,12 +125,14 @@ Item {
 
     function panelComponentStatusChanged() {
         if (!current || !panelComponent) return
+        trace("panel-component", {status: panelComponent.status, error: panelComponent.status === Component.Error ? panelComponent.errorString() : "", instance: !!panelInstance})
         if (panelComponent.status === Component.Error) {
             failCurrent("the OSD panel could not be loaded")
             return
         }
         if (panelComponent.status !== Component.Ready || panelInstance) return
         panelInstance = panelComponent.createObject(null)
+        trace("panel-created", {instance: !!panelInstance})
         if (!panelInstance) {
             failCurrent("the OSD panel could not be created")
             return
@@ -132,6 +145,7 @@ Item {
         const process = focusedOutputProcess.createObject(root, {
             command: [widgetBinary, "__focused-output"]
         })
+        trace("focused-output-start", {command: [widgetBinary, "__focused-output"]})
         process.running = true
     }
 
@@ -147,6 +161,7 @@ Item {
     }
 
     function acceptLine(client, line) {
+        trace("request", {line: line, connected: client.connected})
         let request
         try {
             request = JSON.parse(line)
