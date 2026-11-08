@@ -176,12 +176,45 @@ def tablet_button(code, pressed):
     return ipc("stipc/tablet/tool_button", {"button": code, "state": pressed})
 
 
+def tablet_tip(x, y, down):
+    global tip_down, tip_position
+    result = ipc("stipc/tablet/tool_tip", {
+        "x": round(x), "y": round(y), "state": down})
+    tip_down = down
+    tip_position = (x, y) if down else None
+    return result
+
+
+def pointer_motion(x, y):
+    return ipc("stipc/move_cursor", {"x": round(x), "y": round(y)})
+
+
+def pointer_button(code, pressed):
+    result = ipc("stipc/feed_button", {
+        "combo": code, "mode": "press" if pressed else "release"})
+    if pressed:
+        held_pointer_buttons.add(code)
+    else:
+        held_pointer_buttons.discard(code)
+    return result
+
+
+def key(code, pressed):
+    result = ipc("stipc/feed_key", {"key": "KEY_" + code, "state": pressed})
+    if pressed:
+        held_keys.add(code)
+    else:
+        held_keys.discard(code)
+    return result
+
+
 def at_surface(title, x, y):
+    proximity_count = len(other_events(title, "proximity_in"))
     if tool_in_range:
         tablet_proximity(0, 0, False)
     tablet_proximity(x, y, True)
     tablet_axis(x, y)
-    wait(lambda: other_events(title, "proximity_in"),
+    wait(lambda: len(other_events(title, "proximity_in")) > proximity_count,
          what=f"tablet proximity on {title}")
 
 
@@ -200,6 +233,10 @@ processes = {}
 stderr_files = {}
 tool_in_range = False
 held_buttons = set()
+held_pointer_buttons = set()
+held_keys = set()
+tip_down = False
+tip_position = None
 
 
 def start_client(title):
@@ -322,6 +359,8 @@ try:
     setup()
     clear_events("Tablet-Middle-A", "Tablet-Middle-B")
     a = geometry("Tablet-Middle-A")
+    b = geometry("Tablet-Middle-B")
+    b_probe = (b["x"] + b["width"] // 2, b["y"] + b["height"] // 2)
     press = (a["x"] + a["width"] // 2, a["y"] + a["height"] // 2)
     at_surface("Tablet-Middle-A", *press)
     tablet_button(274, True)
@@ -331,9 +370,126 @@ try:
     wait(lambda: not any(row.get("title") == "Tablet-Middle-A" for row in views()),
          what="original tablet recipient unmapped")
     tablet_button(274, False)
+    # Move onto B after release twice. The second fresh proximity-in follows any older log event.
+    at_surface("Tablet-Middle-B", *b_probe)
+    at_surface("Tablet-Middle-B", *b_probe)
     check(not button_events("Tablet-Middle-B"),
           "unmapped tablet recipient's middle click is not replayed to B")
     start_client("Tablet-Middle-A")
+
+    # Tip down keeps the tablet target while a quick BTN_MIDDLE click is replayed once.
+    setup()
+    clear_events("Tablet-Middle-A", "Tablet-Middle-B")
+    a = geometry("Tablet-Middle-A")
+    b = geometry("Tablet-Middle-B")
+    b_probe = (b["x"] + b["width"] // 2, b["y"] + b["height"] // 2)
+    press = (a["x"] + a["width"] // 2, a["y"] + a["height"] // 2)
+    at_surface("Tablet-Middle-A", *press)
+    clear_events("Tablet-Middle-A", "Tablet-Middle-B")
+    tablet_tip(*press, True)
+    wait(lambda: other_events("Tablet-Middle-A", "tip_down"),
+         what="tablet tip down reaches A")
+    tablet_button(274, True)
+    tablet_button(274, False)
+    wait(lambda: len(button_events("Tablet-Middle-A")) == 2,
+         what="tip-down tablet middle replay to A")
+    tablet_tip(*press, False)
+    wait(lambda: other_events("Tablet-Middle-A", "tip_up"),
+         what="tablet tip up reaches A")
+    # Re-enter B twice so any delayed event from the click precedes the final proximity-in.
+    at_surface("Tablet-Middle-B", *b_probe)
+    at_surface("Tablet-Middle-B", *b_probe)
+    check([(event["button"], event["state"]) for event in button_events("Tablet-Middle-A")] ==
+          [(274, 1), (274, 0)], "tip-down tablet click reaches A once in order")
+    check(not button_events("Tablet-Middle-B"), "tip-down tablet click never reaches B")
+    check(geometry("Tablet-Middle-A") == a,
+          "tip-down tablet click leaves A geometry unchanged")
+    check(geometry("Tablet-Middle-B") == b,
+          "tip-down tablet click leaves B geometry unchanged")
+
+    # R4 compares stepped tablet motion against the same Super+left reference path.
+    setup()
+    if tool_in_range:
+        tablet_proximity(0, 0, False)
+    before = geometry("Tablet-Middle-A")
+    press = (before["x"] + before["width"] // 2, before["y"] + before["height"] // 2)
+    pointer_motion(*press)
+    key("LEFTMETA", True)
+    pointer_button("BTN_LEFT", True)
+    wait(lambda: ipc("scottland/test-input")["dragging"],
+         what="Super+left tablet-reference drag")
+    for step in range(1, 11):
+        pointer_motion(press[0] + 20 * step, press[1])
+        time.sleep(.02)
+    time.sleep(.25)  # Stop at the final position so release-coast does not change the oracle.
+    pointer_button("BTN_LEFT", False)
+    key("LEFTMETA", False)
+    wait(lambda: not ipc("scottland/test-input")["dragging"],
+         what="Super+left tablet-reference drag end")
+    settle("Tablet-Middle-A", "Tablet-Middle-B")
+    super_after = geometry("Tablet-Middle-A")
+    super_delta = (super_after["x"] - before["x"],
+                   super_after["y"] - before["y"])
+
+    setup()
+    clear_events("Tablet-Middle-A", "Tablet-Middle-B")
+    before = geometry("Tablet-Middle-A")
+    press = (before["x"] + before["width"] // 2, before["y"] + before["height"] // 2)
+    at_surface("Tablet-Middle-A", *press)
+    tablet_button(274, True)
+    wait(lambda: ipc("scottland/test-input")["tablet_middle_pending"],
+         what="stepped tablet drag press pending")
+    for step in range(1, 11):
+        tablet_axis(press[0] + 20 * step, press[1])
+        if step == 1:
+            wait(lambda: ipc("scottland/test-input")["tablet_middle_dragging"],
+                 what="stepped tablet middle live drag")
+        time.sleep(.02)
+    time.sleep(.25)  # Match the reference drag's final-position pause.
+    tablet_button(274, False)
+    wait(lambda: not ipc("scottland/test-input")["tablet_middle_dragging"],
+         what="stepped tablet drag release")
+    settle("Tablet-Middle-A", "Tablet-Middle-B")
+    after = geometry("Tablet-Middle-A")
+    tablet_delta = (after["x"] - before["x"], after["y"] - before["y"])
+    check(all(abs(tablet_delta[i] - super_delta[i]) <= 4 for i in range(2)),
+          "tablet middle 200 px motion lands like Super+left-drag",
+          f"tablet {tablet_delta}px vs Super+left {super_delta}px")
+    check(tablet_delta[0] >= 150,
+          "tablet middle 200 px motion moves A by at least 150 px",
+          f"tablet displacement {tablet_delta}px")
+    check((after["width"], after["height"]) == (before["width"], before["height"]),
+          "tablet middle 200 px drag preserves A size", f"{before} -> {after}")
+    check(not button_events("Tablet-Middle-A") and not button_events("Tablet-Middle-B"),
+          "tablet middle 200 px drag sends no client button event")
+
+    # Escape cancels a tablet middle drag and keeps its grab until owner release.
+    setup()
+    clear_events("Tablet-Middle-A", "Tablet-Middle-B")
+    before = geometry("Tablet-Middle-A")
+    press = (before["x"] + before["width"] // 2, before["y"] + before["height"] // 2)
+    at_surface("Tablet-Middle-A", *press)
+    tablet_button(274, True)
+    wait(lambda: ipc("scottland/test-input")["tablet_middle_pending"],
+         what="tablet Escape drag press pending")
+    for step in range(1, 11):
+        tablet_axis(press[0] + 20 * step, press[1])
+        if step == 1:
+            wait(lambda: ipc("scottland/test-input")["tablet_middle_dragging"],
+                 what="tablet Escape live drag")
+        time.sleep(.02)
+    key("ESC", True)
+    key("ESC", False)
+    wait(lambda: not ipc("scottland/test-input")["dragging"],
+         what="Escape ends tablet live drag")
+    tablet_button(274, False)
+    wait(lambda: not ipc("scottland/test-input")["tablet_middle_dragging"],
+         what="tablet owner release after Escape")
+    settle("Tablet-Middle-A", "Tablet-Middle-B")
+    check(geometry("Tablet-Middle-A") == before,
+          "tablet Escape restores A's starting geometry", f"{before} -> {geometry('Tablet-Middle-A')}")
+    check(not button_events("Tablet-Middle-A") and not button_events("Tablet-Middle-B"),
+          "tablet Escape sends no middle event to either client")
 
     # Other tablet buttons are not intercepted or remapped by the middle-button path.
     setup()
@@ -380,6 +536,21 @@ finally:
     for button in tuple(held_buttons):
         try:
             tablet_button(button, False)
+        except Exception:
+            pass
+    if tip_down and tip_position:
+        try:
+            tablet_tip(*tip_position, False)
+        except Exception:
+            pass
+    for button in tuple(held_pointer_buttons):
+        try:
+            pointer_button(button, False)
+        except Exception:
+            pass
+    for code in tuple(held_keys):
+        try:
+            key(code, False)
         except Exception:
             pass
     if tool_in_range:
