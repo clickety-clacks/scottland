@@ -86,6 +86,20 @@ def state():
     return ipc("scottland/test-input")
 
 
+def hold_offer():
+    return ipc("scottland/spread-state")["hold_offer"]
+
+
+def geometry_pair():
+    return tuple(tuple(geometry(title)[key] for key in ("x", "y", "width", "height"))
+                 for title in ("A", "B"))
+
+
+def geometry_pair_matches(left, right, tolerance=1):
+    return all(abs(a - b) <= tolerance for old, new in zip(left, right)
+               for a, b in zip(old, new))
+
+
 def hit_target(x, y, a_title, b_title):
     raw = ipc("scottland/test-hit-target", {"x": round(x), "y": round(y)})
     a_id = view(a_title)["id"]
@@ -598,6 +612,129 @@ try:
     check(restored and geometry("A") == before,
           "pointer: Esc restores the client's pixels at its starting position")
     check(not all_events(), "pointer: Esc cancels without delivering a middle event")
+
+    # R5: a still BTN_MIDDLE press uses the same WK39 offer and commit path as Super+press.
+    # Use the specified 600 ms delay and compare committed geometry to the existing gesture.
+    setup()
+    ipc("wayfire/set-config-options", {"scottland/window_hold_delay": 600})
+    clear_events()
+    before = geometry_pair()
+    a = geometry("A")
+    x, y = a["x"] + a["width"] / 2, a["y"] + a["height"] / 2
+    pointer(x, y)
+    button("BTN_MIDDLE", True)
+    wait(lambda: state()["mouse_middle_pending"], what="R5 focused pointer middle pending")
+    check(not events("A"), "R5 pointer: focused hold sends no client middle event while pending")
+    wait(lambda: hold_offer().get("active") and state()["mouse_middle_dragging"],
+         timeout=5, what="R5 focused pointer solo offer")
+    check(hold_offer().get("solo") is True, "R5 pointer (a): focused target offers a solo")
+    check(geometry_pair_matches(before, geometry_pair()),
+          "R5 pointer: the offer leaves true geometry unchanged while held")
+    button("BTN_MIDDLE", False)
+    wait(lambda: not state()["dragging"], what="R5 focused pointer offer release")
+    settle("A", "B")
+    pointer_solo = geometry_pair()
+    check(not events("A"), "R5 pointer (a): held middle press and release never reach A")
+
+    setup()
+    focus("A")
+    a = geometry("A")
+    x, y = a["x"] + a["width"] / 2, a["y"] + a["height"] / 2
+    pointer(x, y)
+    key("LEFTMETA", True)
+    button("BTN_LEFT", True)
+    wait(lambda: hold_offer().get("active"), timeout=5, what="WK39 focused Super+press solo offer")
+    button("BTN_LEFT", False)
+    key("LEFTMETA", False)
+    wait(lambda: not state()["dragging"], what="WK39 focused Super+press release")
+    settle("A", "B")
+    check(geometry_pair_matches(pointer_solo, geometry_pair(), 2),
+          "R5 pointer (a): focused result matches the WK39 Super+press solo oracle")
+
+    setup()
+    focus("A")
+    clear_events()
+    before = geometry_pair()
+    b = geometry("B")
+    x, y = b["x"] + b["width"] / 2, b["y"] + b["height"] / 2
+    pointer(x, y)
+    button("BTN_MIDDLE", True)
+    wait(lambda: state()["mouse_middle_pending"], what="R5 unfocused pointer middle pending")
+    wait(lambda: hold_offer().get("active") and state()["mouse_middle_dragging"],
+         timeout=5, what="R5 unfocused pointer pair offer")
+    check(hold_offer().get("solo") is False, "R5 pointer (b): unfocused target offers a pair")
+    check(geometry_pair_matches(before, geometry_pair()),
+          "R5 pointer (b): pair preview leaves true geometry unchanged")
+    button("BTN_MIDDLE", False)
+    wait(lambda: not state()["dragging"], what="R5 unfocused pointer offer release")
+    settle("A", "B")
+    pointer_pair = geometry_pair()
+    check(not events("B"), "R5 pointer (b): held middle press and release never reach B")
+
+    setup()
+    focus("A")
+    b = geometry("B")
+    x, y = b["x"] + b["width"] / 2, b["y"] + b["height"] / 2
+    pointer(x, y)
+    key("LEFTMETA", True)
+    button("BTN_LEFT", True)
+    wait(lambda: hold_offer().get("active"), timeout=5, what="WK39 unfocused Super+press pair offer")
+    button("BTN_LEFT", False)
+    key("LEFTMETA", False)
+    wait(lambda: not state()["dragging"], what="WK39 unfocused Super+press release")
+    settle("A", "B")
+    check(geometry_pair_matches(pointer_pair, geometry_pair(), 2),
+          "R5 pointer (b): unfocused result matches the WK39 Super+press pair oracle")
+
+    # A movement beyond the offer hotspot refuses the pair and resumes the same live drag.
+    setup()
+    focus("A")
+    clear_events()
+    a_before = geometry("A")
+    b_before = geometry("B")
+    b = geometry("B")
+    x, y = b["x"] + b["width"] / 2, b["y"] + b["height"] / 2
+    pointer(x, y)
+    button("BTN_MIDDLE", True)
+    wait(lambda: hold_offer().get("active"), timeout=5, what="R5 pointer drag offer")
+    for distance in (20, 40, 60, 80):
+        pointer(x + distance, y)
+        time.sleep(.03)
+    wait(lambda: not hold_offer().get("active") and state()["dragging"],
+         what="R5 pointer offer refusal resumes the live drag")
+    time.sleep(.25)
+    button("BTN_MIDDLE", False)
+    wait(lambda: not state()["dragging"], what="R5 pointer continued drag release")
+    settle("A", "B")
+    a_after = geometry("A")
+    b_after = geometry("B")
+    check(all(abs(a_before[k] - a_after[k]) <= 1 for k in ("x", "y", "width", "height")),
+          "R5 pointer (c): refusing the offer does not commit the pair")
+    check(b_after["x"] >= b_before["x"] + 40 and
+          (b_after["width"], b_after["height"]) == (b_before["width"], b_before["height"]),
+          "R5 pointer (c): movement after the offer continues the middle drag",
+          f"{b_before} -> {b_after}")
+    check(not events("A") and not events("B"),
+          "R5 pointer (c): continued drag sends no client middle event")
+
+    # Esc refuses an active offer; the still-held BTN_MIDDLE release remains consumed.
+    setup()
+    clear_events()
+    before = geometry_pair()
+    a = geometry("A")
+    x, y = a["x"] + a["width"] / 2, a["y"] + a["height"] / 2
+    pointer(x, y)
+    button("BTN_MIDDLE", True)
+    wait(lambda: hold_offer().get("active"), timeout=5, what="R5 pointer Esc offer")
+    key("ESC", True)
+    key("ESC", False)
+    wait(lambda: not state()["dragging"], what="R5 pointer Esc cancels the offer")
+    button("BTN_MIDDLE", False)
+    settle("A", "B")
+    check(geometry_pair_matches(before, geometry_pair()),
+          "R5 pointer (d): Esc leaves layout unchanged")
+    check(not events("A") and not events("B"),
+          "R5 pointer (d): Esc and owner release send no client middle event")
 
     # R2: fullscreen surfaces are not target windows; presses arrive immediately.
     setup()
