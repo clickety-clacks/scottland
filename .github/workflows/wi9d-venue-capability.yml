@@ -1,0 +1,314 @@
+name: Temporary WI9d two-output venue capability
+
+on:
+  push:
+    branches:
+      - codex/wi9d-venue-capability-20261108
+
+permissions:
+  contents: read
+
+jobs:
+  capability:
+    name: Private two-output Wayfire capability
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the workflow-only branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Reconfirm exact current 0.4 source and canonical wrapper
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          mkdir -p venue-artifacts
+          expected=69a0a169ad74fc2dc0fb827b4e69f4501b2f5514
+          expected_tree=791f0054586ecbca9792794c383a70aad69df5fe
+          expected_wrapper_blob=0c54c20f22bbf77acd2e62fbbfb178123abb8bf1
+          expected_wrapper_sha=0e434ab3a7a4ab39914e58e4e66ffae3afdf11c3625f78deefdfac38bcd2febc
+          live=$(git ls-remote https://github.com/clickety-clacks/scottland.git refs/heads/0.4 | awk 'NR == 1 {print $1}')
+          {
+            printf 'target_branch=0.4\nexpected_commit=%s\nexpected_tree=%s\nlive_commit=%s\n' "$expected" "$expected_tree" "$live"
+            printf 'expected_wrapper_blob=%s\nexpected_wrapper_sha256=%s\n' "$expected_wrapper_blob" "$expected_wrapper_sha"
+          } | tee venue-artifacts/source-identity.txt
+          if [ "$live" != "$expected" ]; then
+            printf 'no_go=live_0.4_moved_before_attempt\n' | tee -a venue-artifacts/source-identity.txt
+            exit 78
+          fi
+          git clone --quiet --no-checkout https://github.com/clickety-clacks/scottland.git venue-source
+          git -C venue-source fetch --quiet --no-tags --depth=1 origin "$expected"
+          git -C venue-source checkout --quiet --detach "$expected"
+          actual=$(git -C venue-source rev-parse HEAD)
+          tree=$(git -C venue-source rev-parse 'HEAD^{tree}')
+          wrapper_blob=$(git -C venue-source rev-parse HEAD:tests/headless.sh)
+          wrapper_sha=$(sha256sum venue-source/tests/headless.sh | awk '{print $1}')
+          mode=$(stat -c '%a' venue-source/tests/headless.sh)
+          {
+            printf 'actual_commit=%s\nactual_tree=%s\nactual_wrapper_blob=%s\nactual_wrapper_sha256=%s\nwrapper_mode=%s\n' "$actual" "$tree" "$wrapper_blob" "$wrapper_sha" "$mode"
+          } | tee -a venue-artifacts/source-identity.txt
+          test "$actual" = "$expected"
+          test "$tree" = "$expected_tree"
+          test "$wrapper_blob" = "$expected_wrapper_blob"
+          test "$wrapper_sha" = "$expected_wrapper_sha"
+          test "$mode" = 755
+          test -z "$(git -C venue-source status --porcelain)"
+
+      - name: Prepare the existing Arch headless toolchain container
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          printf 'hosted_runner=ubuntu-24.04\n' | tee venue-artifacts/toolchain-versions.txt
+          docker pull archlinux:base-devel 2>&1 | tee venue-artifacts/container-pull.log
+          base_ref=$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')
+          printf 'container_base_ref=%s\n' "$base_ref" | tee -a venue-artifacts/toolchain-versions.txt
+          docker build --pull \
+            --build-arg CI_UID="$(id -u)" \
+            --build-arg BASE_REF="$base_ref" \
+            --tag scottland-wi9d-venue:once - <<'DOCKERFILE' 2>&1 | tee venue-artifacts/container-build.log
+          ARG BASE_REF
+          FROM $BASE_REF
+          ARG CI_UID
+          RUN pacman -Syu --noconfirm --needed \
+                archlinux-keyring bubblewrap dbus gdk-pixbuf2 git glm grim gtk4 gtk4-layer-shell imagemagick inotify-tools jq \
+                libglvnd libinput libxkbcommon mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
+                quickshell rust shadow vulkan-headers wayfire wayland wayland-protocols wlroots0.20 cairo wlr-randr \
+            && useradd --uid "$CI_UID" --gid 0 --create-home ci \
+            && install -d -m 0700 -o ci -g 0 "/run/user/$CI_UID"
+          DOCKERFILE
+          docker image inspect scottland-wi9d-venue:once --format 'prepared_image={{.Id}}' | tee -a venue-artifacts/toolchain-versions.txt
+          docker run --rm --user "$(id -u):$(id -g)" --env HOME=/home/ci scottland-wi9d-venue:once \
+            bash -euo pipefail -c '
+              printf "container_os="; . /etc/os-release; printf "%s %s\n" "$NAME" "$VERSION_ID"
+              pacman -Q wayfire wlroots0.20 meson gcc rust python bubblewrap quickshell grim wlr-randr
+              printf "cxx="; g++ --version | sed -n "1p"
+              printf "rustc="; rustc --version
+              printf "cargo="; cargo --version
+              printf "python="; python3 --version
+              printf "pkg_wayfire="; pkg-config --modversion wayfire
+              printf "pkg_wlroots="; pkg-config --modversion wlroots-0.20
+              printf "pkg_wayland_server="; pkg-config --modversion wayland-server
+              printf "bwrap="; bwrap --version
+            ' 2>&1 | tee -a venue-artifacts/toolchain-versions.txt
+
+      - name: Run one bounded build and private compositor capability probe
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>&1 | tee venue-artifacts/private-runtime-setup.log
+          cat > venue-artifacts/probe-inner.sh <<'INNER'
+          #!/usr/bin/env bash
+          set -uo pipefail
+          cd /work
+          ARTIFACTS=/artifacts
+          SUMMARY="$ARTIFACTS/summary.txt"
+          printf 'probe=one_bounded_private_two_output_venue_attempt\n' > "$SUMMARY"
+          printf 'source_commit=69a0a169ad74fc2dc0fb827b4e69f4501b2f5514\nsource_tree=791f0054586ecbca9792794c383a70aad69df5fe\n' >> "$SUMMARY"
+          printf 'wrapper_blob=0c54c20f22bbf77acd2e62fbbfb178123abb8bf1\nwrapper_sha256=0e434ab3a7a4ab39914e58e4e66ffae3afdf11c3625f78deefdfac38bcd2febc\n' >> "$SUMMARY"
+          overall=0
+          run_timed() {
+            label=$1
+            seconds=$2
+            shift 2
+            printf 'command=' >> "$SUMMARY"
+            printf '%q ' "$@" >> "$SUMMARY"
+            printf '\n' >> "$SUMMARY"
+            timeout --signal=TERM --kill-after=30s "$seconds" "$@" > "$ARTIFACTS/$label.log" 2>&1
+            rc=$?
+            printf '%s_exit=%s\n' "$label" "$rc" | tee -a "$SUMMARY"
+            return "$rc"
+          }
+          if run_timed build 1500s make -j2 test-hooks; then
+            :
+          else
+            rc=$?
+            cat "$ARTIFACTS/build.log"
+            printf 'result=build_failed_before_wrapper\n' | tee -a "$SUMMARY"
+            exit "$rc"
+          fi
+          uid=$(id -u)
+          runtime=/run/user/$uid
+          if [ ! -d "$runtime" ] || [ -L "$runtime" ] || [ "$(stat -c '%u:%a' "$runtime")" != "$uid:700" ]; then
+            printf 'result=no_go_runtime_directory_not_owned_private_mode700\n' | tee -a "$SUMMARY"
+            exit 78
+          fi
+          scratch=/work/build/wi9d-venue-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT
+          if [ -e "$scratch" ] || [ -L "$scratch" ]; then
+            printf 'result=no_go_scratch_already_exists\n' | tee -a "$SUMMARY"
+            exit 78
+          fi
+          mkdir -m 700 "$scratch"
+          owner=$(python3 -c 'import uuid; print(uuid.uuid4())')
+          headless_dir=$scratch/session
+          export XDG_RUNTIME_DIR="$runtime"
+          export SCOTTLAND_HEADLESS_ISOLATION=1
+          export SCOTTLAND_TEST_SCRATCH="$scratch"
+          export SCOTTLAND_HEADLESS_DIR="$headless_dir"
+          export SCOTTLAND_HEADLESS_OWNER="$owner"
+          export SCOTTLAND_HEADLESS_OUTPUTS=2
+          printf 'runtime_directory=present_private_mode700\nowner_record=generated_per_run\nscratch=unique_owned_build_child_mode700\nrequested_outputs=2\n' | tee -a "$SUMMARY"
+          if run_timed start 300s tests/headless.sh start; then
+            printf 'session_start=0\n' | tee -a "$SUMMARY"
+          else
+            start_rc=$?
+            overall=$start_rc
+            printf 'session_start=%s\n' "$start_rc" | tee -a "$SUMMARY"
+          fi
+          if [ -f "$headless_dir/wayfire.log" ] && [ ! -L "$headless_dir/wayfire.log" ]; then
+            cp -- "$headless_dir/wayfire.log" "$ARTIFACTS/wayfire.log"
+          fi
+          if [ -f "$headless_dir/display" ]; then
+            printf 'wayland_display=%s\n' "$(cat "$headless_dir/display")" | tee -a "$SUMMARY"
+          fi
+          if [ "$(awk -F= '$1 == "session_start" {print $2; exit}' "$SUMMARY")" = 0 ]; then
+            if run_timed outputs 90s tests/headless.sh run wlr-randr; then
+              awk '/^HEADLESS[^[:space:]]*/ {print $1}' "$ARTIFACTS/outputs.log" > "$ARTIFACTS/output-names.txt"
+              output_count=$(wc -l < "$ARTIFACTS/output-names.txt" | tr -d ' ')
+              printf 'enumerated_outputs=%s\n' "$output_count" | tee -a "$SUMMARY"
+              if [ "$output_count" -ne 2 ]; then overall=1; fi
+            else
+              overall=1
+              : > "$ARTIFACTS/output-names.txt"
+              printf 'enumerated_outputs=unavailable\n' | tee -a "$SUMMARY"
+            fi
+            if run_timed key-down 30s tests/headless.sh ipc stipc/feed_key '{"key":"KEY_LEFTSHIFT","state":true}'; then :; else overall=1; fi
+            if run_timed key-up 30s tests/headless.sh ipc stipc/feed_key '{"key":"KEY_LEFTSHIFT","state":false}'; then :; else overall=1; fi
+            if run_timed pointer-move 30s tests/headless.sh ipc stipc/move_cursor '{"x":100,"y":100}'; then :; else overall=1; fi
+            index=1
+            while IFS= read -r output_name; do
+              [ -n "$output_name" ] || continue
+              if run_timed "capture-$index" 45s tests/headless.sh run grim -o "$output_name" "/artifacts/output-$index.png"; then
+                :
+              else
+                overall=1
+              fi
+              index=$((index + 1))
+            done < "$ARTIFACTS/output-names.txt"
+            if [ -s "$ARTIFACTS/output-1.png" ] && [ -s "$ARTIFACTS/output-2.png" ]; then
+              identify -format '%f %wx%h %b\n' "$ARTIFACTS/output-1.png" "$ARTIFACTS/output-2.png" > "$ARTIFACTS/captures.txt" 2>&1
+              identify_rc=$?
+              printf 'capture_inspect_exit=%s\n' "$identify_rc" | tee -a "$SUMMARY"
+              [ "$identify_rc" -eq 0 ] || overall=1
+            else
+              printf 'capture_files=missing_or_empty\n' | tee -a "$SUMMARY"
+              overall=1
+            fi
+          fi
+          if [ -e "$headless_dir" ] || [ -L "$headless_dir" ]; then
+            if run_timed stop 180s tests/headless.sh stop; then
+              stop_rc=0
+            else
+              stop_rc=$?
+              overall=1
+            fi
+          else
+            stop_rc=0
+            printf 'stop=not_needed_no_session_state\n' | tee -a "$SUMMARY"
+          fi
+          printf 'stop_exit=%s\n' "$stop_rc" | tee -a "$SUMMARY"
+          if [ -f "$headless_dir/wayfire.log" ] && [ ! -L "$headless_dir/wayfire.log" ] && [ ! -f "$ARTIFACTS/wayfire.log" ]; then
+            cp -- "$headless_dir/wayfire.log" "$ARTIFACTS/wayfire.log"
+          fi
+          python3 - "$headless_dir" "$headless_dir/runtime" "$headless_dir/tmp" > "$ARTIFACTS/postflight-processes.txt" <<'PY'
+          import os, pathlib, re, sys
+          roots = tuple(os.path.normpath(path) for path in sys.argv[1:])
+          ancestors = set()
+          pid = os.getpid()
+          while pid > 1:
+              ancestors.add(pid)
+              try:
+                  fields = pathlib.Path(f"/proc/{pid}/stat").read_text().split()
+                  pid = int(fields[3])
+              except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError, IndexError):
+                  break
+          expected = b"SCOTTLAND_HEADLESS_DIR=" + roots[0].encode()
+          wayfire_config = (roots[0] + "/wayfire.ini").encode()
+          found = []
+          for proc in pathlib.Path("/proc").iterdir():
+              if not proc.name.isdigit() or int(proc.name) in ancestors:
+                  continue
+              try:
+                  cmdline = (proc / "cmdline").read_bytes()
+                  environ = (proc / "environ").read_bytes().split(b"\0")
+                  if wayfire_config in cmdline or expected in environ:
+                      found.append(proc.name)
+              except (FileNotFoundError, PermissionError, ProcessLookupError):
+                  pass
+          mounts = []
+          try:
+              for line in pathlib.Path("/proc/self/mountinfo").read_text().splitlines():
+                  fields = line.split()
+                  if len(fields) < 5:
+                      continue
+                  mounted = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), fields[4])
+                  if any(mounted == root or mounted.startswith(root + os.sep) for root in roots):
+                      mounts.append(mounted)
+          except OSError as error:
+              print(f"mountinfo_error={error}")
+              sys.exit(2)
+          print("owned_session_processes=" + (",".join(found) if found else "none"))
+          print("owned_session_mounts=" + (",".join(mounts) if mounts else "none"))
+          sys.exit(1 if found or mounts else 0)
+          PY
+          postflight_rc=$?
+          printf 'postflight_process_scan_exit=%s\n' "$postflight_rc" | tee -a "$SUMMARY"
+          if [ "$postflight_rc" -ne 0 ]; then overall=1; fi
+          cleanup_state=0
+          if [ -e "$headless_dir" ] || [ -L "$headless_dir" ]; then
+            owner_file="$headless_dir/.scottland-headless-owner"
+            runtime_scratch="$headless_dir/runtime"
+            tmp_scratch="$headless_dir/tmp"
+            if [ ! -d "$headless_dir" ] || [ -L "$headless_dir" ] || [ "$(stat -c '%u:%a' "$headless_dir")" != "$uid:700" ] || \
+               [ ! -f "$owner_file" ] || [ -L "$owner_file" ] || \
+               [ "$(sed -n '1p' "$owner_file")" != "$uid" ] || [ "$(sed -n '2p' "$owner_file")" != "$runtime" ] || \
+               [ "$(sed -n '3p' "$owner_file")" != "$owner" ] || \
+               [ ! -d "$runtime_scratch" ] || [ -L "$runtime_scratch" ] || [ "$(stat -c '%u:%a' "$runtime_scratch")" != "$uid:700" ] || \
+               [ ! -d "$tmp_scratch" ] || [ -L "$tmp_scratch" ] || [ "$(stat -c '%u:%a' "$tmp_scratch")" != "$uid:700" ]; then
+              printf 'cleanup_owner_readback=failed\n' | tee -a "$SUMMARY"
+              cleanup_state=1
+            fi
+          fi
+          if [ "$stop_rc" -eq 0 ] && [ "$postflight_rc" -eq 0 ] && [ "$cleanup_state" -eq 0 ] && [ -d "$scratch" ] && [ ! -L "$scratch" ] && [ "$(stat -c '%u:%a' "$scratch")" = "$uid:700" ]; then
+            if [ -e "$headless_dir" ] || [ -L "$headless_dir" ]; then
+              rm -rf -- "$headless_dir"
+            fi
+            if [ ! -e "$headless_dir" ] && [ ! -L "$headless_dir" ]; then
+              rm -rf -- "$scratch"
+              printf 'owned_scratch_removed=yes\n' | tee -a "$SUMMARY"
+            else
+              printf 'owned_scratch_removed=no_preserved_for_inspection\n' | tee -a "$SUMMARY"
+              overall=1
+            fi
+          else
+            printf 'owned_scratch_removed=no_preserved_for_inspection\n' | tee -a "$SUMMARY"
+            overall=1
+          fi
+          printf 'probe_exit=%s\n' "$overall" | tee -a "$SUMMARY"
+          exit "$overall"
+          INNER
+          chmod 755 venue-artifacts/probe-inner.sh
+          ci_uid=$(id -u)
+          ci_gid=$(id -g)
+          docker run --rm --privileged \
+            --user "$ci_uid:$ci_gid" \
+            --env HOME=/home/ci \
+            --env XDG_RUNTIME_DIR="/run/user/$ci_uid" \
+            --env GITHUB_RUN_ID \
+            --env GITHUB_RUN_ATTEMPT \
+            --volume "$GITHUB_WORKSPACE/venue-source:/work" \
+            --volume "$GITHUB_WORKSPACE/venue-artifacts:/artifacts" \
+            --workdir /work \
+            scottland-wi9d-venue:once \
+            bash -euo pipefail /artifacts/probe-inner.sh
+
+      - name: Upload bounded attempt evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wi9d-venue-capability
+          path: venue-artifacts/
+          if-no-files-found: warn
+          retention-days: 1
