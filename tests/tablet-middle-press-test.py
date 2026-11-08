@@ -303,9 +303,7 @@ try:
           "fixture: 8 px release point is inside B", f"A={a}; B={b}; press={press}; release={release}")
     clear_events("Tablet-Middle-A", "Tablet-Middle-B")
     at_surface("Tablet-Middle-A", *press)
-    tablet_axis(*release)
-    wait(lambda: other_events("Tablet-Middle-B", "proximity_in"),
-         what="tablet tool can reach B at the release point")
+    at_surface("Tablet-Middle-B", *release)
     check(math.dist(cursor(), release) <= 1.0,
           "fixture: tablet cursor reaches B's client area", f"release={release}; actual={cursor()}")
     clear_events("Tablet-Middle-A", "Tablet-Middle-B")
