@@ -1,7 +1,9 @@
 //! Notification helpers that use the freedesktop notification interface.
 
+pub mod hooks;
 pub mod notification;
 pub mod reminder;
+pub mod waiter;
 
 use std::future::Future;
 use std::time::{Duration, Instant};

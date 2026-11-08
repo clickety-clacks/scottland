@@ -1,0 +1,153 @@
+#!/bin/sh
+# Omarchy's notification receiver for scottland-notify (the notify hook contract, O35): the shell's
+# notifications IPC for dismissal and do-not-disturb, its reminder panel, and the private send hints
+# the shell reads for glyphs and for click commands and buttons it runs itself. Exit 69 is "not this
+# hook": no Omarchy shell to ask, or another daemon is the receiver. Exit 65 is a request the shell
+# would silently drop.
+#
+# The glyph and action rules restate Omarchy's shell/plugins/notifications/Security.js, and the
+# hints are built as its bin/omarchy-notification-send builds them. Omarchy is
+# Copyright (c) David Heinemeier Hansson and licensed under the MIT License.
+
+if ! command -v omarchy-shell >/dev/null; then
+  echo "omarchy-shell is not installed" >&2
+  exit 69
+fi
+
+# Run omarchy-shell without -q, which would report success when the shell, target or method is
+# unavailable.
+call() {
+  answer=$(omarchy-shell "$@" 2>&1)
+  status=$?
+}
+
+# A shell that is not there, or has no notifications target, is not this hook's receiver: 69. So is
+# an omarchy-shell that cannot look for one because OMARCHY_PATH is unset. Anything else, including
+# a shell that stopped responding mid-call, is a failure: 70.
+fail_unless_answered() {
+  [ "$status" -eq 0 ] && return
+  printf '%s\n' "${answer:-omarchy-shell $1 $2 failed}" >&2
+  case $answer in
+    *"is not running"* | *"is not ready"* | *"Target not found."* | *"Function not found."*) exit 69 ;;
+    *"OMARCHY_PATH is not set"*) exit 69 ;;
+  esac
+  exit 70
+}
+
+# The shell's notification service may be off while the shell runs, and then another daemon owns
+# the name, so a shell that answers is not enough: the bus name's owner must be that shell.
+receiver_is_the_shell() {
+  omarchy-shell notifications ping >/dev/null 2>&1 || return 1
+  owner=$(busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus \
+    GetConnectionUnixProcessID s org.freedesktop.Notifications 2>/dev/null | awk '{print $2}')
+  [ -n "$owner" ] || return 1
+  quickshell list -a -j 2>/dev/null |
+    jq -e --arg config "${OMARCHY_PATH:-}/shell/shell.qml" --arg pid "$owner" \
+      'any(.[]; .config_path == $config and (.pid | tostring) == $pid)' >/dev/null
+}
+
+require_the_shell() {
+  receiver_is_the_shell && return
+  echo "the Omarchy shell is not the notification receiver" >&2
+  exit 69
+}
+
+# Security.safeGlyph: at most 16 UTF-16 code units and no C0 or C1 control character.
+glyph_rule='
+  if ([explode[] | if . > 65535 then 2 else 1 end] | add // 0) > 16 then
+    "longer than 16 UTF-16 code units"
+  elif any(explode[]; . <= 31 or (. >= 127 and . <= 159)) then
+    "a control character"
+  else empty end'
+
+# The action-route request (click N A1..AN, then button LABEL N A1..AN per button), checked as
+# Security.parseExecArgv and parseExecActions check the hints, and answered as the hints send
+# builds: omarchy-exec-argv is the click argv, omarchy-actions the buttons. A label is judged blank
+# as the shell judges it, after cutting it to 256 UTF-16 code units. One field per line; the JSON
+# is compact, so no field holds a newline.
+action_route='
+  def units: [explode[] | if . > 65535 then 2 else 1 end] | add // 0;
+  def space: . == 32 or (. >= 9 and . <= 13) or . == 160 or . == 5760
+    or (. >= 8192 and . <= 8202) or . == 8232 or . == 8233 or . == 8239 or . == 8287
+    or . == 12288 or . == 65279;
+  # The code points a slice to $n UTF-16 code units keeps, counting one cut in half as kept.
+  def cut($n): reduce explode[] as $c ({at: 0, kept: []};
+    (if .at < $n then .kept += [$c] else . end) | .at += (if $c > 65535 then 2 else 1 end)) | .kept;
+  def argv_problem:
+    if length > 32 then "a command of more than 32 words"
+    elif any(.[]; units > 4096) then "a command word longer than 4096 UTF-16 code units"
+    elif length == 0 or .[0] == "" or (.[0] | startswith("-")) then
+      "a command whose program is empty or starts with -"
+    else empty end;
+  split("\u0000")[:-1] as $w
+  | def words($i): ($w[$i] | tonumber) as $n | {argv: $w[$i + 1:$i + 1 + $n], next: ($i + 1 + $n)};
+    def buttons($i):
+      if $i >= ($w | length) then []
+      elif $w[$i] == "button" then
+        words($i + 2) as $b | [{label: $w[$i + 1], argv: $b.argv}] + buttons($b.next)
+      else error("malformed action-route request") end;
+    if $w[0] != "click" then error("malformed action-route request") else . end
+  | words(1) as $click
+  | buttons($click.next) as $buttons
+  | ($click.argv | tojson) as $exec
+  | (if $buttons == [] then "" else $buttons | tojson end) as $actions
+  | [($click.argv | argv_problem),
+     ($buttons[] | (.argv | argv_problem),
+       (if all(.label | cut(256)[]; space) then "a button whose label is blank" else empty end)),
+     (if ($exec | units) > 32768 or ($actions | units) > 32768 then
+        "a hint longer than 32768 UTF-16 code units" else empty end)] as $problems
+  | if $problems != [] then "rejected", $problems[0]
+    else "omarchy-exec-argv", $exec, (if $actions != "" then "omarchy-actions", $actions else empty end)
+    end'
+
+case ${1:-} in
+  dismiss)
+    call notifications dismiss "${2-}"
+    fail_unless_answered notifications dismiss
+    case $answer in
+      ok) exit 0 ;;
+      none) exit 1 ;;
+    esac
+    echo "omarchy-shell answered dismiss with: $answer" >&2
+    exit 70
+    ;;
+  dnd-toggle)
+    call notifications toggleDnd
+    # A best-effort redraw of the indicator, as the toggle script does; not the requested effect.
+    omarchy-shell -q omarchy.indicators refresh >/dev/null 2>&1
+    fail_unless_answered notifications toggleDnd
+    case $answer in
+      on | off) echo "$answer" && exit 0 ;;
+    esac
+    echo "omarchy-shell answered toggleDnd with: $answer" >&2
+    exit 70
+    ;;
+  glyph-hint)
+    require_the_shell
+    rule=$(printf '%s' "${2-}" | jq -Rrs "$glyph_rule") || exit 70
+    if [ -n "$rule" ]; then
+      echo "the Omarchy shell draws no glyph $rule" >&2
+      exit 65
+    fi
+    echo omarchy-glyph
+    ;;
+  action-route)
+    require_the_shell
+    shift
+    hints=$(printf '%s\0' "$@" | jq -Rrs "$action_route") || exit 70
+    case $hints in
+      rejected*)
+        echo "the Omarchy shell drops ${hints#rejected?}" >&2
+        exit 65
+        ;;
+    esac
+    printf '%s\n' "$hints" | tr '\n' '\000'
+    ;;
+  reminder-ui)
+    call shell summon omarchy.reminders "{}"
+    fail_unless_answered shell summon
+    ;;
+  *)
+    exit 69
+    ;;
+esac
