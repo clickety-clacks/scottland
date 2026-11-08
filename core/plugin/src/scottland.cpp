@@ -6286,7 +6286,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             auto recipient = middle_surface_at(press);
-            seat->focus_output(output);
+            // Output focus is owned by Wayfire's core seat wrapper, not wlr_seat.
+            wf::get_core().seat->focus_output(output);
             if (!drag->begin_input_capture(output))
             {
                 return;
