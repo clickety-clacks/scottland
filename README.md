@@ -112,6 +112,9 @@ your agent's skills directory before using it; for Codex that directory is
 ## Running it
 
 On Omarchy, after installing the packages, run `scottland-omarchy-setup` once.
+To enable the generic Sunlight scheduler, also opt in to the separate
+`scottland-sunlight` package; it is not included in the combined repository
+transaction above.
 Setup builds Gooarchy's `xdg-desktop-portal-wlr` from
 [its fork](https://github.com/clickety-clacks/xdg-desktop-portal-wlr) with
 `makepkg`, then replaces Arch's portal package through pacman. This is a
