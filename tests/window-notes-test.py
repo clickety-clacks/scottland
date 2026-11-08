@@ -370,7 +370,7 @@ def build_activation_client():
         text=True).strip())
     protocols = {
         "xdg-shell": protocol_dir / "stable/xdg-shell/xdg-shell.xml",
-        "xdg-activation-v1": protocol_dir / "stable/xdg-activation/xdg-activation-v1.xml",
+        "xdg-activation-v1": protocol_dir / "staging/xdg-activation/xdg-activation-v1.xml",
     }
     generated = []
     for stem, xml in protocols.items():
@@ -719,7 +719,7 @@ def launch_with_note_behavior():
     page.write_text(f"<!doctype html><title>{title}</title><h1>{title}</h1>", encoding="utf-8")
     process = ctl_start("launch", "--name", title, "--launcher", writer,
         "--writer", writer, "--note", "-", "--writer", writer, "--note", "x" * 1001,
-        "--", "chromium", "--ozone-platform=wayland",
+        "--", "env", "TMPDIR=/tmp", "chromium", "--ozone-platform=wayland",
         f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check",
         "--new-window", page.as_uri(), stdout_path=art / "nt17-chromium.stdout",
         stderr_path=art / "nt17-chromium.stderr", input_text=text + "\n")
