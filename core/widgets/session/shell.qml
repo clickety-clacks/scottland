@@ -173,9 +173,10 @@ Item {
         active: true
         path: root.socketPath
         handler: Socket {
+            id: requestSocket
             parser: SplitParser {
                 splitMarker: "\n"
-                onRead: data => root.acceptLine(parent, data)
+                onRead: data => root.acceptLine(requestSocket, data)
             }
         }
     }
