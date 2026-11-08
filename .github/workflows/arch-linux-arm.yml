@@ -1,0 +1,132 @@
+name: Arch Linux ARM package build
+
+on:
+  push:
+    branches:
+      - '0.4'
+    paths:
+      - .github/workflows/arch-linux-arm.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Arch Linux ARM aarch64 package
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: docker.io/lfdevs/archlinuxarm@sha256:758b1987aaba2e34fd6f2451cfdc8008127e884d6f8adac38ebcf4b3623acfd2
+    steps:
+      - name: Prepare build evidence directory
+        run: mkdir -p "$RUNNER_TEMP/scottland-arm-package-build/packages"
+
+      - name: Check out the pushed commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify source and install build dependencies
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = refs/heads/0.4
+          test "$(uname -m)" = aarch64
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse --is-shallow-repository)" = false
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+          evidence="$RUNNER_TEMP/scottland-arm-package-build"
+          {
+            printf 'source_commit=%s\n' "$(git rev-parse HEAD)"
+            printf 'source_tree=%s\n' "$(git rev-parse HEAD^{tree})"
+            printf 'event=%s\n' "$GITHUB_EVENT_NAME"
+            printf 'ref=%s\n' "$GITHUB_REF"
+            printf 'runner_label=ubuntu-24.04-arm\n'
+            printf 'runner_image=%s %s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+            printf 'container_image=docker.io/lfdevs/archlinuxarm@sha256:758b1987aaba2e34fd6f2451cfdc8008127e884d6f8adac38ebcf4b3623acfd2\n'
+            printf 'architecture=%s\n' "$(uname -m)"
+            cat /etc/os-release
+            pacman --version
+            makepkg --version
+          } | tee "$evidence/environment.txt"
+
+          pacman -Syu --noconfirm --needed \
+            base-devel git meson ninja wayfire vulkan-headers glm libinput \
+            cairo cargo python shadow util-linux \
+            2>&1 | tee "$evidence/pacman-install.log"
+
+          {
+            printf '\nInstalled package versions:\n'
+            pacman -Q
+            printf '\nRust compiler: '
+            rustc --version
+            printf 'Cargo: '
+            cargo --version
+            printf 'C++ compiler: '
+            g++ --version | sed -n '1p'
+          } | tee -a "$evidence/environment.txt"
+
+      - name: Build packages with makepkg
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/scottland-arm-package-build"
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE" "$evidence"
+          runuser --login builder -- env \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_REF="$GITHUB_REF" \
+            GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" \
+            RUNNER_TEMP="$RUNNER_TEMP" \
+            PKGDEST="$evidence/packages" \
+            bash -euo pipefail -c '
+              git config --global --add safe.directory "$GITHUB_WORKSPACE"
+              cd "$GITHUB_WORKSPACE"
+              test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+              test "$(git rev-parse --is-shallow-repository)" = false
+              test -z "$(git status --porcelain --untracked-files=all)"
+              cd packaging/arch
+              makepkg --syncdeps --noconfirm --cleanbuild 2>&1 \
+                | tee "$RUNNER_TEMP/scottland-arm-package-build/makepkg.log"
+            '
+
+      - name: Finalize build evidence
+        if: always()
+        run: |
+          set -u
+          evidence="$RUNNER_TEMP/scottland-arm-package-build"
+          packages="$evidence/packages"
+          if compgen -G "$packages/*.pkg.tar.*" >/dev/null; then
+            (cd "$packages" && sha256sum ./*.pkg.tar.* > SHA256SUMS)
+          fi
+          {
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'source_commit=%s\n' "$GITHUB_SHA"
+            printf 'ref=%s\n' "$GITHUB_REF"
+            printf 'event=%s\n' "$GITHUB_EVENT_NAME"
+            printf 'runner_label=ubuntu-24.04-arm\n'
+            printf 'container_image=docker.io/lfdevs/archlinuxarm@sha256:758b1987aaba2e34fd6f2451cfdc8008127e884d6f8adac38ebcf4b3623acfd2\n'
+            if git -C "$GITHUB_WORKSPACE" rev-parse HEAD >/dev/null 2>&1; then
+              printf 'checked_out_commit=%s\n' "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+              printf 'checked_out_tree=%s\n' "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD^{tree})"
+            fi
+            printf '\nPackage files and SHA-256:\n'
+            if compgen -G "$packages/*.pkg.tar.*" >/dev/null; then
+              (cd "$packages" && sha256sum ./*.pkg.tar.*)
+              cat "$packages/SHA256SUMS"
+            else
+              printf 'No package archives were produced.\n'
+            fi
+          } > "$evidence/build-manifest.txt"
+
+      - name: Upload build log and package artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-linux-arm-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/scottland-arm-package-build/
+          if-no-files-found: error
+          retention-days: 30
