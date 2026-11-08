@@ -65,6 +65,33 @@ def geometry(title):
     return view(title)["geometry"]
 
 
+def frame_state(title):
+    row = layout_view(title)
+    state = dict(row["frame"])
+    state.update(row.get("scene_frame", {}))
+    return state
+
+
+def frame_diagnostic(title):
+    row = layout_view(title)
+    return {key: row.get(key) for key in ("frame", "scene_frame", "applied_scale")}
+
+
+def hit_target(x, y, a_title, b_title):
+    raw = ipc("scottland/test-hit-target", {"x": round(x), "y": round(y)})
+    a_id = view(a_title)["id"]
+    b_id = view(b_title)["id"]
+    target_id = raw.get("window_id", -1)
+    window = "A" if target_id == a_id else "B" if target_id == b_id else "other"
+    return {"window": window, "part": raw.get("part", "other"),
+            "window_id": target_id, "title": raw.get("window", "other")}
+
+
+def valid_release_target(target):
+    return target["window"] == "B" and target["part"] in (
+        "client_surface", "frame_or_expanded_hit_area")
+
+
 def button_events(title):
     path = out / f"{title}.jsonl"
     if not path.exists():
@@ -288,45 +315,74 @@ try:
     check(not button_events("Tablet-Middle-B"), "tablet quick click does not reach B")
     check(geometry("Tablet-Middle-A") == a, "tablet quick click leaves A geometry unchanged")
 
-    # An 8 px release over B remains a click for A. Replay temporarily returns the cursor
-    # to A's press point, then restores the actual release point after Wayfire sends release.
+    # An 8 px release onto B's actual scene hit area remains a click for A. Replay
+    # returns the cursor to A's press point, then restores the true release point.
     setup(a_x=450, b_x=810)
+    focus("Tablet-Middle-B")
+    settle("Tablet-Middle-A", "Tablet-Middle-B")
     a = geometry("Tablet-Middle-A")
+    a_frame = frame_state("Tablet-Middle-A")
+    b_before = geometry("Tablet-Middle-B")
+    place("Tablet-Middle-B", round(a_frame["x"] + a_frame["width"] - 17),
+          b_before["y"], 360, 260)
+    settle("Tablet-Middle-A", "Tablet-Middle-B")
+    a_frame = frame_state("Tablet-Middle-A")
+    b_frame = frame_state("Tablet-Middle-B")
     b = geometry("Tablet-Middle-B")
-    if b["x"] != a["x"] + a["width"]:
-        place("Tablet-Middle-B", a["x"] + a["width"], a["y"])
-        settle("Tablet-Middle-A", "Tablet-Middle-B")
-        b = geometry("Tablet-Middle-B")
-    press = (a["x"] + a["width"] - 4, a["y"] + a["height"] // 2)
+    b_halo_left = b_frame["x"] - b_frame["thickness"]
+    press = (round(b_halo_left - 6), round(a_frame["y"] + a_frame["height"] / 2))
     release = (press[0] + 8, press[1])
-    check(b["x"] == a["x"] + a["width"] and release[0] > b["x"],
-          "fixture: 8 px release point is inside B", f"A={a}; B={b}; press={press}; release={release}")
+    a_right = a_frame["x"] + a_frame["width"]
+    check(a_frame["x"] < press[0] < release[0] < a_right and
+          press[0] < b_halo_left < release[0] < b_frame["x"] and
+          b_frame["y"] - b_frame["thickness"] < press[1] <
+          b_frame["y"] + b_frame["height"] + b_frame["thickness"],
+          "fixture: 8 px endpoints span A's reported scene frame and B's reported frame hit area",
+          f"A={frame_diagnostic('Tablet-Middle-A')}; "
+          f"B={frame_diagnostic('Tablet-Middle-B')}; press={press}; release={release}")
     clear_events("Tablet-Middle-A", "Tablet-Middle-B")
-    at_surface("Tablet-Middle-A", *press)
-    at_surface("Tablet-Middle-B", *release)
-    check(math.dist(cursor(), release) <= 1.0,
-          "fixture: tablet cursor reaches B's client area", f"release={release}; actual={cursor()}")
-    clear_events("Tablet-Middle-A", "Tablet-Middle-B")
-    at_surface("Tablet-Middle-A", *press)
-    tablet_button(274, True)
-    wait(lambda: ipc("scottland/test-input")["tablet_middle_pending"],
-         what="cross-surface tablet middle press pending")
-    tablet_axis(*release)
-    cursor_before_release = cursor()
-    check(math.dist(cursor_before_release, release) <= 1.0,
-          "tablet tool reaches B while the middle button is held",
-          f"expected={release}; actual={cursor_before_release}")
-    tablet_button(274, False)
-    wait(lambda: len(button_events("Tablet-Middle-A")) == 2,
-         what="cross-surface tablet replay to A")
-    check([(event["button"], event["state"]) for event in button_events("Tablet-Middle-A")] ==
-          [(274, 1), (274, 0)], "8 px cross-window tablet replay stays with A")
-    check(not button_events("Tablet-Middle-B"), "8 px cross-window tablet click never reaches B")
-    actual = cursor()
-    check(math.dist(actual, release) <= 1.0, "tablet replay restores the true release cursor",
-          f"expected={release}; actual={actual}")
-    check(geometry("Tablet-Middle-A") == a,
-          "8 px cross-window tablet release does not start a drag")
+    press_target = hit_target(press[0], press[1], "Tablet-Middle-A", "Tablet-Middle-B")
+    print(f"INFO R3(b) tablet press hit target at {press}: {press_target}; "
+          f"A={frame_diagnostic('Tablet-Middle-A')}; "
+          f"B={frame_diagnostic('Tablet-Middle-B')}", flush=True)
+    press_is_a_client = press_target["window"] == "A" and press_target["part"] == "client_surface"
+    check(press_is_a_client, "tablet R3(b) press hit-tests to A client", str(press_target))
+    if press_is_a_client:
+        at_surface("Tablet-Middle-A", *press)
+        settle("Tablet-Middle-A", "Tablet-Middle-B")
+        press_target = hit_target(press[0], press[1], "Tablet-Middle-A", "Tablet-Middle-B")
+        print(f"INFO R3(b) tablet target immediately before press at {press}: {press_target}", flush=True)
+        press_is_a_client = press_target["window"] == "A" and press_target["part"] == "client_surface"
+        check(press_is_a_client, "tablet R3(b) actual press target is A client", str(press_target))
+    if press_is_a_client:
+        clear_events("Tablet-Middle-A", "Tablet-Middle-B")
+        tablet_button(274, True)
+        wait(lambda: ipc("scottland/test-input")["tablet_middle_pending"],
+             what=f"tablet middle pending after recorded A-client target {press_target}")
+        tablet_axis(*release)
+        cursor_before_release = cursor()
+        release_target = hit_target(release[0], release[1], "Tablet-Middle-A", "Tablet-Middle-B")
+        print(f"INFO R3(b) tablet release hit target at {release}: {release_target}; "
+              f"cursor={cursor_before_release}", flush=True)
+        check(math.dist(cursor_before_release, release) <= 1.0,
+              "tablet tool reaches the recorded release point while the middle button is held",
+              f"expected={release}; actual={cursor_before_release}; target={release_target}")
+        release_is_b = valid_release_target(release_target)
+        check(release_is_b, "tablet R3(b) release hit-tests to B client or frame/expanded area",
+              str(release_target))
+        tablet_button(274, False)
+        wait(lambda: len(button_events("Tablet-Middle-A")) == 2,
+             what=f"cross-surface tablet replay to A; release target={release_target}")
+        check([(event["button"], event["state"]) for event in button_events("Tablet-Middle-A")] ==
+              [(274, 1), (274, 0)], "8 px cross-window tablet replay stays with A")
+        check(not button_events("Tablet-Middle-B"), "8 px cross-window tablet click never reaches B")
+        actual = cursor()
+        check(math.dist(actual, release) <= 1.0, "tablet replay restores the true release cursor",
+              f"expected={release}; actual={actual}")
+        check(geometry("Tablet-Middle-A") == a,
+              "8 px cross-window tablet release does not start a drag")
+        check(geometry("Tablet-Middle-B") == b,
+              "8 px cross-window tablet release leaves B geometry unchanged")
 
     # More than the 12 px slop starts the same live move. The client never receives either edge.
     setup()

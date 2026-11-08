@@ -5871,7 +5871,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return view;
     }
 
-    wlr_surface *middle_surface_at(const wf::pointf_t& at, wf::scene::node_ptr excluded_grab = nullptr)
+    std::optional<wf::scene::input_node_t> middle_input_node_at(
+        const wf::pointf_t& at, wf::scene::node_ptr excluded_grab = nullptr)
     {
         auto root = wf::get_core().scene();
         std::optional<wf::scene::input_node_t> hit;
@@ -5898,8 +5899,46 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             hit = root->find_node_at(at);
         }
 
+        return hit;
+    }
+
+    wlr_surface *middle_surface_at(const wf::pointf_t& at, wf::scene::node_ptr excluded_grab = nullptr)
+    {
+        auto hit = middle_input_node_at(at, excluded_grab);
         auto surface_node = hit ? dynamic_cast<wf::scene::wlr_surface_node_t*>(hit->node.get()) : nullptr;
         return surface_node ? surface_node->get_surface() : nullptr;
+    }
+
+    wf::json_t middle_hit_target_at(const wf::pointf_t& at, wf::scene::node_ptr excluded_grab = nullptr)
+    {
+        auto result = wf::ipc::json_ok();
+        result["window_id"] = (int64_t)-1;
+        result["window"] = "other";
+        result["part"] = "other";
+
+        auto hit = middle_input_node_at(at, excluded_grab);
+        if (!hit) return result;
+
+        auto frame = dynamic_cast<scottland::frame_t*>(hit->node.get());
+        auto surface = dynamic_cast<wf::scene::wlr_surface_node_t*>(hit->node.get());
+        wayfire_toplevel_view view;
+        if (frame)
+        {
+            view = frame->toplevel();
+            result["part"] = "frame_or_expanded_hit_area";
+        } else if (surface)
+        {
+            view = wf::toplevel_cast(wf::node_to_view(hit->node->shared_from_this()));
+            result["part"] = "client_surface";
+        }
+
+        if (view)
+        {
+            result["window_id"] = (int64_t)view->get_id();
+            result["window"] = view->get_title();
+        }
+
+        return result;
     }
 
     bool pointer_focus_is_layer_shell()
@@ -7115,6 +7154,23 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         reply["drag_renderer"] = drag->view ? (drag->is_live() ? "scottland-live" : "wayfire-move") : "none";
         reply["drag_center"] = model.drag.last_center;
         return reply;
+    };
+
+    wf::ipc::method_callback test_hit_target = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (!getenv("SCOTTLAND_TEST_MODEL") || std::string(getenv("SCOTTLAND_TEST_MODEL")) != "1")
+        {
+            return wf::ipc::json_error("test sessions only");
+        }
+
+        if (!data.has_member("x") || !data.has_member("y"))
+        {
+            return wf::ipc::json_error("x and y are required");
+        }
+
+        wf::scene::node_ptr excluded_grab;
+        if (tablet_middle_pending) excluded_grab = drag->get_tablet_capture_node();
+        return middle_hit_target_at({data["x"].as_double(), data["y"].as_double()}, excluded_grab);
     };
 
     wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_motion_event>> on_motion =
@@ -9932,6 +9988,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             ipc_repo->register_method("scottland/audit-model", audit_model);
             ipc_repo->register_method("scottland/test-screen-identities", test_screen_identities);
+            ipc_repo->register_method("scottland/test-hit-target", test_hit_target);
         }
         wf::get_core().connect(&on_title);
         wf::get_core().connect(&on_app_id);
@@ -10120,6 +10177,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         momentum.disconnect();
         touch_pointer.reset();
         ipc_repo->unregister_method("scottland/test-input");
+        ipc_repo->unregister_method("scottland/test-hit-target");
         ipc_repo->unregister_method("scottland/widgets");
         ipc_repo->unregister_method("scottland/desktop-model");
         ipc_repo->unregister_method("scottland/subscribe");
