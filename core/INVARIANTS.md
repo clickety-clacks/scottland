@@ -223,6 +223,12 @@ Candidate source; eight focused helper behavior scenarios pass; compositor build
 | E15 | Integrations can ask whether a session lock holds the screen (`scottland/session-state` → `locked`): true while an output is inhibited by Wayfire's session-lock and shows the lock surface, or the lock's stand-in after the lock client died; false while locking is still in progress. Shortcuts that are not marked to run on the lock screen (E13, E11) do not run while locked. | implemented (headless, ARM test machine, 2026-10-05) |
 | E16 | `scottland-ctl` retains live settings, window listing/presentation and option access, and adds focused terminal cwd lookup (falling back to the session HOME), app-id/title focus, session-lock detection, close-all, distro-locker requests for lock/lid-close, a bounded secure-lock wait before suspend, and a logind delay inhibitor that runs that wait on prepare-for-sleep. Core supplies no lock screen, clamshell behavior or workspace navigation. | shared-runner verification pending |
 
+## Input devices
+
+| ID | Invariant | Status |
+|---|---|---|
+| IN1–IN11 | `scottland-input` discovers touchpad and touchscreen devices, toggles only their enabled state, reports failures truthfully, and preserves each disabled-device record across session start, configuration reload and matching device arrival. Device names are treated as data; no configuration or unrelated device setting is changed. | candidate; current-target required checks pending; real-session acceptance after merge |
+
 ## Source adoption
 
 | ID | Invariant | Status |
