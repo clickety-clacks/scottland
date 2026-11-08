@@ -2864,7 +2864,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (std::string(key) == "sender" && !valid_sender_id(data[key].as_string()))
                 return wf::ipc::json_error("sender must be a sender id with a namespace and non-empty rest");
         }
-        if (data.size() != expected_fields)
+        if (data.get_member_names().size() != expected_fields)
             return wf::ipc::json_error("provenance declaration has an unknown field");
 
         auto raw_pid = data["pid"].as_int64();
