@@ -138,6 +138,11 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     wf::scene::floating_inner_ptr parent;
     std::unique_ptr<wf::input_grab_t> grab;
     wf::output_t *grab_output = nullptr;
+    // A tablet button must be withheld before it is known whether it will click or drag. Keep the
+    // same scene grab and adopt it if the gesture crosses into a live drag; otherwise the gap
+    // between two grabs could expose wlroots' still-pressed tablet button to a client.
+    std::unique_ptr<wf::input_grab_t> pending_grab;
+    wf::output_t *pending_grab_output = nullptr;
     int finger = -1;
     bool pointer_motion_managed_externally = false;
     bool pointer_release_managed_externally = false;
@@ -151,7 +156,7 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
         .capabilities = wf::CAPABILITY_GRAB_INPUT | wf::CAPABILITY_MANAGE_DESKTOP,
     };
     wf::signal::connection_t<wf::view_unmapped_signal> unmap =
-        [this] (auto *) { handle_input_released(); };
+        [this] (auto *) { handle_input_released(true, !pointer_release_managed_externally); };
     wf::signal::connection_t<wf::output_removed_signal> removed =
         [this] (auto *ev)
     {
@@ -162,16 +167,36 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     {
         if (!output) return false;
         if (grab_output == output) return true;
+        if (pending_grab && (pending_grab_output != output)) return false;
         if (!output->activate_plugin(&activation)) return false;
         transferring = true;
         if (grab) grab->ungrab_input();
         if (grab_output) grab_output->deactivate_plugin(&activation);
         grab_output = output;
-        grab = std::make_unique<wf::input_grab_t>("scottland-move", output, nullptr, this, this);
-        grab->set_wants_raw_input(true);
-        grab->grab_input(wf::scene::layer::OVERLAY);
+        if (pending_grab)
+        {
+            grab = std::move(pending_grab);
+            pending_grab_output = nullptr;
+            grab->regrab_input();
+        } else
+        {
+            grab = std::make_unique<wf::input_grab_t>("scottland-move", output, nullptr, this, this);
+            grab->set_wants_raw_input(true);
+            grab->grab_input(wf::scene::layer::OVERLAY);
+        }
         transferring = false;
         return true;
+    }
+
+    void release_input_grabs()
+    {
+        if (pending_grab) pending_grab->ungrab_input();
+        pending_grab.reset();
+        pending_grab_output = nullptr;
+        if (grab) grab->ungrab_input();
+        grab.reset();
+        if (grab_output) grab_output->deactivate_plugin(&activation);
+        grab_output = nullptr;
     }
 
   public:
@@ -179,7 +204,8 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     wf::output_t *current_output = nullptr;
     live_drag_t()
     {
-        activation.cancel = [this] { handle_input_released(); };
+        activation.cancel = [this]
+        { handle_input_released(true, !pointer_release_managed_externally); };
         legacy->connect(&legacy_output);
         legacy->connect(&legacy_motion);
         legacy->connect(&legacy_done);
@@ -187,6 +213,27 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     }
     ~live_drag_t() { handle_input_released(); }
     bool is_live() const { return bool(transform); }
+    bool begin_input_capture(wf::output_t *output)
+    {
+        if (!output || view || grab || pending_grab) return false;
+        pending_grab_output = output;
+        pending_grab = std::make_unique<wf::input_grab_t>("scottland-tablet-middle", output,
+            nullptr, this, this);
+        pending_grab->set_wants_raw_input(true);
+        pending_grab->grab_input(wf::scene::layer::OVERLAY);
+        if (!pending_grab->is_grabbed())
+        {
+            pending_grab.reset();
+            pending_grab_output = nullptr;
+            return false;
+        }
+
+        return true;
+    }
+    void cancel_input_capture()
+    {
+        if (!view) release_input_grabs();
+    }
     void set_pending_drag(wf::pointf_t p) { pending = p; }
     void set_input(int touch_finger = -1, bool manage_pointer_motion_externally = false,
         uint32_t pointer_button = BTN_LEFT,
@@ -274,9 +321,14 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     // commit = false ends the drag where the window really is, dropping whatever the drag drew
     // (a hold form, WK35/WK36: the gesture was a hold, never a move). Only the live renderer can
     // do that; the legacy move plugin always commits, so callers check is_live() first.
-    void handle_input_released(bool commit = true)
+    void handle_input_released(bool commit = true, bool release_input = true)
     {
-        if (!view || finishing || transferring) return;
+        if (finishing || transferring) return;
+        if (!view)
+        {
+            if (release_input) release_input_grabs();
+            return;
+        }
         if (!transform)
         {
             legacy->handle_input_released();
@@ -296,10 +348,7 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
         suspended = false;
         transform.reset();
         parent.reset();
-        if (grab) grab->ungrab_input();
-        grab.reset();
-        if (grab_output) grab_output->deactivate_plugin(&activation);
-        grab_output = nullptr;
+        if (release_input) release_input_grabs();
         // Commit the shown global position before the common drop/morph/physics path.
         if (commit && target->is_mapped() && output)
         {

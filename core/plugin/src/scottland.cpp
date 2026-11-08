@@ -5708,6 +5708,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     std::weak_ptr<wf::view_interface_t> mouse_middle_view;
     wlr_input_device *mouse_middle_device = nullptr;
     wlr_surface *mouse_middle_surface = nullptr;
+    bool tablet_middle_pending = false;
+    bool tablet_middle_dragging = false;
+    bool tablet_middle_consumed = false;
+    bool tablet_middle_release_pending = false;
+    bool tablet_middle_replay_before_release = false;
+    bool tablet_middle_restore_cursor = false;
+    wf::pointf_t tablet_middle_origin;
+    wf::pointf_t tablet_middle_release_point;
+    std::weak_ptr<wf::view_interface_t> tablet_middle_view;
+    wlr_input_device *tablet_middle_device = nullptr;
+    wlr_surface *tablet_middle_surface = nullptr;
+    wf::output_t *tablet_middle_output = nullptr;
     bool test_touchpad_pointers = false;  // scottland/test-input: count every pointer as a touchpad
 
     bool touchpad_middle_active() const
@@ -5720,9 +5732,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return mouse_middle_pending || mouse_middle_dragging || mouse_middle_consumed;
     }
 
+    bool tablet_middle_active() const
+    {
+        return tablet_middle_pending || tablet_middle_dragging || tablet_middle_consumed ||
+            tablet_middle_release_pending;
+    }
+
     bool middle_gesture_active() const
     {
-        return touchpad_middle_active() || mouse_middle_active();
+        return touchpad_middle_active() || mouse_middle_active() || tablet_middle_active();
     }
 
     void clear_touchpad_middle_gesture()
@@ -5743,6 +5761,20 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         mouse_middle_view.reset();
         mouse_middle_device = nullptr;
         mouse_middle_surface = nullptr;
+    }
+
+    void clear_tablet_middle_gesture()
+    {
+        tablet_middle_pending = false;
+        tablet_middle_dragging = false;
+        tablet_middle_consumed = false;
+        tablet_middle_release_pending = false;
+        tablet_middle_replay_before_release = false;
+        tablet_middle_restore_cursor = false;
+        tablet_middle_view.reset();
+        tablet_middle_device = nullptr;
+        tablet_middle_surface = nullptr;
+        tablet_middle_output = nullptr;
     }
 
     bool is_touchpad(wlr_input_device *device)
@@ -5808,6 +5840,42 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         return view;
+    }
+
+    /** Tablet input can move the scene cursor without the pointer-focus signal identifying the
+     * tablet's recipient. Resolve the target strictly from the tool's current scene point. */
+    wayfire_toplevel_view tablet_middle_press_target(const wf::pointf_t& point)
+    {
+        auto& core = wf::get_core();
+        auto hit = core.scene()->find_node_at(point);
+        auto frame = hit ? dynamic_cast<scottland::frame_t*>(hit->node.get()) : nullptr;
+        auto view = frame ? frame->toplevel() : (hit ?
+            wf::toplevel_cast(wf::node_to_view(hit->node->shared_from_this())) : nullptr);
+        if (!view && !hit)
+        {
+            auto output = core.output_layout->find_closest_output(point);
+            if (output && !output->is_plugin_active("move") &&
+                !output->is_plugin_active("scottland-resize"))
+            {
+                auto local = point - wf::origin(output->get_layout_geometry());
+                auto halo_frame = frame_near(output, local);
+                view = halo_frame ? halo_frame->toplevel() : nullptr;
+            }
+        }
+
+        if (!view || !view->is_mapped() || view->pending_fullscreen() || !frame_of(view, false))
+        {
+            return nullptr;
+        }
+
+        return view;
+    }
+
+    wlr_surface *middle_surface_at(const wf::pointf_t& at)
+    {
+        auto hit = wf::get_core().scene()->find_node_at(at);
+        auto surface_node = hit ? dynamic_cast<wf::scene::wlr_surface_node_t*>(hit->node.get()) : nullptr;
+        return surface_node ? surface_node->get_surface() : nullptr;
     }
 
     bool pointer_focus_is_layer_shell()
@@ -6182,6 +6250,155 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
     };
+
+    // Tablet button events are still forwarded when an input-event plugin sets IGNORE. A scene
+    // grab on the active output first removes the tablet tool's focus, so Wayfire records its
+    // held button without delivering it to a client. The grab stays in place through a drag and
+    // is released before a quick-click release only after the original surface is revalidated.
+    wf::signal::connection_t<wf::input_event_signal<wlr_tablet_tool_button_event>> on_tablet_middle_button =
+        [=] (wf::input_event_signal<wlr_tablet_tool_button_event> *ev)
+    {
+        if (ev->event->button != BTN_MIDDLE)
+        {
+            return; // BTN_STYLUS and every other tablet button retain Wayfire's native delivery.
+        }
+
+        if (ev->event->state == WLR_BUTTON_PRESSED)
+        {
+            if ((ev->mode != wf::input_event_processing_mode_t::FULL) || middle_gesture_active() ||
+                !ev->device || drag->view)
+            {
+                return;
+            }
+
+            auto press = wf::get_core().get_cursor_position();
+            auto view = tablet_middle_press_target(press);
+            if (!view || !(view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE))
+            {
+                return; // no eligible target: let the tablet button follow Wayfire's normal path
+            }
+
+            auto output = view->get_output();
+            auto seat = wf::get_core().get_current_seat();
+            if (!output || !seat)
+            {
+                return;
+            }
+
+            auto recipient = middle_surface_at(press);
+            seat->focus_output(output);
+            if (!drag->begin_input_capture(output))
+            {
+                return;
+            }
+
+            drag->set_input(-1, true, BTN_MIDDLE, true, ev->device);
+            drag->set_pending_drag(press);
+            tablet_middle_pending = true;
+            tablet_middle_origin = press;
+            tablet_middle_view = view->weak_from_this();
+            tablet_middle_device = ev->device;
+            tablet_middle_surface = recipient;
+            tablet_middle_output = output;
+            return;
+        }
+
+        if ((ev->event->state != WLR_BUTTON_RELEASED) || (ev->device != tablet_middle_device) ||
+            (!tablet_middle_pending && !tablet_middle_dragging && !tablet_middle_consumed))
+        {
+            return;
+        }
+
+        auto& core = wf::get_core();
+        tablet_middle_release_point = core.get_cursor_position();
+        tablet_middle_replay_before_release = false;
+        tablet_middle_restore_cursor = false;
+
+        if (tablet_middle_pending)
+        {
+            auto target = wf::toplevel_cast(tablet_middle_view.lock());
+            if (tablet_middle_surface && target && target->is_mapped())
+            {
+                auto release_output = core.output_layout->find_closest_output(tablet_middle_release_point);
+                bool warp_to_press = (middle_surface_at(tablet_middle_release_point) != tablet_middle_surface) ||
+                    (release_output != tablet_middle_output);
+                if (warp_to_press)
+                {
+                    core.warp_cursor(tablet_middle_origin);
+                    tablet_middle_restore_cursor = true;
+                }
+
+                if (middle_surface_at(core.get_cursor_position()) == tablet_middle_surface)
+                {
+                    // Removing the grab refocuses the original tablet surface synchronously.
+                    // wlroots then replays the held press there, before Wayfire forwards release.
+                    drag->cancel_input_capture();
+                    tablet_middle_replay_before_release = true;
+                }
+            }
+        }
+
+        tablet_middle_pending = false;
+        tablet_middle_release_pending = true;
+    };
+
+    wf::signal::connection_t<wf::post_input_event_signal<wlr_tablet_tool_button_event>> on_tablet_middle_button_post =
+        [=] (wf::post_input_event_signal<wlr_tablet_tool_button_event> *ev)
+    {
+        if ((ev->event->button != BTN_MIDDLE) || (ev->event->state != WLR_BUTTON_RELEASED) ||
+            (ev->device != tablet_middle_device) || !tablet_middle_release_pending)
+        {
+            return;
+        }
+
+        if (tablet_middle_dragging)
+        {
+            drag->handle_input_released();
+        } else if (!tablet_middle_replay_before_release)
+        {
+            // The release has already left wlroots' pressed-button set. Unmapping or covering
+            // the original recipient therefore cannot replay the click to another surface.
+            drag->cancel_input_capture();
+        }
+
+        if (tablet_middle_restore_cursor)
+        {
+            wf::get_core().warp_cursor(tablet_middle_release_point);
+        }
+
+        clear_tablet_middle_gesture();
+        drag->set_input();
+    };
+
+    void check_tablet_middle_drag(wlr_input_device *device)
+    {
+        if (!tablet_middle_pending || (device != tablet_middle_device))
+        {
+            return;
+        }
+
+        auto cursor = wf::get_core().get_cursor_position();
+        if (std::hypot(cursor.x - tablet_middle_origin.x, cursor.y - tablet_middle_origin.y) <= 12.0)
+        {
+            return;
+        }
+
+        tablet_middle_pending = false;
+        auto view = wf::toplevel_cast(tablet_middle_view.lock());
+        if (!drag->view && view && view->is_mapped() && (view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE))
+        {
+            drag->set_pending_drag(tablet_middle_origin);
+            drag->start_drag(view); // adopts the pending tablet capture without an ungrab gap
+        }
+
+        tablet_middle_dragging = bool(drag->view) && (drag->view == view);
+        tablet_middle_consumed = !tablet_middle_dragging;
+        if (tablet_middle_dragging)
+        {
+            model.drag.input_override = tablet_middle_origin;
+            note_drag_start();
+        }
+    }
 
     void check_touchpad_middle_resize(wlr_input_device *device)
     {
@@ -6794,6 +7011,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         reply["mouse_middle_pending"] = mouse_middle_pending;
         reply["mouse_middle_dragging"] = mouse_middle_dragging;
         reply["mouse_middle_consumed"] = mouse_middle_consumed;
+        reply["tablet_middle_pending"] = tablet_middle_pending;
+        reply["tablet_middle_dragging"] = tablet_middle_dragging;
+        reply["tablet_middle_consumed"] = tablet_middle_consumed;
         reply["dragging"] = bool(drag->view);
         return reply;
     };
@@ -6849,9 +7069,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         reply["mouse_middle_pending"] = mouse_middle_pending;
         reply["mouse_middle_dragging"] = mouse_middle_dragging;
         reply["mouse_middle_consumed"] = mouse_middle_consumed;
+        reply["tablet_middle_pending"] = tablet_middle_pending;
+        reply["tablet_middle_dragging"] = tablet_middle_dragging;
+        reply["tablet_middle_consumed"] = tablet_middle_consumed;
         reply["hold_armed"] = hold_finger >= 0;
         if (getenv("SCOTTLAND_TEST_MODEL"))
         {
+            auto cursor = wf::get_core().get_cursor_position();
+            reply["cursor_x"] = cursor.x;
+            reply["cursor_y"] = cursor.y;
             auto held = hold_view.lock();
             reply["hold_window"] = held ? held->get_id() : 0;
             auto anchor = drag->view ? drag->view : wf::toplevel_cast(wf::get_core().seat->get_active_view());
@@ -6888,6 +7114,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
         check_touchpad_middle_resize(ev->device);
 
+        track_pointer();
+        update_note_visuals();
+    };
+    wf::signal::connection_t<wf::post_input_event_signal<wlr_tablet_tool_axis_event>> on_tablet_axis =
+        [=] (wf::post_input_event_signal<wlr_tablet_tool_axis_event> *ev)
+    {
+        check_tablet_middle_drag(ev->device);
+        if (tablet_middle_dragging && (ev->device == tablet_middle_device))
+        {
+            drag->handle_motion(wf::get_core().get_cursor_position());
+        }
         track_pointer();
         update_note_visuals();
     };
@@ -6935,6 +7172,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (ev->device && (ev->device->get_wlr_handle() == middle_device))
             clear_touchpad_middle_gesture();
+
+        if (ev->device && (ev->device->get_wlr_handle() == tablet_middle_device))
+        {
+            bool was_dragging = tablet_middle_dragging;
+            clear_tablet_middle_gesture();
+            if (was_dragging) drag->handle_input_released();
+            else drag->cancel_input_capture();
+            drag->set_input();
+        }
     };
 
     wf::option_wrapper_t<wf::buttonbinding_t> move_button{"scottland/move"};
@@ -8301,7 +8547,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             model.drag.cancelled = true;
             ev->mode = wf::input_event_processing_mode_t::IGNORE;  // the app under it doesn't get it
-            drag->handle_input_released();
+            drag->handle_input_released(true, !(tablet_middle_dragging || mouse_middle_dragging));
         }
     };
 
@@ -9636,6 +9882,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_hold_end);
         wf::get_core().connect(&on_press_focus);
         wf::get_core().connect(&on_middle_button);
+        wf::get_core().connect(&on_tablet_middle_button);
+        wf::get_core().connect(&on_tablet_middle_button_post);
         wf::get_core().connect(&on_middle_device_removed);
         wf::get_core().connect(&on_touch_down_capture);
         wf::get_core().connect(&on_touch_motion_capture);
@@ -9700,6 +9948,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         installing_model = false;
         announce_widgets();  // a widget service that outlived a reload catches up
         wf::get_core().connect(&on_motion_abs);
+        wf::get_core().connect(&on_tablet_axis);
         wf::get_core().connect(&on_button);
         wf::get_core().bindings->add_button(move_button, &on_move);
         wf::get_core().bindings->add_button(move_shift_button, &on_move_shift);
@@ -9832,6 +10081,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         test_touchpad.reset();
         ipc_repo->unregister_method("scottland/test-touchpad");
         on_middle_button.disconnect();
+        on_tablet_middle_button.disconnect();
+        on_tablet_middle_button_post.disconnect();
         on_middle_device_removed.disconnect();
         on_touch_down.disconnect();
         on_touch_down_capture.disconnect();
@@ -9944,6 +10195,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         end_due_processes(true);
         ending_timer.disconnect();
         on_motion_abs.disconnect();
+        on_tablet_axis.disconnect();
         on_button.disconnect();
         on_drag_output.disconnect();
         on_drag_motion.disconnect();
