@@ -220,20 +220,22 @@ static void tool_type(void *data, struct zwp_tablet_tool_v2 *tool, uint32_t type
     (void)type;
 }
 
-static void tool_hardware_serial(void *data, struct zwp_tablet_tool_v2 *tool, uint64_t serial)
+static void tool_hardware_serial(void *data, struct zwp_tablet_tool_v2 *tool,
+    uint32_t serial_hi, uint32_t serial_lo)
 {
     (void)data;
     (void)tool;
-    (void)serial;
+    (void)serial_hi;
+    (void)serial_lo;
 }
 
 static void tool_hardware_id_wacom(void *data, struct zwp_tablet_tool_v2 *tool,
-    uint64_t id, uint64_t serial)
+    uint32_t id, uint32_t pid)
 {
     (void)data;
     (void)tool;
     (void)id;
-    (void)serial;
+    (void)pid;
 }
 
 static void tool_capability(void *data, struct zwp_tablet_tool_v2 *tool, uint32_t capability)
@@ -256,10 +258,11 @@ static void tool_removed(void *data, struct zwp_tablet_tool_v2 *tool)
 }
 
 static void tool_proximity_in(void *data, struct zwp_tablet_tool_v2 *tool,
-    struct zwp_tablet_v2 *tablet, struct wl_surface *focused_surface)
+    uint32_t serial, struct zwp_tablet_v2 *tablet, struct wl_surface *focused_surface)
 {
     (void)data;
     (void)tool;
+    (void)serial;
     (void)tablet;
     (void)focused_surface;
     record_event("proximity_in", 0, 0);
@@ -340,12 +343,11 @@ static void tool_wheel(void *data, struct zwp_tablet_tool_v2 *tool,
 }
 
 static void tool_button(void *data, struct zwp_tablet_tool_v2 *tool,
-    uint32_t serial, uint32_t time, uint32_t button, uint32_t state)
+    uint32_t serial, uint32_t button, uint32_t state)
 {
     (void)data;
     (void)tool;
     (void)serial;
-    (void)time;
     record_event("button", button, state);
 }
 
