@@ -15,7 +15,7 @@ else
   (($# == 0)) || fail 'launcher does not accept arguments'
   command -v timeout >/dev/null 2>&1 || fail 'GNU timeout is unavailable'
   printf 'SCOTTLAND_LAUNCHER_BUDGET_SECONDS=6600 (pool limit: 7200)\n'
-  exec timeout --foreground --signal=USR1 --kill-after=300s 6600s "$0" --bounded-run
+  exec timeout --foreground --signal=USR1 --kill-after=300s 6600s "$BASH" "$0" --bounded-run
 fi
 
 [[ ${POOL_RUN_ID:-} =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || fail 'missing or invalid pool run id'
