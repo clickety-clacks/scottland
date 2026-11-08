@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Acceptance checks for touchpad click-drag resize and mouse middle-button behavior."""
+"""Acceptance checks for touchpad and pointer middle-button behavior."""
 import json
 import os
 from pathlib import Path
@@ -447,19 +447,19 @@ try:
     check([(event["edge"], event["button"]) for event in events("A")] ==
           [("press", 2), ("release", 2)], "touchpad: a quick click reaches A once, in order")
 
-    # Turning off touchpad gestures restores direct clickfinger passthrough, including middle click.
+    # The touchpad setting controls three-finger gestures, not BTN_MIDDLE click replay.
     setup()
     clear_events()
     ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": False})
     a = geometry("A")
     pointer(a["x"] + a["width"] / 2, a["y"] + a["height"] / 2)
     pad_button(True)
-    wait(lambda: len(events("A")) == 1, what="disabled touchpad middle press passthrough")
-    check(not state()["middle_pending"], "touchpad setting off: middle press is not withheld")
+    wait(lambda: state()["middle_pending"], what="touchpad setting off: middle click pending")
+    check(not all_events(), "touchpad setting off: quick middle press stays withheld")
     pad_button(False)
-    wait(lambda: len(events("A")) == 2, what="disabled touchpad middle release passthrough")
+    wait(lambda: len(events("A")) == 2, what="touchpad setting off: quick middle replay")
     check([(event["edge"], event["button"]) for event in events("A")] ==
-          [("press", 2), ("release", 2)], "touchpad setting off: middle click reaches the app directly")
+          [("press", 2), ("release", 2)], "touchpad setting off: quick middle click is replayed once")
     ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": True})
 
     # R3(c): if the original client unmaps during the withheld press, nobody gets the click.
@@ -516,36 +516,34 @@ try:
     check(not is_fixture_pixel(pixel(after_shot, *old_sample)),
           source + ": the old position no longer shows the moved client")
 
-    # R1: clickfinger middle drag resizes around center while touchpad gestures are enabled.
-    # The first motion crosses the resize threshold; later motions resize.
+    # R7: clickfinger BTN_MIDDLE drags the window without resizing it, even when the
+    # three-finger gesture setting is off.
     setup()
     clear_events()
-    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": True})
+    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": False})
     before = geometry("A")
     x, y = before["x"] + before["width"] / 2, before["y"] + before["height"] / 2
     pointer(x, y)
     pad_button(True)
-    wait(lambda: state()["middle_pending"], what="touchpad resize pending")
+    wait(lambda: state()["middle_pending"], what="touchpad middle drag pending")
     for step in range(1, 11):
         pad_motion(x + 20 * step, y)
         if step == 1:
-            wait(lambda: state()["middle_resizing"], what="touchpad center resize start")
+            wait(lambda: state()["middle_dragging"], what="touchpad live middle drag")
         time.sleep(.02)
-    check(not all_events(), "touchpad click-drag: withheld middle button is not delivered")
+    check(not all_events(), "touchpad middle drag: no client event is delivered")
+    time.sleep(.25)  # Stop at the final position so release-coast does not change the oracle.
     pad_button(False)
-    wait(lambda: not state()["middle_resizing"], what="touchpad resize end")
+    wait(lambda: not state()["dragging"], what="touchpad middle drag end")
     settle("A", "B")
     after = geometry("A")
-    before_center = (before["x"] + before["width"] / 2, before["y"] + before["height"] / 2)
-    after_center = (after["x"] + after["width"] / 2, after["y"] + after["height"] / 2)
-    check(after["width"] >= before["width"] + 80 and after["height"] == before["height"],
-          "touchpad click-drag: motion resizes A horizontally",
+    movement_deltas["touchpad"] = after["x"] - before["x"]
+    check(after["x"] >= before["x"] + 150 and
+          (after["width"], after["height"]) == (before["width"], before["height"]),
+          "touchpad R7: 200 px middle drag moves A and preserves its size",
           f"{before} -> {after}")
-    check(abs(after_center[0] - before_center[0]) <= 3 and
-          abs(after_center[1] - before_center[1]) <= 3,
-          "touchpad click-drag: resize keeps A centered",
-          f"{before_center} -> {after_center}")
-    check(not all_events(), "touchpad click-drag: release does not reach A")
+    check(not all_events(), "touchpad R7: no middle event reaches A")
+    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": True})
 
     # L23: an unclicked three-finger swipe still moves the window and preserves its size.
     setup()
@@ -735,6 +733,124 @@ try:
           "R5 pointer (d): Esc leaves layout unchanged")
     check(not events("A") and not events("B"),
           "R5 pointer (d): Esc and owner release send no client middle event")
+
+    # R5: the virtual touchpad's held BTN_MIDDLE uses the same WK39 offer and commit path.
+    setup()
+    focus("A")
+    clear_events()
+    before = geometry_pair()
+    a = geometry("A")
+    x, y = a["x"] + a["width"] / 2, a["y"] + a["height"] / 2
+    pointer(x, y)
+    pad_button(True)
+    wait(lambda: state()["middle_pending"], what="R5 focused touchpad middle pending")
+    check(not events("A"), "R5 touchpad: held middle press stays out of the client")
+    wait(lambda: hold_offer().get("active") and state()["middle_dragging"],
+         timeout=5, what="R5 focused touchpad solo offer")
+    check(hold_offer().get("solo") is True, "R5 touchpad (a): focused target offers a solo")
+    check(geometry_pair_matches(before, geometry_pair()),
+          "R5 touchpad: solo offer leaves true geometry unchanged while held")
+    pad_button(False)
+    wait(lambda: not state()["dragging"], what="R5 focused touchpad offer release")
+    settle("A", "B")
+    touchpad_solo = geometry_pair()
+    check(geometry_pair_matches(pointer_solo, touchpad_solo, 2),
+          "R5 touchpad (a): focused result matches the WK39 Super+press oracle")
+    check(not events("A") and not events("B"),
+          "R5 touchpad (a): the held middle press and release never reach either client")
+
+    setup()
+    focus("A")
+    clear_events()
+    before = geometry_pair()
+    b = geometry("B")
+    x, y = b["x"] + b["width"] / 2, b["y"] + b["height"] / 2
+    pointer(x, y)
+    pad_button(True)
+    wait(lambda: state()["middle_pending"], what="R5 unfocused touchpad middle pending")
+    wait(lambda: hold_offer().get("active") and state()["middle_dragging"],
+         timeout=5, what="R5 unfocused touchpad pair offer")
+    check(hold_offer().get("solo") is False, "R5 touchpad (b): unfocused target offers a pair")
+    check(geometry_pair_matches(before, geometry_pair()),
+          "R5 touchpad (b): pair offer leaves true geometry unchanged while held")
+    pad_button(False)
+    wait(lambda: not state()["dragging"], what="R5 unfocused touchpad offer release")
+    settle("A", "B")
+    touchpad_pair = geometry_pair()
+    check(geometry_pair_matches(pointer_pair, touchpad_pair, 2),
+          "R5 touchpad (b): paired result matches the WK39 Super+press oracle")
+    check(not events("A") and not events("B"),
+          "R5 touchpad (b): held middle press and release never reach either client")
+
+    # Moving past the offer hotspot refuses the pair and continues the same live drag.
+    setup()
+    focus("A")
+    clear_events()
+    a_before, b_before = geometry("A"), geometry("B")
+    x, y = b_before["x"] + b_before["width"] / 2, b_before["y"] + b_before["height"] / 2
+    pointer(x, y)
+    pad_button(True)
+    wait(lambda: hold_offer().get("active"), timeout=5, what="R5 touchpad drag offer")
+    for step in range(1, 6):
+        pad_motion(x + 20 * step, y)
+        if step == 2:
+            wait(lambda: not hold_offer().get("active") and state()["dragging"],
+                 what="R5 touchpad offer refusal resumes live drag")
+        time.sleep(.03)
+    time.sleep(.25)
+    pad_button(False)
+    wait(lambda: not state()["dragging"], what="R5 touchpad continued drag release")
+    settle("A", "B")
+    a_after, b_after = geometry("A"), geometry("B")
+    check(all(abs(a_before[k] - a_after[k]) <= 1 for k in ("x", "y", "width", "height")),
+          "R5 touchpad (c): refusing the offer does not commit the pair")
+    check(b_after["x"] >= b_before["x"] + 40 and
+          (b_after["width"], b_after["height"]) == (b_before["width"], b_before["height"]),
+          "R5 touchpad (c): movement after the offer continues the middle drag",
+          f"{b_before} -> {b_after}")
+    check(not events("A") and not events("B"),
+          "R5 touchpad (c): continued drag sends no client middle event")
+
+    # Esc cancels a touchpad middle offer; its owner's eventual release stays consumed.
+    setup()
+    clear_events()
+    before = geometry_pair()
+    a = geometry("A")
+    x, y = a["x"] + a["width"] / 2, a["y"] + a["height"] / 2
+    pointer(x, y)
+    pad_button(True)
+    wait(lambda: hold_offer().get("active"), timeout=5, what="R5 touchpad Esc offer")
+    key("ESC", True)
+    key("ESC", False)
+    wait(lambda: not state()["dragging"], what="R5 touchpad Esc cancels the offer")
+    pad_button(False)
+    settle("A", "B")
+    check(geometry_pair_matches(before, geometry_pair()),
+          "R5 touchpad (d): Esc leaves layout unchanged")
+    check(not events("A") and not events("B"),
+          "R5 touchpad (d): Esc and owner release send no client middle event")
+
+    # A separate virtual mouse click cannot take over a touchpad-owned offer.
+    setup()
+    focus("A")
+    clear_events()
+    a, b = geometry("A"), geometry("B")
+    ax, ay = a["x"] + a["width"] / 2, a["y"] + a["height"] / 2
+    bx, by = b["x"] + b["width"] / 2, b["y"] + b["height"] / 2
+    pointer(bx, by)
+    pad_button(True)
+    wait(lambda: hold_offer().get("active"), timeout=5, what="R5 touchpad cross-device offer")
+    pointer(ax, ay)
+    button("BTN_MIDDLE", True)
+    button("BTN_MIDDLE", False)
+    check(hold_offer().get("active") and state()["middle_dragging"],
+          "R5 touchpad (e): mouse click and release leave the offer open")
+    pad_button(False)
+    wait(lambda: not state()["dragging"], what="R5 touchpad owner releases after mouse click")
+    settle("A", "B")
+    check(geometry_pair_matches(pointer_pair, geometry_pair(), 2),
+          "R5 touchpad (e): only the touchpad owner release commits the pair")
+    check(not events("B"), "R5 touchpad (e): held middle event never reaches B")
 
     # R2: fullscreen surfaces are not target windows; presses arrive immediately.
     setup()
