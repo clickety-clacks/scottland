@@ -24,9 +24,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT = ROOT / "build/osd-foundation-smoke/report.json"
 DEFAULT_SHOWN_ACK_REPORT = ROOT / "build/osd-shown-ack-evidence/report.json"
 PACKAGES = ("wayfire", "wlroots0.20", "quickshell", "meson")
-SHOWN_ACK_BASE_COMMIT = "48299defac7d71806324cafc4e7696466dcdb19a"
-SHOWN_ACK_PRODUCT_COMMIT = "bbd89461b18f97ee0387f6433f0e14bebbf12016"
-SHOWN_ACK_PRODUCT_TREE = "e71eb27bbe8c65aee3ac62b68d79e0af0fae4dea"
+SHOWN_ACK_BASE_COMMIT = "a55731e5cc468656ec7c60842c7cc2188729a168"
+SHOWN_ACK_PRODUCT_COMMIT = "0cd79898a026d7ad7ebfbbfff599d06782b77103"
+SHOWN_ACK_PRODUCT_TREE = "42a73be24c0573a99dbb3a9a953499e9ba7546fe"
 SHOWN_ACK_LABEL = "osd-shown-ack-reviewed"
 SHOWN_ACK_HARNESS_PATHS = {
     ".github/workflows/fast-checks.yml",
