@@ -722,10 +722,9 @@
                 return wf::ipc::json_error("provenance token is not pending");
             auto reject_stage = [=] (const std::string& error)
             {
-                discard_pending_provenance(token);
                 return wf::ipc::json_error(error);
             };
-            if (data.size() != 4)
+            if (data.get_member_names().size() != 4)
                 return reject_stage("notes stage accepts only token, writer and text");
             if (!data.has_member("writer") || !data["writer"].is_string() ||
                 !scottland::window_notes::valid_writer(data["writer"].as_string()))
