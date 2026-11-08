@@ -41,10 +41,9 @@ matching core version. The associated `gooarchy-flavorings` package is 0.2.2-1.
 
 1. Follow Gooarchy's canonical instructions for enrolling its signed
    repository and verifying its signing-key fingerprint in the
-   [Gooarchy README](https://github.com/clickety-clacks/gooarchy/blob/main/README.md).
+   [Gooarchy README](https://github.com/clickety-clacks/gooarchy/blob/main/README.md#enroll-and-trust-gooarchy-on-stock-omarchy).
    Gooarchy maintains the repository URL and key trust procedure; use its
    instructions rather than duplicating them here.
-   <!-- Confirm the Gooarchy README has its enrollment, trust, and Flavorings sections before landing this link. -->
 2. Install the matched Scottland packages and Gooarchy Flavorings together in
    one full system upgrade transaction. This single command synchronizes the
    package databases, upgrades the system, and installs all three targets;
