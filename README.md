@@ -50,7 +50,7 @@ matching core version. The associated `gooarchy-flavorings` package is 0.2.2-1.
    transaction before accepting it:
 
    ```sh
-   sudo pacman -Syu scottland scottland-omarchy gooarchy-flavorings=0.2.2-1
+   sudo pacman -Syu scottland scottland-omarchy gooarchy-flavorings
    ```
 
    Do not add `agentd` or `agentd-attention` to the command; pacman resolves
@@ -62,8 +62,8 @@ matching core version. The associated `gooarchy-flavorings` package is 0.2.2-1.
    pacman -Q scottland scottland-omarchy gooarchy-flavorings
    ```
 
-For a later Gooarchy release, use the same transaction shape with the matching
-package versions published for that release.
+For later Gooarchy releases, repeat the same package-name transaction to
+select the current packages from the enabled repositories.
 
 A package upgrade does not replace code already loaded by a running Wayfire
 session. Enter a new Scottland session to use the new package, or use
@@ -75,8 +75,8 @@ installed package. Keep your user config files when upgrading.
 
 After installing or upgrading `scottland-omarchy`, rerun
 `scottland-omarchy-setup` so the per-user menu, themes, shortcut report and
-screen-sharing setup match the installed adapter. Read its output and review
-any package transaction it proposes.
+screen-sharing setup match the installed adapter. Read its output for the
+result of the portal build and replacement described under Running it.
 
 On a non-Omarchy Arch desktop, install only the `scottland` package from the
 [Scottland 0.3.7 release](https://github.com/clickety-clacks/scottland/releases/tag/v0.3.7).
