@@ -91,7 +91,7 @@ Item {
     }
 
     function beginPanel(request, outputName) {
-        trace("begin-panel", {output: outputName, screens: Quickshell.screens.map(screen => screen.name)})
+        trace("begin-panel", {output: outputName, screenCount: Quickshell.screens.length})
         let screen = null
         for (let index = 0; index < Quickshell.screens.length; index++) {
             const candidate = Quickshell.screens[index]
