@@ -37,32 +37,33 @@ Rule: nothing under `core/` knows Omarchy exists. Omarchy integration lives only
 The [Latest signed Gooarchy repository release](https://github.com/clickety-clacks/gooarchy/releases/latest)
 includes the matched packages
 `scottland` 0.3.7-1 and `scottland-omarchy` 0.3.7-1. The adapter requires the
-matching core version. Before installing, follow Gooarchy's canonical
-instructions for enrolling its package repository and trusting its signing key.
-<!-- Link Gooarchy's enrollment, trust, and Flavorings instructions here when published. -->
-The pinned Gooarchy source publishes the repository signing key at
-[`packaging/keys/gooarchy.asc`](https://github.com/clickety-clacks/gooarchy/blob/85d94e7d426fe96b169a217805511080f6ad7b4b/packaging/keys/gooarchy.asc)
-with fingerprint `F56B5368815D6C607C41265A69FCC98C28CD08EC`. Verify that
-fingerprint against Gooarchy's trusted source and follow its key-import steps.
-Gooarchy maintains the repository URL, key enrollment and trust procedure.
+matching core version. The associated `gooarchy-flavorings` package is 0.2.2-1.
 
-After the repository is enrolled and pacman has refreshed its package database,
-inspect the transaction and install the matched Scottland packages:
+1. Follow Gooarchy's canonical instructions for enrolling its signed
+   repository and verifying its signing-key fingerprint in the
+   [Gooarchy README](https://github.com/clickety-clacks/gooarchy/blob/main/README.md).
+   Gooarchy maintains the repository URL and key trust procedure; use its
+   instructions rather than duplicating them here.
+   <!-- Confirm the Gooarchy README has its enrollment, trust, and Flavorings sections before landing this link. -->
+2. Install the matched Scottland packages and Gooarchy Flavorings together in
+   one full system upgrade transaction. Inspect the complete proposed
+   transaction before accepting it:
 
-```sh
-sudo pacman -S scottland scottland-omarchy
-pacman -Q scottland scottland-omarchy
-```
+   ```sh
+   sudo pacman -Syu scottland=0.3.7-1 scottland-omarchy=0.3.7-1 gooarchy-flavorings=0.2.2-1
+   ```
 
-Review pacman's proposed transaction before confirming it. Do not install
-individual dependencies ahead of time; let pacman resolve them from the
-enabled repositories. Do not mix the core and adapter from different releases.
-For upgrades, use your normal full-system update so Scottland and its Wayfire
-dependencies stay in sync:
+   Do not add `agentd` or `agentd-attention` to the command; pacman resolves
+   them from Gooarchy Flavorings' declared dependencies. Do not install
+   individual dependencies ahead of time.
+3. Verify the installed package versions:
 
-```sh
-sudo pacman -Syu
-```
+   ```sh
+   pacman -Q scottland scottland-omarchy gooarchy-flavorings
+   ```
+
+For a later Gooarchy release, use the same transaction shape with the matching
+package versions published for that release.
 
 A package upgrade does not replace code already loaded by a running Wayfire
 session. Enter a new Scottland session to use the new package, or use
@@ -108,16 +109,16 @@ your agent's skills directory before using it; for Codex that directory is
 
 ## Running it
 
-On Omarchy, run `scottland-omarchy-setup` once after installing the matched
-packages. Then choose **Omarchy menu > System > Switch Desktop** and select
-Scottland. The dialog warns that switching closes the current desktop and all
-its windows, so save your work first. The selected desktop becomes the next
-login session. Setup also builds Gooarchy's `xdg-desktop-portal-wlr` from
-[its fork](https://github.com/clickety-clacks/xdg-desktop-portal-wlr) and
-installs it in place of Arch's. The setup runs `makepkg` with dependency
-synchronization and performs the package replacement automatically through
-pacman; it reports the change. Do not install its build dependencies separately
-in advance.
+On Omarchy, after installing the packages, run `scottland-omarchy-setup` once.
+Setup builds Gooarchy's `xdg-desktop-portal-wlr` from
+[its fork](https://github.com/clickety-clacks/xdg-desktop-portal-wlr) with
+`makepkg`, then replaces Arch's portal package through pacman. This is a
+separate setup step after the repository package transaction; it may synchronize
+build dependencies itself. Do not preinstall them separately.
+
+Then choose **Omarchy menu > System > Switch Desktop** and select Scottland.
+The dialog warns that switching closes the current desktop and all its windows,
+so save your work first. The selected desktop becomes the next login session.
 
 The adapter opens a plain-text report when it changes or cannot import shortcuts. By default it
 stays at `~/.local/state/scottland/omarchy-overrides.txt` (under `$XDG_STATE_HOME` when set); see
