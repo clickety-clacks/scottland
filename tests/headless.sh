@@ -21,7 +21,8 @@
 #   tests/headless.sh stop [--preserve-scratch]
 #
 # Requires bubblewrap to put a run-owned runtime view at XDG_RUNTIME_DIR without changing its
-# value. All runtime files and TMPDIR then live under the validated checkout build scratch.
+# value. All runtime files and TMPDIR then live under the validated checkout build scratch; inside
+# the private namespace, expose the scratch tmp directory as /tmp to keep client socket paths short.
 # Put SCOTTLAND_HEADLESS_DIR under the checkout's build/ directory.
 # Helpers come from this checkout (make test-hooks) if built, else the dev install. Set
 # SCOTTLAND_HEADLESS_DIR to run test sessions of several checkouts at once.
@@ -40,6 +41,7 @@ build=$(realpath -m -- "$repo/build")
 dir=$(realpath -m -- "${SCOTTLAND_HEADLESS_DIR:-$build/headless}")
 runtime_scratch=$dir/runtime
 tmp_scratch=$dir/tmp
+tmp_view=/tmp
 owner=$dir/.scottland-headless-owner
 session_mode_record=$dir/.scottland-headless-mode
 start_failure_file=$dir/.headless-start-failure.txt
@@ -362,8 +364,8 @@ if ((inside == 0)); then
   if ((${#session_userns_args[@]})); then
     bwrap_args+=("${session_userns_args[@]}")
   fi
-  bwrap_args+=(--bind "$runtime_scratch" "$runtime" --bind "$tmp_scratch" /tmp
-    --setenv XDG_RUNTIME_DIR "$runtime" --setenv TMPDIR "$tmp_scratch")
+  bwrap_args+=(--bind "$runtime_scratch" "$runtime" --bind "$tmp_scratch" "$tmp_view"
+    --setenv XDG_RUNTIME_DIR "$runtime" --setenv TMPDIR "$tmp_view")
   start_stderr_forwarded=0
   start_diagnostics_ready=0
   start_stderr_fd=
@@ -500,7 +502,7 @@ if ((inside == 0)); then
   exit "$status"
 fi
 verify_owner || exit 2
-export XDG_RUNTIME_DIR=$runtime TMPDIR=$tmp_scratch SCOTTLAND_HEADLESS_DIR=$dir
+export XDG_RUNTIME_DIR=$runtime TMPDIR=$tmp_view SCOTTLAND_HEADLESS_DIR=$dir
 startup_diagnostics=0
 start_diagnostics_dir=${SCOTTLAND_HEADLESS_DIAGNOSTICS_DIR:-}
 if [[ -n $start_diagnostics_dir ]]; then
@@ -565,7 +567,7 @@ exec_tool=$hooks/libexec/scottland-exec
 
 display() { cat "$dir/display"; }
 session_process_is_ours() {
-  python3 - "$1" "$dir" "$runtime" "$tmp_scratch" "$2" <<'PY'
+  python3 - "$1" "$dir" "$runtime" "$tmp_view" "$2" <<'PY'
 import pathlib, sys
 pid, scratch, runtime, tmpdir, display = sys.argv[1:]
 try:
@@ -584,7 +586,7 @@ sys.exit(not all(env.get(key) == value for key, value in expected.items()))
 PY
 }
 session_process_group_state() {
-  python3 - "$1" "$dir" "$runtime" "$tmp_scratch" "$2" <<'PY'
+  python3 - "$1" "$dir" "$runtime" "$tmp_view" "$2" <<'PY'
 import pathlib, sys
 group, scratch, runtime, tmpdir, display = sys.argv[1:]
 expected = {
@@ -747,7 +749,7 @@ session_shim_process_state() {
   # Return 0 for this run's live shim, 1 when the PID has exited, and 2 when
   # identity cannot be proved. The lock lives in this run's private runtime,
   # but its PID may still be stale or reused.
-  python3 - "$1" "$dir" "$runtime" "$tmp_scratch" "$2" "$3" \
+  python3 - "$1" "$dir" "$runtime" "$tmp_view" "$2" "$3" \
     "${SCOTTLAND_HEADLESS_OWNER:-}" "$4" <<'PY'
 import pathlib, sys
 
