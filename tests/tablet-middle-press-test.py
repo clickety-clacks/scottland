@@ -326,8 +326,26 @@ try:
     place("Tablet-Middle-B", round(a_frame["x"] + a_frame["width"] - 17),
           b_before["y"], 360, 260)
     settle("Tablet-Middle-A", "Tablet-Middle-B")
+
+    # The tablet axis must dwell near B until its halo is swollen. Compute the
+    # 8 px endpoints only after that state is stable, so they cannot shift into
+    # B's frame band partway through the case.
+    b_frame = frame_state("Tablet-Middle-B")
+    hover = (round(b_frame["x"] - b_frame["thickness"] - 6),
+             round(b_frame["y"] + b_frame["height"] / 2))
+    if tool_in_range:
+        tablet_proximity(0, 0, False)
+    tablet_proximity(hover[0], hover[1], True)
+    tablet_axis(*hover)
+    wait(lambda: frame_state("Tablet-Middle-B")["swell"] >= .99,
+         what="tablet dwell swells B's halo before R3(b) geometry")
+    settle("Tablet-Middle-A", "Tablet-Middle-B")
+
     a_frame = frame_state("Tablet-Middle-A")
     b_frame = frame_state("Tablet-Middle-B")
+    check(b_frame["swell"] >= .99,
+          "fixture: B halo is swollen before computing tablet R3(b) endpoints",
+          f"B={frame_diagnostic('Tablet-Middle-B')}; hover={hover}")
     b = geometry("Tablet-Middle-B")
     b_halo_left = b_frame["x"] - b_frame["thickness"]
     press = (round(b_halo_left - 6), round(a_frame["y"] + a_frame["height"] / 2))
