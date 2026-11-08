@@ -322,8 +322,8 @@ jobs:
       - name: Run reviewed OSD shown-ACK check
         if: ${{ always() && github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'osd-shown-ack-reviewed' && github.event.pull_request.base.ref == '0.4' && !cancelled() }}
         env:
-          SCOTTLAND_PRODUCT_SOURCE: 0cd79898a026d7ad7ebfbbfff599d06782b77103
-          SCOTTLAND_PRODUCT_TREE: 42a73be24c0573a99dbb3a9a953499e9ba7546fe
+          SCOTTLAND_PRODUCT_SOURCE: c5d138ef131579c59d8a3eeced2bb93c6e0f2fbd
+          SCOTTLAND_PRODUCT_TREE: 74c8b434eb45c0f15d801fca470734b8697d5fae
           SCOTTLAND_REVIEWED_HEAD: ${{ github.event.pull_request.head.sha }}
           SCOTTLAND_PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           SCOTTLAND_EVENT_ACTION: ${{ github.event.action }}
