@@ -293,8 +293,8 @@ try:
     overlap_y = y + height * .55
     visible_b_x = bx + width * .82
     visible_b_y = y + height * .55
-    desktop = Shot('desktop-before-clients')
-    desktop_b = desktop.pixel(visible_b_x, visible_b_y)
+    desktop_x = ox + ow * .05
+    desktop_y = oy + oh * .05
 
     options(sounds=False, alt_hold_delay=300, window_hold_delay=500, window_double_tap_delay=300,
             center_opacity_focused=1.0, center_opacity_unfocused=1.0,
@@ -308,6 +308,9 @@ try:
     focus_pointer(b, .82)
     wait_opacity(b, 1.0, 'focused window starts opaque')
     foreground = Shot('foreground-opaque')
+    # The empty headless output is black before clients map. Sample the uncovered
+    # desktop after setup so pixel checks use the same settled desktop as the windows.
+    desktop_b = foreground.pixel(desktop_x, desktop_y)
     fg_visible_b = foreground.pixel(visible_b_x, visible_b_y)
     check('solid foreground fixture is distinguishable from desktop', distance(fg_visible_b, desktop_b) > 40)
 

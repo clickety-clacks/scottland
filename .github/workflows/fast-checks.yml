@@ -208,7 +208,7 @@ jobs:
               . /etc/os-release
               printf "%s %s\n" "$NAME" "$VERSION_ID"
               python3 tests/osd-foundation-smoke.py --record-versions
-              pacman -Q wayfire wlroots0.20 meson gcc rust python bubblewrap quickshell
+              pacman -Q wayfire wlroots0.20 meson gcc rust python bubblewrap quickshell gtk4-layer-shell imagemagick
               printf "C++ compiler: "
               g++ --version | sed -n "1p"
               rustc --version

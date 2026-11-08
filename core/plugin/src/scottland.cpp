@@ -5690,7 +5690,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     // Touchpad window gestures (L23, L24). A three-finger swipe moves the window under the pointer
     // through the same live drag as Super+drag. A clickfinger middle press resizes around center;
-    // an ordinary mouse middle press moves. touchpad_gestures only controls swipe and hold.
+    // an ordinary mouse middle press moves. touchpad_gestures controls touchpad swipe, hold, and
+    // clickfinger resize.
     wf::option_wrapper_t<bool> touchpad_gestures{"scottland/touchpad_gestures"};
     bool swipe_moving = false;
     bool middle_pending  = false;  // touchpad clickfinger press awaiting a resize or click

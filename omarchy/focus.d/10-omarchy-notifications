@@ -6,13 +6,15 @@ command -v omarchy-shell >/dev/null || exit 0
 mark="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/focus-dnd"
 case ${1:-} in
   on)
-    [ "$(omarchy-shell notifications dndState 2>/dev/null)" = off ] || exit 0
+    dnd_state=$(omarchy-shell notifications isDnd 2>/dev/null) || exit 0
+    [ "$dnd_state" = off ] || exit 0
     omarchy-shell notifications setDnd on >/dev/null && mkdir -p "$(dirname "$mark")" && touch "$mark"
     ;;
   off)
     [ -e "$mark" ] || exit 0
-    rm -f "$mark"
-    omarchy-shell notifications setDnd off >/dev/null
+    if omarchy-shell notifications setDnd off >/dev/null; then
+      rm -f "$mark"
+    fi
     ;;
 esac
 omarchy-shell -q omarchy.indicators refresh >/dev/null 2>&1 || true
