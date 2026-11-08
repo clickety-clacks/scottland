@@ -92,7 +92,7 @@ reset
 check "O35 an operation the contract does not name is not this hook's" "$(run dnd-get)" "exit 69"
 check "O35 ...and asks the shell nothing" "$([ -e "$t/calls" ] && echo asked || echo none)" none
 check "O35 with no omarchy-shell every operation is not this hook's" \
-  "$(PATH="$t/nobin:/usr/bin:/bin" "$hook" dismiss Omarchy >/dev/null 2>&1; echo $?)" 69
+  "$(PATH="$t/nobin" "$hook" dismiss Omarchy >/dev/null 2>&1; echo $?)" 69
 
 [ "$fails" -eq 0 ] && echo "all notify-hook checks passed"
 exit "$fails"
