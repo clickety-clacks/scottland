@@ -4,11 +4,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::notification::{Notification, NotificationSender, Urgency};
+use crate::hooks::{self, HookAnswer, Hooks};
+use crate::notification::{Notification, NotificationSender, Urgency, send_own_notice};
 
 const PREFIX: &str = "scottland-notify-reminder-";
 const REMINDER_USAGE: &str =
-    "usage: scottland-notify reminder <minutes> [message] | show [--json] | clear";
+    "usage: scottland-notify reminder -i | <minutes> [message] | show [--json] | clear";
+/// The glyph every reminder notice asks for.
+pub const REMINDER_GLYPH: &str = "\u{f088c}";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReminderCommand {
@@ -24,6 +27,8 @@ pub enum ReminderCommand {
     Fire {
         unit: String,
     },
+    /// Open the receiver's own reminder panel.
+    Interactive,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -288,9 +293,7 @@ pub fn parse_reminder_args(args: &[String]) -> Result<ReminderCommand, String> {
             }
             _ => Err("internal reminder invocation requires one valid unit".to_string()),
         },
-        Some("-i" | "--interactive") => {
-            Err("interactive reminders require an approved receiver contract".to_string())
-        }
+        Some("-i" | "--interactive") => Ok(ReminderCommand::Interactive),
         Some("show" | "list") => match args {
             [_] => Ok(ReminderCommand::Show { json: false }),
             [_, flag] if flag == "--json" || flag == "-j" => {
@@ -327,6 +330,7 @@ pub fn parse_reminder_args(args: &[String]) -> Result<ReminderCommand, String> {
 pub fn execute_reminder(
     command: &ReminderCommand,
     backend: &mut impl ReminderBackend,
+    hooks: &mut impl Hooks,
     sender: &mut impl NotificationSender,
     formatter: &mut impl LocalTimeFormatter,
 ) -> Result<ReminderOutput, String> {
@@ -344,7 +348,12 @@ pub fn execute_reminder(
                 format!("Reminder set for {minutes} minutes")
             };
             let body = format!("You'll be reminded at {when}");
-            sender.notify(&reminder_notice(title, body, Urgency::Low))?;
+            send_own_notice(
+                reminder_notice(title, body, Urgency::Low),
+                REMINDER_GLYPH,
+                hooks,
+                sender,
+            )?;
             Ok(ReminderOutput::default())
         }
         ReminderCommand::Show { json } => {
@@ -368,26 +377,50 @@ pub fn execute_reminder(
                     }
                     lines.join("\n")
                 };
-                sender.notify(&reminder_notice("Upcoming reminders", body, Urgency::Low))?;
+                send_own_notice(
+                    reminder_notice("Upcoming reminders", body, Urgency::Low),
+                    REMINDER_GLYPH,
+                    hooks,
+                    sender,
+                )?;
                 Ok(ReminderOutput::default())
             }
         }
         ReminderCommand::Clear => {
             backend.clear()?;
-            sender.notify(&reminder_notice(
-                "All reminders have been cleared",
-                "",
-                Urgency::Low,
-            ))?;
+            send_own_notice(
+                reminder_notice("All reminders have been cleared", "", Urgency::Low),
+                REMINDER_GLYPH,
+                hooks,
+                sender,
+            )?;
             Ok(ReminderOutput::default())
         }
         ReminderCommand::Fire { unit } => {
             let message = backend.load_message(unit)?;
-            let send_result = sender.notify(&reminder_notice("Reminder", message, Urgency::Low));
+            let send_result = send_own_notice(
+                reminder_notice("Reminder", message, Urgency::Low),
+                REMINDER_GLYPH,
+                hooks,
+                sender,
+            );
             let clear_result = backend.clear_message(unit);
             send_result?;
             clear_result?;
             Ok(ReminderOutput::default())
+        }
+        ReminderCommand::Interactive => {
+            let answer = hooks.ask("reminder-ui", &[])?;
+            match answer {
+                HookAnswer::NotAvailable { .. } => Err(hooks::not_available(
+                    "interactive reminders are not available",
+                    &answer,
+                )),
+                HookAnswer::Answered {
+                    status: Some(0), ..
+                } => Ok(ReminderOutput::default()),
+                HookAnswer::Answered { .. } => Err(hooks::hook_failure("reminder-ui", &answer)),
+            }
         }
     }
 }
@@ -660,7 +693,8 @@ fn json_string(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::notification::{NotificationSender, ensure_core_sender_supports};
+    use crate::hooks::testing::FakeHooks;
+    use crate::notification::NotificationSender;
 
     #[derive(Default)]
     struct FakeBackend {
@@ -709,7 +743,6 @@ mod tests {
 
     impl NotificationSender for FakeSender {
         fn notify(&mut self, notification: &Notification) -> Result<u32, String> {
-            ensure_core_sender_supports(notification)?;
             self.calls.push(notification.clone());
             Ok(1)
         }
@@ -724,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn reminder_parser_accepts_set_show_clear_and_explicitly_holds_receiver_flow() {
+    fn reminder_parser_accepts_set_show_clear_and_interactive() {
         assert_eq!(
             parse_reminder_args(&["5".into()]).unwrap(),
             ReminderCommand::Set {
@@ -758,10 +791,13 @@ mod tests {
             ReminderCommand::Clear
         );
         assert!(parse_reminder_args(&["0".into()]).is_err());
-        assert!(
-            parse_reminder_args(&["-i".into()])
-                .unwrap_err()
-                .contains("receiver contract")
+        assert_eq!(
+            parse_reminder_args(&["-i".into()]).unwrap(),
+            ReminderCommand::Interactive
+        );
+        assert_eq!(
+            parse_reminder_args(&["--interactive".into()]).unwrap(),
+            ReminderCommand::Interactive
         );
     }
 
@@ -777,6 +813,7 @@ mod tests {
                 custom: true,
             },
             &mut backend,
+            &mut FakeHooks::default(),
             &mut sender,
             &mut formatter,
         )
@@ -808,6 +845,7 @@ mod tests {
         execute_reminder(
             &ReminderCommand::Show { json: false },
             &mut backend,
+            &mut FakeHooks::default(),
             &mut sender,
             &mut formatter,
         )
@@ -818,6 +856,7 @@ mod tests {
         let output = execute_reminder(
             &ReminderCommand::Show { json: true },
             &mut backend,
+            &mut FakeHooks::default(),
             &mut sender,
             &mut formatter,
         )
@@ -847,6 +886,7 @@ mod tests {
         execute_reminder(
             &ReminderCommand::Clear,
             &mut backend,
+            &mut FakeHooks::default(),
             &mut sender,
             &mut formatter,
         )
@@ -856,6 +896,7 @@ mod tests {
                 unit: "scottland-notify-reminder-5m-100".into(),
             },
             &mut backend,
+            &mut FakeHooks::default(),
             &mut sender,
             &mut formatter,
         )
@@ -921,5 +962,92 @@ mod tests {
     #[test]
     fn json_string_escapes_control_and_quote_characters() {
         assert_eq!(json_string("oven \"timer\"\n"), "\"oven \\\"timer\\\"\\n\"");
+    }
+
+    #[test]
+    fn every_reminder_notice_asks_for_the_reminder_glyph() {
+        let mut backend = FakeBackend::default();
+        let mut hooks = FakeHooks::default().answer("glyph-hint", 0, b"omarchy-glyph\n", "");
+        let mut sender = FakeSender::default();
+        for command in [
+            ReminderCommand::Set {
+                minutes: 1,
+                message: "tea".into(),
+                custom: true,
+            },
+            ReminderCommand::Show { json: false },
+            ReminderCommand::Clear,
+            ReminderCommand::Fire {
+                unit: "scottland-notify-reminder-1m-100".into(),
+            },
+        ] {
+            execute_reminder(
+                &command,
+                &mut backend,
+                &mut hooks,
+                &mut sender,
+                &mut FakeFormatter,
+            )
+            .unwrap();
+        }
+        assert_eq!(sender.calls.len(), 4);
+        for call in &sender.calls {
+            assert_eq!(call.hints, [("omarchy-glyph".into(), "\u{f088c}".into())]);
+        }
+        assert!(
+            hooks
+                .calls
+                .iter()
+                .all(|call| call == &["glyph-hint".to_string(), "\u{f088c}".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_fired_reminder_clears_its_state_even_when_its_notice_fails() {
+        let mut backend = FakeBackend::default();
+        let mut hooks = FakeHooks::default().answer("glyph-hint", 70, b"", "receiver broke");
+        let mut sender = FakeSender::default();
+        let error = execute_reminder(
+            &ReminderCommand::Fire {
+                unit: "scottland-notify-reminder-1m-100".into(),
+            },
+            &mut backend,
+            &mut hooks,
+            &mut sender,
+            &mut FakeFormatter,
+        )
+        .unwrap_err();
+        assert_eq!(error, "receiver broke");
+        assert!(sender.calls.is_empty());
+        assert_eq!(
+            backend.fired,
+            [
+                "scottland-notify-reminder-1m-100",
+                "clear:scottland-notify-reminder-1m-100"
+            ]
+        );
+    }
+
+    #[test]
+    fn interactive_reminders_open_the_receivers_panel_through_a_hook() {
+        let run = |hooks: &mut FakeHooks| {
+            execute_reminder(
+                &ReminderCommand::Interactive,
+                &mut FakeBackend::default(),
+                hooks,
+                &mut FakeSender::default(),
+                &mut FakeFormatter,
+            )
+        };
+        let mut hooks = FakeHooks::default().answer("reminder-ui", 0, b"", "");
+        assert_eq!(run(&mut hooks).unwrap(), ReminderOutput::default());
+        assert_eq!(hooks.calls, [vec!["reminder-ui".to_string()]]);
+        assert!(
+            run(&mut FakeHooks::default())
+                .unwrap_err()
+                .contains("interactive reminders are not available")
+        );
+        let mut hooks = FakeHooks::default().answer("reminder-ui", 70, b"", "panel failed");
+        assert_eq!(run(&mut hooks).unwrap_err(), "panel failed");
     }
 }

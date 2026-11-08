@@ -266,6 +266,12 @@ See [../docs/osd.md](../docs/osd.md): OSD1–OSD11.
 |---|---|---|
 | OSD | `scottland-widget osd` presents one transient, replaceable message on the focused screen, over fullscreen content, with an optional theme icon and progress, current palette and text scale, and a 1500 ms default lifetime. It acknowledges after showing, does not take focus or pointer input, and uses the existing session shell rather than a separate long-running process. | panel and package registration implemented; behavior verification pending |
 
+## Notifications
+
+| ID | Invariant | Status |
+|---|---|---|
+| NF1 | `scottland-notify` sends, dismisses, silences and reminds through any receiver of `org.freedesktop.Notifications`, and reaches receiver-specific features only through `notify.d` hooks (`SCOTTLAND_NOTIFY_HOOKS` alone when set; otherwise the integrations', then the user's in ~/.config/scottland/notify.d), run by name order with plain argv; exit 69 passes to the next hook, 65 means unsupported. `dismiss`, `toggle-notification-silencing` and `reminder -i` fail as not available with no hook. Glyphs come from `glyph-hint`; the time and reminder notices drop an unsupported glyph and still succeed. A click command or button goes to the receiver when a hook answers `action-route`; otherwise core sends standard actions and leaves one detached waiter on the sending connection that runs the chosen argv once, never through a shell, and ends when the notification closes. `send -r` with a click command on that route fails before anything is sent. Core keeps no DND flag, daemon or record of sent ids. | implemented (`core/tools` tests, with stand-in hooks and a stand-in receiver on a private bus); real-receiver acceptance pending |
+
 ## Window keys and contention-aware placement
 
 See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK42 (window mode: Alt-alone hold, hint holds and pairing, theme-derived Vimarchy hints with desktop text sizing, exterior widget attachment and independent hint-background opacity,
