@@ -1,0 +1,139 @@
+#cloud-config
+# Package set: Scottland's Arch runtime/build dependencies, the current headless
+# check image, and the terminal/settings tools invoked by the existing widget and
+# cursor-size checks.
+write_files:
+  - path: /usr/local/sbin/scottland-display-v5-run
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/bash
+      set -Eeuo pipefail
+      exec >/dev/ttyS0 2>&1
+
+      source_commit='@@SCOTTLAND_SOURCE_SHA@@'
+      source_tree='@@SCOTTLAND_SOURCE_TREE@@'
+      source_archive_sha256='@@SCOTTLAND_SOURCE_ARCHIVE_SHA256@@'
+      guest_user=scottland-runner
+      guest_home="/home/$guest_user"
+      checkout="$guest_home/scottland"
+      source_mount=/run/scottland-source
+      guest_user_created=0
+      source_mounted=0
+
+      finish() {
+        result=$?
+        trap - EXIT
+        if ((guest_user_created)); then
+          uid=$(id -u "$guest_user" 2>/dev/null || true)
+          if [[ -n $uid ]]; then
+            loginctl disable-linger "$guest_user" >/dev/null 2>&1 || true
+            systemctl stop "user@$uid.service" >/dev/null 2>&1 || true
+            systemctl stop "user-runtime-dir@$uid.service" >/dev/null 2>&1 || true
+          fi
+          userdel --remove "$guest_user" >/dev/null 2>&1 || true
+        fi
+        if ((source_mounted)); then
+          umount "$source_mount" >/dev/null 2>&1 || true
+        fi
+        printf '\nSCOTTLAND_GUEST_EXIT=%s\n' "$result"
+        sync
+        systemctl poweroff --no-block >/dev/null 2>&1 || true
+      }
+      trap finish EXIT
+
+      [[ $source_commit =~ ^[0-9a-f]{40}$ ]]
+      [[ $source_tree =~ ^[0-9a-f]{40}$ ]]
+      [[ $source_archive_sha256 =~ ^[0-9a-f]{64}$ ]]
+      printf 'Scottland source commit: %s\nScottland source tree: %s\n' \
+        "$source_commit" "$source_tree"
+
+      pacman -Syu --noconfirm --needed \
+        archlinux-keyring bubblewrap cairo dbus dconf foot gcc gdk-pixbuf2 git glib2 glm grim \
+        gtk4 gtk4-layer-shell imagemagick inotify-tools jq libglvnd libinput libxkbcommon lua \
+        make mesa meson ninja pkgconf python python-cairo python-dbus python-gobject quickshell \
+        rust shadow systemd vulkan-headers wayfire wayland wayland-protocols wlroots0.20 \
+        xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr
+      pacman -Scc --noconfirm
+
+      useradd --create-home --shell /bin/bash --user-group "$guest_user"
+      guest_user_created=1
+      uid=$(id -u "$guest_user")
+      runtime="/run/user/$uid"
+      systemctl start dbus.service systemd-logind.service
+      loginctl enable-linger "$guest_user"
+      systemctl start "user-runtime-dir@$uid.service" "user@$uid.service"
+      manager_ready=0
+      for _ in {1..100}; do
+        if [[ -S $runtime/systemd/private ]] && \
+          runuser -u "$guest_user" -- env XDG_RUNTIME_DIR="$runtime" \
+            systemctl --user show-environment >/dev/null 2>&1; then
+          manager_ready=1
+          break
+        fi
+        sleep 0.1
+      done
+      [[ $manager_ready == 1 ]]
+      [[ $(stat -c '%u:%a' -- "$runtime") == "$uid:700" ]]
+      printf 'Private user manager ready; runtime owner and mode: %s\n' \
+        "$(stat -c '%u:%a' -- "$runtime")"
+
+      install -d -m 0755 "$source_mount"
+      source_device=
+      for _ in {1..100}; do
+        source_device=$(blkid -L SCOTT_SRC 2>/dev/null || true)
+        [[ -n $source_device ]] && break
+        sleep 0.1
+      done
+      [[ -b $source_device ]]
+      mount -t vfat -o ro,nosuid,nodev,noexec "$source_device" "$source_mount"
+      source_mounted=1
+      archive="$source_mount/scottland-source.tar.gz"
+      printf '%s  %s\n' "$source_archive_sha256" "$archive" | sha256sum --check --status
+      install -d -o "$guest_user" -g "$guest_user" -m 0755 "$checkout"
+      tar -xzf "$archive" --strip-components=1 -C "$checkout"
+      chown -R "$guest_user:$guest_user" "$checkout"
+
+      runuser -u "$guest_user" -- env \
+        HOME="$guest_home" USER="$guest_user" LOGNAME="$guest_user" \
+        XDG_RUNTIME_DIR="$runtime" TMPDIR="$guest_home/tmp" \
+        SCOTTLAND_HEADLESS_ISOLATION=1 \
+        /usr/bin/bash -euo pipefail -s -- "$checkout" <<'SCOTTLAND_RUN'
+      checkout=$1
+      export HOME USER LOGNAME XDG_RUNTIME_DIR TMPDIR SCOTTLAND_HEADLESS_ISOLATION
+      mkdir -m 700 -- "$TMPDIR"
+      cd -- "$checkout"
+
+      printf 'Building the checked-out Scottland source with make test-hooks\n'
+      make test-hooks
+
+      widgets_scratch="$checkout/build/display-v5-widgets-scratch"
+      mkdir -m 700 -- "$widgets_scratch"
+      export SCOTTLAND_TEST_SCRATCH="$widgets_scratch"
+      export SCOTTLAND_HEADLESS_DIR="$widgets_scratch/session"
+      printf 'Running the repository widget suite through its unchanged headless wrapper\n'
+      tests/widgets-test.sh
+
+      cursor_scratch="$checkout/build/display-v5-cursor-scratch"
+      mkdir -m 700 -- "$cursor_scratch"
+      export SCOTTLAND_TEST_SCRATCH="$cursor_scratch"
+      export SCOTTLAND_HEADLESS_DIR="$cursor_scratch/session"
+      headless_started=0
+      cleanup_cursor_session() {
+        if ((headless_started)); then
+          tests/headless.sh stop || true
+        fi
+      }
+      trap cleanup_cursor_session EXIT
+      printf 'Starting the repository headless session for the cursor-size check\n'
+      tests/headless.sh start --widgets
+      headless_started=1
+      tests/headless.sh run python3 tests/cursor-size-live-test.py
+      tests/headless.sh stop
+      headless_started=0
+      trap - EXIT
+
+      rm -rf -- "$widgets_scratch" "$cursor_scratch"
+      SCOTTLAND_RUN
+runcmd:
+  - [bash, /usr/local/sbin/scottland-display-v5-run]
