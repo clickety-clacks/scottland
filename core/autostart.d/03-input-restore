@@ -1,0 +1,3 @@
+#!/bin/sh
+# Reapply remembered touchpad and touchscreen disables in this session.
+exec scottland input restore

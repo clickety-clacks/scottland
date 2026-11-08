@@ -85,6 +85,7 @@ extern "C" {
 #include "shortcuts.hpp"
 #include "attention-color.hpp"
 #include "state-dye.hpp"
+#include "input-disabled-record.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -145,6 +146,85 @@ struct custom_event_signal_t
 
 namespace
 {
+bool valid_input_device_name(const std::string& name)
+{
+    return scottland::input::valid_device_name(name);
+}
+
+std::string input_device_kind(wlr_input_device *device)
+{
+    if (!device) return "";
+    switch (device->type)
+    {
+      case WLR_INPUT_DEVICE_POINTER: return "pointer";
+      case WLR_INPUT_DEVICE_TOUCH: return "touch";
+      case WLR_INPUT_DEVICE_TABLET: return "tablet";
+      default: return "";
+    }
+}
+
+bool input_device_matches_kind(const std::string& requested, wlr_input_device *device)
+{
+    return scottland::input::device_matches_kind(requested, input_device_kind(device));
+}
+
+bool set_input_device_enabled(wf::input_device_t& device, bool enabled)
+{
+    // Wayfire's bool setter can treat DISABLED_ON_EXTERNAL_MOUSE as already disabled and return
+    // without changing the mode. Set and verify the exact libinput mode so OFF stays OFF when the
+    // external mouse goes away.
+    auto handle = device.get_wlr_handle();
+    if (!handle || !wlr_input_device_is_libinput(handle)) return false;
+
+    auto libinput_device = wlr_libinput_get_device_handle(handle);
+    if (!libinput_device) return false;
+
+    const uint32_t requested_mode = enabled ? LIBINPUT_CONFIG_SEND_EVENTS_ENABLED :
+        LIBINPUT_CONFIG_SEND_EVENTS_DISABLED;
+    return scottland::input::set_send_events_mode(requested_mode,
+        [libinput_device] (uint32_t mode)
+        {
+            return libinput_device_config_send_events_set_mode(libinput_device, mode) ==
+                LIBINPUT_CONFIG_STATUS_SUCCESS;
+        },
+        [libinput_device] ()
+        {
+            return libinput_device_config_send_events_get_mode(libinput_device);
+        });
+}
+
+std::string input_disabled_record_path(const std::string& kind)
+{
+    const char *base = getenv("XDG_STATE_HOME");
+    std::string directory;
+    if (base && *base)
+    {
+        directory = base;
+    } else if (const char *home = getenv("HOME"))
+    {
+        directory = std::string(home) + "/.local/state";
+    } else
+    {
+        return "";
+    }
+    return directory + "/scottland/input-" + kind + ".disabled";
+}
+
+std::optional<std::string> input_disabled_name(const std::string& kind)
+{
+    const auto path = input_disabled_record_path(kind);
+    if (path.empty()) return std::nullopt;
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return std::nullopt;
+    std::string name, trailing;
+    if (!std::getline(file, name) || std::getline(file, trailing) || file.bad() ||
+        !valid_input_device_name(name))
+    {
+        return std::nullopt;
+    }
+    return name;
+}
+
 uint32_t now_msec()
 {
     timespec ts;
@@ -2428,6 +2508,59 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 ++it;
             }
         }
+    };
+
+    wf::signal::connection_t<wf::input_device_added_signal> on_input_device_added =
+        [=] (wf::input_device_added_signal *ev)
+    {
+        if (!ev || !ev->device) return;
+        auto handle = ev->device->get_wlr_handle();
+        if (!handle || !handle->name) return;
+        const auto class_name = input_device_kind(handle);
+        const std::string kind = class_name == "pointer" ? "touchpad" :
+            ((class_name == "touch" || class_name == "tablet") ? "touchscreen" : "");
+        if (kind.empty()) return;
+
+        const std::string name = handle->name;
+        if (!valid_input_device_name(name)) return;
+        auto disabled = input_disabled_name(kind);
+        if (!scottland::input::disabled_record_matches(kind, disabled, class_name, name)) return;
+
+        if (!set_input_device_enabled(*ev->device, false))
+        {
+            LOGE("scottland: could not keep newly added ", kind, " device disabled: ", name);
+        }
+    };
+
+    wf::signal::connection_t<wf::reload_config_signal> on_input_config_reloaded =
+        [=] (wf::reload_config_signal *)
+    {
+        // Wayfire updates input options in its earlier reload listener. Reapply synchronously here,
+        // so the stored off state wins before the event loop handles the next input event.
+        const std::string kind = "touchpad";
+        const auto disabled = input_disabled_name(kind);
+        auto devices = wf::get_core().get_input_devices();
+        scottland::input::apply_disabled_record(kind, disabled, devices,
+            [] (const auto& device) -> std::optional<std::string>
+            {
+                if (!device) return std::nullopt;
+                auto handle = device->get_wlr_handle();
+                if (!handle || !handle->name) return std::nullopt;
+                return std::string(handle->name);
+            },
+            [] (const auto& device)
+            {
+                return device ? input_device_kind(device->get_wlr_handle()) : std::string{};
+            },
+            [=] (auto& device)
+            {
+                if (!device || !set_input_device_enabled(*device, false))
+                {
+                    auto handle = device ? device->get_wlr_handle() : nullptr;
+                    LOGE("scottland: could not restore touchpad disabled after config reload: ",
+                        handle && handle->name ? handle->name : "(unnamed)");
+                }
+            });
     };
 
     wf::key_callback on_minimize_key = [=] (const wf::keybinding_t& key)
@@ -9095,6 +9228,73 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> ipc_repo;
 
+    wf::ipc::method_callback input_devices = [] (wf::json_t) -> wf::json_t
+    {
+        wf::json_t devices = wf::json_t::array();
+        for (auto& device : wf::get_core().get_input_devices())
+        {
+            if (!device) continue;
+            auto handle = device->get_wlr_handle();
+            const auto kind = input_device_kind(handle);
+            if (kind.empty()) continue;
+            wf::json_t entry;
+            entry["kind"] = kind;
+            entry["name"] = (handle && handle->name) ? handle->name : "";
+            devices.append(std::move(entry));
+        }
+        wf::json_t reply;
+        reply["devices"] = std::move(devices);
+        return reply;
+    };
+
+    wf::ipc::method_callback input_device = [] (wf::json_t data) -> wf::json_t
+    {
+        if (!data.is_object() || !data.has_member("kind") || !data["kind"].is_string() ||
+            !data.has_member("name") || !data["name"].is_string() ||
+            !data.has_member("enabled") || !data["enabled"].is_bool() ||
+            (data.has_member("missing_ok") && !data["missing_ok"].is_bool()))
+        {
+            return wf::ipc::json_error("input-device needs string kind/name and boolean enabled/missing_ok fields");
+        }
+
+        const std::string kind = data["kind"].as_string();
+        const std::string name = data["name"].as_string();
+        const bool enabled = data["enabled"].as_bool();
+        const bool missing_ok = data.has_member("missing_ok") && data["missing_ok"].as_bool();
+        if ((kind != "touchpad" && kind != "touchscreen") || !valid_input_device_name(name))
+        {
+            return wf::ipc::json_error("invalid input device kind or name");
+        }
+
+        for (auto& device : wf::get_core().get_input_devices())
+        {
+            if (!device) continue;
+            auto handle = device->get_wlr_handle();
+            if (!handle || !handle->name || std::string(handle->name) != name ||
+                !input_device_matches_kind(kind, handle))
+            {
+                continue;
+            }
+
+            if (!set_input_device_enabled(*device, enabled))
+            {
+                return wf::ipc::json_error(std::string("compositor refused to ") +
+                    (enabled ? "enable " : "disable ") + kind + " device " + name);
+            }
+            wf::json_t reply;
+            reply["present"] = true;
+            return reply;
+        }
+
+        if (missing_ok)
+        {
+            wf::json_t reply;
+            reply["present"] = false;
+            return reply;
+        }
+        return wf::ipc::json_error("input device is no longer present");
+    };
+
     wf::ipc::method_callback send_key = [] (wf::json_t data) -> wf::json_t
     {
         if (!data.has_member("key") || !data["key"].is_string())
@@ -9407,6 +9607,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/run-binding", run_binding);
         ipc_repo->register_method("scottland/layout-state", layout_state);
         ipc_repo->register_method("scottland/transparency", transparency);
+        ipc_repo->register_method("scottland/input-devices", input_devices);
+        ipc_repo->register_method("scottland/input-device", input_device);
         wf::get_core().connect(&on_axis);
         wf::get_core().connect(&on_initial_app_id);
         wf::get_core().connect(&on_forget_app_id);
@@ -9554,6 +9756,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             [this](wf::output_t *) { apply_all(); update_note_visuals(); });
         refresh_layout_avoidance();
         update_note_visuals();
+        wf::get_core().connect(&on_input_device_added);
+        wf::get_core().connect(&on_input_config_reloaded);
         LOGI("scottland: plugin loaded");
     }
 
@@ -9577,8 +9781,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/run-binding");
         ipc_repo->unregister_method("scottland/layout-state");
         ipc_repo->unregister_method("scottland/transparency");
+        ipc_repo->unregister_method("scottland/input-devices");
+        ipc_repo->unregister_method("scottland/input-device");
         on_minimize_edge.disconnect();
         on_minimize_device_removed.disconnect();
+        on_input_device_added.disconnect();
+        on_input_config_reloaded.disconnect();
         shortcuts.fini();
         on_axis.disconnect();
         on_initial_app_id.disconnect();

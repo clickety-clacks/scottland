@@ -615,6 +615,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "scottland-input"
+version = "0.2.0"
+dependencies = [
+ "scottland-lib",
+]
+
+[[package]]
 name = "scottland-launch"
 version = "0.2.0"
 dependencies = [
