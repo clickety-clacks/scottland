@@ -34,12 +34,12 @@ Rule: nothing under `core/` knows Omarchy exists. Omarchy integration lives only
 
 ## Install and upgrade on Omarchy
 
-The [Latest signed Gooarchy repository release](https://github.com/clickety-clacks/gooarchy/releases/tag/gooarchy-repo-85d94e7d426f-20261108T042229Z-ac6c21ac508c-DyiJDR)
+The [Latest signed Gooarchy repository release](https://github.com/clickety-clacks/gooarchy/releases/latest)
 includes the matched packages
 `scottland` 0.3.7-1 and `scottland-omarchy` 0.3.7-1. The adapter requires the
-matching core version. Before installing, follow Gooarchy's instructions for
-enrolling its package repository and trusting its signing key in the
-[Gooarchy README](https://github.com/clickety-clacks/gooarchy/blob/main/README.md).
+matching core version. Before installing, follow Gooarchy's canonical
+instructions for enrolling its package repository and trusting its signing key.
+<!-- Link Gooarchy's enrollment, trust, and Flavorings instructions here when published. -->
 The pinned Gooarchy source publishes the repository signing key at
 [`packaging/keys/gooarchy.asc`](https://github.com/clickety-clacks/gooarchy/blob/85d94e7d426fe96b169a217805511080f6ad7b4b/packaging/keys/gooarchy.asc)
 with fingerprint `F56B5368815D6C607C41265A69FCC98C28CD08EC`. Verify that
@@ -50,15 +50,19 @@ After the repository is enrolled and pacman has refreshed its package database,
 inspect the transaction and install the matched Scottland packages:
 
 ```sh
-sudo pacman -S scottland=0.3.7-1 scottland-omarchy=0.3.7-1
+sudo pacman -S scottland scottland-omarchy
 pacman -Q scottland scottland-omarchy
 ```
 
 Review pacman's proposed transaction before confirming it. Do not install
 individual dependencies ahead of time; let pacman resolve them from the
 enabled repositories. Do not mix the core and adapter from different releases.
-For a later release, use the matching `scottland` and `scottland-omarchy`
-versions shown by Gooarchy and review the upgrade transaction before accepting.
+For upgrades, use your normal full-system update so Scottland and its Wayfire
+dependencies stay in sync:
+
+```sh
+sudo pacman -Syu
+```
 
 A package upgrade does not replace code already loaded by a running Wayfire
 session. Enter a new Scottland session to use the new package, or use
