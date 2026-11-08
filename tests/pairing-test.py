@@ -473,12 +473,12 @@ try:
         if cancelled_first: pad('hold_end', cancelled=True)
         r = pad('button', button='middle', pressed=True)
         check(not r['hold_pending'] and r['middle_pending'],
-              f'touchpad: a three-finger click first is L24 (hold ended: {cancelled_first})')
-        time.sleep(.7); r = pad('button', button='middle', pressed=False)
+              f'touchpad: a three-finger click first is an R3 quick click (hold ended: {cancelled_first})')
+        time.sleep(.1); r = pad('button', button='middle', pressed=False)
         if not cancelled_first: pad('hold_end', cancelled=True)
         time.sleep(.4)
-        check(not r['middle_pending'] and not r['middle_resizing'] and still() == before,
-              f'touchpad: the click stays a middle click and pairs nothing (hold ended: {cancelled_first})')
+        check(not r['middle_pending'] and not r['middle_dragging'] and still() == before,
+              f'touchpad: the quick middle click pairs nothing (hold ended: {cancelled_first})')
 
     setup([(B, 1060, 520, 420, 300), (A, 520, 140, 520, 360)], A)
     before = still(); over(A)
