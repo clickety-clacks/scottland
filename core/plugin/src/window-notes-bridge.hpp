@@ -788,7 +788,7 @@
 
         if (action == "update" || action == "remove")
         {
-            if (!data.has_member("id") || !data["id"].is_int() || data["id"].as_int64() <= 0)
+            if (!data.has_member("id") || !data["id"].is_int64() || data["id"].as_int64() <= 0)
                 return wf::ipc::json_error("note-id must be a positive integer");
             const int64_t id = data["id"].as_int64();
             if (action == "update" && (!data.has_member("text") || !data["text"].is_string() ||
