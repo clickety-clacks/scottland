@@ -30,13 +30,15 @@ mkdir -p "$artifacts"
 protocols=$(pkg-config --variable=pkgdatadir wayland-protocols)
 tablet_gen="$artifacts/tablet-protocols"
 mkdir -m 700 -p "$tablet_gen"
+tablet_protocol="$protocols/stable/tablet/tablet-v2.xml"
+[[ -f $tablet_protocol ]] || tablet_protocol="$protocols/unstable/tablet/tablet-v2.xml"
 wayland-scanner client-header "$protocols/stable/xdg-shell/xdg-shell.xml" \
   "$tablet_gen/xdg-shell-client-protocol.h"
 wayland-scanner private-code "$protocols/stable/xdg-shell/xdg-shell.xml" \
   "$tablet_gen/xdg-shell-protocol.c"
-wayland-scanner client-header "$protocols/unstable/tablet/tablet-v2.xml" \
+wayland-scanner client-header "$tablet_protocol" \
   "$tablet_gen/tablet-v2-client-protocol.h"
-wayland-scanner private-code "$protocols/unstable/tablet/tablet-v2.xml" \
+wayland-scanner private-code "$tablet_protocol" \
   "$tablet_gen/tablet-v2-protocol.c"
 cc -std=c11 -O2 -Wall -Wextra -I"$tablet_gen" \
   tests/middle-press-tablet-app.c \
