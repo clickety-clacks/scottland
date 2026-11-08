@@ -62,13 +62,17 @@ glyph_rule='
 
 # The action-route request (click N A1..AN, then button LABEL N A1..AN per button), checked as
 # Security.parseExecArgv and parseExecActions check the hints, and answered as the hints send
-# builds: omarchy-exec-argv is the click argv, omarchy-actions the buttons. One field per line;
-# the JSON is compact, so no field holds a newline.
+# builds: omarchy-exec-argv is the click argv, omarchy-actions the buttons. A label is judged blank
+# as the shell judges it, after cutting it to 256 UTF-16 code units. One field per line; the JSON
+# is compact, so no field holds a newline.
 action_route='
   def units: [explode[] | if . > 65535 then 2 else 1 end] | add // 0;
   def space: . == 32 or (. >= 9 and . <= 13) or . == 160 or . == 5760
     or (. >= 8192 and . <= 8202) or . == 8232 or . == 8233 or . == 8239 or . == 8287
     or . == 12288 or . == 65279;
+  # The code points a slice to $n UTF-16 code units keeps, counting one cut in half as kept.
+  def cut($n): reduce explode[] as $c ({at: 0, kept: []};
+    (if .at < $n then .kept += [$c] else . end) | .at += (if $c > 65535 then 2 else 1 end)) | .kept;
   def argv_problem:
     if length > 32 then "a command of more than 32 words"
     elif any(.[]; units > 4096) then "a command word longer than 4096 UTF-16 code units"
@@ -89,7 +93,7 @@ action_route='
   | (if $buttons == [] then "" else $buttons | tojson end) as $actions
   | [($click.argv | argv_problem),
      ($buttons[] | (.argv | argv_problem),
-       (if all(.label | explode[]; space) then "a button whose label is blank" else empty end)),
+       (if all(.label | cut(256)[]; space) then "a button whose label is blank" else empty end)),
      (if ($exec | units) > 32768 or ($actions | units) > 32768 then
         "a hint longer than 32768 UTF-16 code units" else empty end)] as $problems
   | if $problems != [] then "rejected", $problems[0]

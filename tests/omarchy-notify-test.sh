@@ -91,6 +91,12 @@ check "O35 33 words are more than the shell runs" \
   "exit 65"
 long=$(printf '%300s' | tr ' ' x)
 check "O35 a long label is shown cut, not dropped" "$(run action-route click 1 true button "$long" 1 true | sed 's/.*|exit/exit/')" "exit 0"
+check "O35 a label blank once cut to 256 code units is one the shell drops" \
+  "$(run action-route click 1 true button "$(printf '%256s' '')Open" 1 true)" "exit 65"
+check "O35 ...but text within the first 256 keeps it" \
+  "$(run action-route click 1 true button "$(printf '%255s' '')Open" 1 true | sed 's/.*|exit/exit/')" "exit 0"
+check "O35 an astral character cut in half at 256 is not blank" \
+  "$(run action-route click 1 true button "$(printf '%255s' '')$(printf '\360\237\230\200')" 1 true | sed 's/.*|exit/exit/')" "exit 0"
 
 reset; echo 999 >"$t/owner"
 check "O35 another receiver owning the bus name: glyph-hint is not this hook's" "$(run glyph-hint X)" "exit 69"
