@@ -26,8 +26,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p venue-artifacts
-          expected=69a0a169ad74fc2dc0fb827b4e69f4501b2f5514
-          expected_tree=791f0054586ecbca9792794c383a70aad69df5fe
+          expected=48299defac7d71806324cafc4e7696466dcdb19a
+          expected_tree=478bd6134cc84aa7119fdff98e651151b12e53d7
           expected_wrapper_blob=0c54c20f22bbf77acd2e62fbbfb178123abb8bf1
           expected_wrapper_sha=0e434ab3a7a4ab39914e58e4e66ffae3afdf11c3625f78deefdfac38bcd2febc
           live=$(git ls-remote https://github.com/clickety-clacks/scottland.git refs/heads/0.4 | awk 'NR == 1 {print $1}')
@@ -106,7 +106,7 @@ jobs:
           ARTIFACTS=/artifacts
           SUMMARY="$ARTIFACTS/summary.txt"
           printf 'probe=one_bounded_private_two_output_venue_attempt\n' > "$SUMMARY"
-          printf 'source_commit=69a0a169ad74fc2dc0fb827b4e69f4501b2f5514\nsource_tree=791f0054586ecbca9792794c383a70aad69df5fe\n' >> "$SUMMARY"
+          printf 'source_commit=48299defac7d71806324cafc4e7696466dcdb19a\nsource_tree=478bd6134cc84aa7119fdff98e651151b12e53d7\n' >> "$SUMMARY"
           printf 'wrapper_blob=0c54c20f22bbf77acd2e62fbbfb178123abb8bf1\nwrapper_sha256=0e434ab3a7a4ab39914e58e4e66ffae3afdf11c3625f78deefdfac38bcd2febc\n' >> "$SUMMARY"
           overall=0
           run_timed() {
