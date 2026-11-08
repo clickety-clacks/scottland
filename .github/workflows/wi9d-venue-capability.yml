@@ -148,6 +148,7 @@ jobs:
           export SCOTTLAND_TEST_SCRATCH="$scratch"
           export SCOTTLAND_HEADLESS_DIR="$headless_dir"
           export SCOTTLAND_HEADLESS_OWNER="$owner"
+          export SCOTTLAND_HEADLESS_OWNER_DIR="$headless_dir"
           export SCOTTLAND_HEADLESS_OUTPUTS=2
           printf 'runtime_directory=present_private_mode700\nowner_record=generated_per_run\nscratch=unique_owned_build_child_mode700\nrequested_outputs=2\n' | tee -a "$SUMMARY"
           if run_timed start 300s tests/headless.sh start; then
