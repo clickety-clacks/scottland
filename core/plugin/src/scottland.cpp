@@ -3389,9 +3389,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (auto window = wf::toplevel_cast(link.window.lock());
             window && next == widget_link_t::lifecycle_t::docked && model.windows.count(window->get_id()))
             pin_scale(window, std::nullopt);
-        bool waiting_form = widget_transitions.count(link.window_id) && entering_widget(link.window_id);
-        render_hidden(link.window.lock(), (link.docked() && !waiting_form) || next == widget_link_t::lifecycle_t::handed_over);
         auto widget = wf::toplevel_cast(link.widget.lock());
+        bool waiting_form = (widget_transitions.count(link.window_id) && entering_widget(link.window_id)) ||
+            // Pixman has no retained transition image. Keep the source visible until the card
+            // appears; its mapping transaction has already committed the rail position.
+            (!wf::get_core().is_gles2() && link.docked() && (!widget || !widget->is_mapped()));
+        render_hidden(link.window.lock(), (link.docked() && !waiting_form) || next == widget_link_t::lifecycle_t::handed_over);
         bool hidden = (!link.docked() && next != widget_link_t::lifecycle_t::handed_over) || link.away || waiting_form;
         if (!link.docked() && !link.previewing()) stop_widget_transition(widget);
         render_hidden(widget, hidden);
