@@ -767,7 +767,10 @@
             if (filter_hints && !matches_window_filter(view)) continue;
             if (!state.placement) { ensure_window_memory(id); remember_window(view); }
             auto link = link_of_window(view);
-            entries.push_back({id, state.placement->hint_slot, memory_zone(view), link && link->docked()});
+            // A parented toplevel cannot become a widget (WG1, such as a dialog). A pending
+            // fullscreen exit is temporary; it remains eligible and cycling exits it first.
+            entries.push_back({id, state.placement->hint_slot, memory_zone(view), link && link->docked(),
+                !view->parent});
         }
         window_keys.hint_width = model.hint_width;
         // While a query is active, callers asking for general desktop entries must not
@@ -1151,28 +1154,28 @@
             placement_obstacles(output, window->get_id()), current, remembered);
         return {spot.x, spot.y};
     }
-    void cycle_window(uint64_t id, scottland::windowing::destination destination)
+    void cycle_window(uint64_t id, scottland::windowing::cycle_step step)
     {
         using Z = scottland::windowing::zone; using D = scottland::windowing::destination;
         if (cycle_waiting)
-        { deferred_moves.emplace_back(id, destination); return; }
+        { deferred_moves.emplace_back(id, step); return; }
         auto window = wf::toplevel_cast(view_by_id(id)); auto visible = represented_view(id);
         if (visible) keyboard_motions.erase(visible->get_id());
         fullscreen_impulses.erase(std::remove_if(fullscreen_impulses.begin(), fullscreen_impulses.end(),
             [=] (auto impulse) { return impulse.id == id; }), fullscreen_impulses.end());
         if (!window || !window->get_output()) return;
         // A rail request is idempotent, including while its widget is still launching.
-        if (destination == D::widget && link_of_window(window)) return;
+        if (step.to == D::widget && link_of_window(window)) return;
         auto g = (visible ? visible : window)->get_geometry();
         scottland::windowing::point current{g.x + g.width / 2.0, g.y + g.height / 2.0};
         if (visible) remember_window(visible);
-        if (destination == D::center && link_of_window(window)) { open_widget(*link_of_window(window), true); return; }
+        if (step.to == D::center && link_of_window(window)) { open_widget(*link_of_window(window), true); return; }
         // Fullscreen geometry is owned by its transaction: selection works, cycling waits until
         // the requested exit commits, then proceeds with the restored size.
         if (window->pending_fullscreen())
         {
             cycle_waiting = true;
-            deferred_moves.emplace_back(id, destination);
+            deferred_moves.emplace_back(id, step);
             wf::get_core().default_wm->fullscreen_request(window, window->get_output(), false);
             deferred_cycle.set_timeout(100, [=] () {
                 // Drain from idle, after the one-shot timer has disconnected. A later queued
@@ -1184,9 +1187,9 @@
                 });
             }); return;
         }
-        bool rail = destination == D::widget;
-        bool left = destination != D::center && placement_side(window, current, rail);
-        Z z = destination == D::center ? Z::center : rail ?
+        bool rail = step.to == D::widget;
+        bool left = step.left;
+        Z z = step.to == D::center ? Z::center : rail ?
             (left ? Z::left_rail : Z::right_rail) : (left ? Z::left_periphery : Z::right_periphery);
         auto at = zone_spot(window, z, current); auto real = window->get_geometry();
         auto drawn = hint_rectangle(visible ? visible : window);
@@ -1209,7 +1212,7 @@
         // spot's zone scale, or it would stay off by the rounding on a steep curve (WP5).
         wf::pointf_t landed{std::round(at.x - real.width / 2.0) + real.width / 2.0,
             std::round(at.y - real.height / 2.0) + real.height / 2.0};
-        if (destination == D::periphery && link_of_window(window))
+        if (step.to == D::periphery && link_of_window(window))
             restore_window(*link_of_window(window), at, true);
         else if (!rail) move_window(window, landed.x - real.width / 2.0, landed.y - real.height / 2.0);
         if (rail)
@@ -1241,7 +1244,7 @@
     wf::wl_timer<false> deferred_cycle;
     wf::wl_idle_call deferred_ready;
     bool cycle_waiting = false;
-    std::vector<std::pair<uint64_t, scottland::windowing::destination>> deferred_moves;
+    std::vector<std::pair<uint64_t, scottland::windowing::cycle_step>> deferred_moves;
 
     // WK36: holding an unfocused window's hint pairs it with the window that had focus.
     static constexpr double PAIR_GAP = scottland::HALO; // a halo-sized gap (P7)
@@ -2522,6 +2525,12 @@
             else if (auto visible = represented_view(id)) wf::get_core().default_wm->focus_raise_view(visible);
         };
         window_keys.move = [=] (uint64_t id, auto to) { keyboard_selection = true; cycle_window(id, to); };
+        window_keys.cycle_side = [=] (uint64_t id, bool rail) {
+            auto window = wf::toplevel_cast(view_by_id(id)); auto visible = represented_view(id);
+            if (!window || !window->get_output()) return false;
+            auto g = (visible ? visible : window)->get_geometry();
+            return placement_side(window, {g.x + g.width / 2.0, g.y + g.height / 2.0}, rail);
+        };
         window_keys.hint_select = [=] (uint64_t id) { peek_widget_for_hint(id); };
         window_keys.hint_peek_active = [=] (uint64_t id) {
             auto found = model.widgets.find(id);
