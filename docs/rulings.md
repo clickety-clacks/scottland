@@ -75,7 +75,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-05 | A pointer or touchpad hold that has fired is an offer while the fingers or button stay down, like the drag audition: dragging out of the hotspot cancels it (everything returns, the drag carries on); releasing inside commits. | WK35, WK36 |
 | 10-04 | The focused window's hint acts on key release, so a hold can solo without first moving it. | WK35 |
 | 10-04 | Double-tap must work at human timing (measured from release to next press). | WK15 |
-| 10-07 | “After cycling through widget/periphery/center, it also cycles through the widget/periphery on the OTHER side, when cycling using the hints.” The five steps keep the start zone and side fixed; WG1-ineligible dialogs skip both widget steps and a no-op repeat preserves their cycle; a widget start sent back to its own rail resumes at center. | WK7–WK9, WK15 |
+| 10-07 | "after cycling through widget/periphery/center, it also cycles through the widget/periphery on the OTHER side, when cycling using the hints". Core PO, same day: five steps, today's three then the other side's periphery and widget, then repeat with the same start zone and side; every slow press moves the window. Core PO, same day: a window WG1 bars from becoming a widget, such as a dialog, skips both widget steps, which removes today's press that leaves a dialog in place; a quick repeat that cannot send such a window to a rail changes nothing, not even where the cycle is. Core PO, same day: a widget-start window double-tapped back to its starting rail resumes at center, as today, not at the other periphery. | WK7–WK9, WK15 |
 
 ## Pairing (WK36)
 

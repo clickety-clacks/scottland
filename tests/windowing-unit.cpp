@@ -166,7 +166,7 @@ int main()
     mode.select=[&](uint64_t id,bool r){selected=id;restore=r;++selections;};
     mode.hint_select=[&](uint64_t id){peeked_widget=id;peek_active=true;++widget_hint_selections;};
     mode.hint_peek_active=[&](uint64_t id){return peek_active && id==peeked_widget;};
-    mode.move=[&](uint64_t,cycle_step d){moves.push_back(d);}; mode.cycle_side=[&](uint64_t){return false;};
+    mode.move=[&](uint64_t,cycle_step d){moves.push_back(d);}; mode.cycle_side=[&](uint64_t, bool){return false;};
     mode.close=[&](uint64_t id){closed=id;};
     const std::vector<hint_entry> entries{{1,0,zone::center,false},{2,1,zone::right_periphery,false},{3,2,zone::left_rail,true}};
     mode.begin(entries,0);
@@ -195,19 +195,31 @@ int main()
         check(selections==before && moves.size()==1 && moves[0]==first,
             "selected window skips redundant select in each start zone");
     }
-    mode.end(); moves.clear(); unsigned side_choices = 0;
-    bool side_chosen_before_select = false; selected = 0;
-    mode.cycle_side = [&] (uint64_t) {
-        side_chosen_before_select = selected == 0;
-        return ++side_choices == 1;
+    mode.end(); moves.clear(); std::vector<bool> side_regions; selected = 0;
+    mode.cycle_side = [&] (uint64_t, bool rail) {
+        side_regions.push_back(rail);
+        return rail;
     };
     mode.begin({{1,0,zone::center,false}},0);
     press('a');
-    for (int i=0; i<6; ++i) press('a');
-    check(moves==std::vector<S>{periphery(true),widget(true),center,periphery(false),widget(false),periphery(true)} &&
-        side_choices==1 && side_chosen_before_select,
-        "WP3 chooses the center start side before selection and keeps it for the whole Alt hold");
-    mode.cycle_side = [&] (uint64_t) { return false; };
+    check(selected==1 && moves.empty() && side_regions.empty(),
+        "center selection defers WP3 side choice until the first cycle action");
+    press('a');
+    for (int i=0; i<4; ++i) press('a');
+    check(moves==std::vector<S>{periphery(false),widget(false),center,periphery(true),widget(true)} &&
+        side_regions==std::vector<bool>{false},
+        "the first slow center step chooses from periphery openings and fixes the side for the hold");
+    mode.end(); moves.clear(); side_regions.clear(); mode.double_tap_delay=300;
+    mode.begin({{1,0,zone::center,false}},0);
+    press('a');
+    check(moves.empty() && side_regions.empty(),"an unselected center hint does not choose WP3 side yet");
+    tap_at('a',clock+180);
+    check(moves==std::vector<S>{widget(true)} && side_regions==std::vector<bool>{true},
+        "a center double tap chooses from rail openings");
+    clock += 1000; press('a');
+    check(moves==std::vector<S>{widget(true),center} && side_regions==std::vector<bool>{true},
+        "the rail-region choice remains fixed for later slow cycle steps");
+    mode.cycle_side = [&] (uint64_t, bool) { return false; };
     mode.end(); moves.clear(); mode.begin({{1,0,zone::left_periphery,false,false}},1);
     press('a'); mode.refresh({{1,0,zone::center,false,false}});
     tap_at('a',clock+381); mode.refresh({{1,0,zone::left_periphery,false,false}});
@@ -231,7 +243,7 @@ int main()
     tap_at('a',clock+500);
     check(moves.size()==2,"double tap on widget issues no move");
     clock += 500; press('a'); check(moves.back()==center,"slow press after rail shortcut resumes original loop");
-    mode.end(); moves.clear(); mode.cycle_side = [] (uint64_t) { return false; };
+    mode.end(); moves.clear(); mode.cycle_side = [] (uint64_t, bool) { return false; };
     mode.begin({{1,0,zone::center,false}},1);
     for (int i=0; i<4; ++i) press('a');
     mode.refresh({{1,0,zone::left_periphery,false}});

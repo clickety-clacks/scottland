@@ -25,8 +25,9 @@ class alt_mode
     std::vector<hint_entry> entries;
     std::function<void(uint64_t, bool)> select; // bool: restore a widget as a card click
     std::function<void(uint64_t, cycle_step)> move;
-    // Resolve WP3's side when a center-start cycle begins, before selection changes focus.
-    std::function<bool(uint64_t)> cycle_side;
+    // Resolve WP3's side for the first center-start step: rail region for a double tap,
+    // periphery region for a slow side step.
+    std::function<bool(uint64_t, bool)> cycle_side;
     std::function<void(uint64_t)> close;
     std::function<void(uint64_t)> hint_select; // an unselected widget was selected by its hint
     std::function<bool(uint64_t)> hint_peek_active;
@@ -67,7 +68,8 @@ class alt_mode
     bool awaiting_release = false;
     bool repeat_candidate = false;
     destination cycle_start = destination::center;
-    bool cycle_start_left = false, cycle_widgetizable = true;
+    std::optional<bool> cycle_start_left;
+    bool cycle_widgetizable = true;
     std::vector<cycle_step> order;
     unsigned step = 0;
     struct pending_hold { uint64_t id; char key; uint32_t pressed; uint64_t partner; };
@@ -77,7 +79,7 @@ class alt_mode
     std::optional<pending_tap> waiting_tap;
     void clear_cycle();
     void start_cycle(const hint_entry& entry);
-    void ensure_cycle_order();
+    void ensure_cycle_order(bool rail);
     void act_waiting_tap();
     void activate(uint64_t id, bool double_tap);
 };

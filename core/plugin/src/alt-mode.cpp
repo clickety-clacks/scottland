@@ -64,23 +64,27 @@ void alt_mode::end() { active = false; clear_cycle(); last_hint = 0; awaiting_re
 void alt_mode::clear_cycle()
 {
     cycling = 0; order.clear(); step = 0; cycle_start = destination::center;
-    cycle_start_left = false; cycle_widgetizable = true;
+    cycle_start_left.reset(); cycle_widgetizable = true;
 }
 void alt_mode::start_cycle(const hint_entry& entry)
 {
     cycling = entry.id;
     cycle_start = entry.widget ? destination::widget : entry.location == zone::center ?
         destination::center : destination::periphery;
-    cycle_start_left = entry.location == zone::left_periphery || entry.location == zone::left_rail;
-    if (cycle_start == destination::center)
-        cycle_start_left = cycle_side ? cycle_side(entry.id) : false;
+    cycle_start_left.reset();
+    if (cycle_start != destination::center)
+        cycle_start_left = entry.location == zone::left_periphery || entry.location == zone::left_rail;
     cycle_widgetizable = entry.widgetizable || entry.widget;
     order.clear(); step = 0;
 }
-void alt_mode::ensure_cycle_order()
+void alt_mode::ensure_cycle_order(bool rail)
 {
     if (order.empty())
-        order = cycle_order(cycle_start, cycle_start_left, cycle_widgetizable);
+    {
+        if (!cycle_start_left)
+            cycle_start_left = cycle_side ? cycle_side(cycling, rail) : false;
+        order = cycle_order(cycle_start, *cycle_start_left, cycle_widgetizable);
+    }
 }
 void alt_mode::activate(uint64_t id, bool double_tap)
 {
@@ -105,7 +109,7 @@ void alt_mode::activate(uint64_t id, bool double_tap)
     {
         if (widget && hint_peek_active && hint_peek_active(id))
         {
-            ensure_cycle_order();
+            ensure_cycle_order(false);
             if (hint_action) hint_action(id);
             auto to = order[step];
             step = (step + 1) % order.size();
@@ -118,6 +122,7 @@ void alt_mode::activate(uint64_t id, bool double_tap)
         }
         else
         {
+            ensure_cycle_order(true);
             bool left;
             if (entry.location == zone::left_periphery || entry.location == zone::right_periphery)
             {
@@ -125,20 +130,19 @@ void alt_mode::activate(uint64_t id, bool double_tap)
             }
             else
             {
-                left = cycle_start_left;
+                left = *cycle_start_left;
             }
-            ensure_cycle_order();
             cycle_step rail{destination::widget, left};
             auto found = std::find(order.begin(), order.end(), rail);
             if (found == order.end()) return;
-            if (cycle_start == destination::widget && left == cycle_start_left) step = 0;
+            if (cycle_start == destination::widget && left == *cycle_start_left) step = 0;
             else step = (unsigned(found - order.begin()) + 1) % order.size();
             if (hint_action) hint_action(id);
             move(id, rail);
         }
         return;
     }
-    ensure_cycle_order();
+    ensure_cycle_order(false);
     auto to = order[step];
     step = (step + 1) % order.size();
     if (hint_action) hint_action(id);

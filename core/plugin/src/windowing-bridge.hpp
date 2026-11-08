@@ -2525,11 +2525,11 @@
             else if (auto visible = represented_view(id)) wf::get_core().default_wm->focus_raise_view(visible);
         };
         window_keys.move = [=] (uint64_t id, auto to) { keyboard_selection = true; cycle_window(id, to); };
-        window_keys.cycle_side = [=] (uint64_t id) {
+        window_keys.cycle_side = [=] (uint64_t id, bool rail) {
             auto window = wf::toplevel_cast(view_by_id(id)); auto visible = represented_view(id);
             if (!window || !window->get_output()) return false;
             auto g = (visible ? visible : window)->get_geometry();
-            return placement_side(window, {g.x + g.width / 2.0, g.y + g.height / 2.0}, false);
+            return placement_side(window, {g.x + g.width / 2.0, g.y + g.height / 2.0}, rail);
         };
         window_keys.hint_select = [=] (uint64_t id) { peek_widget_for_hint(id); };
         window_keys.hint_peek_active = [=] (uint64_t id) {
