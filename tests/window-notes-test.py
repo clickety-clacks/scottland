@@ -807,7 +807,22 @@ def key(name, down):
 
 def focus(title, chromium_title=False):
     row = wait_for(lambda: scene(title, chromium_title), f"{title} scene")
-    frame = row.get("scene_frame", row["frame"])
+    try:
+        frame = row.get("scene_frame", row["frame"])
+    except KeyError as missing:
+        try:
+            current_scene = ipc("scottland/layout-state")
+        except Exception as diagnostic_error:
+            current_scene = {"capture_error": repr(diagnostic_error)}
+        print(json.dumps({
+            "diagnostic": "focus-frame-lookup-failed",
+            "title": title,
+            "chromium_title": chromium_title,
+            "matched_row": row,
+            "scene_state": current_scene,
+            "missing_key": missing.args[0] if missing.args else None,
+        }, sort_keys=True, default=repr), file=sys.stderr, flush=True)
+        raise
     pointer(frame["x"] + frame["width"] / 2, frame["y"] + frame["height"] / 2)
     button(True)
     button(False)
