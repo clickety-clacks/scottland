@@ -86,13 +86,19 @@ def list_views():
     return ipc("window-rules/list-views")
 
 
-def window(title):
-    return next((row for row in list_views() if row.get("title") == title), None)
+def title_matches(row, title, chromium_title=False):
+    actual = row.get("title", "")
+    return actual == title or (chromium_title and actual == f"{title} - Chromium")
 
 
-def scene(title):
+def window(title, chromium_title=False):
+    return next((row for row in list_views()
+                 if title_matches(row, title, chromium_title)), None)
+
+
+def scene(title, chromium_title=False):
     return next((row for row in ipc("scottland/layout-state")["views"]
-                 if row.get("title") == title), None)
+                 if title_matches(row, title, chromium_title)), None)
 
 
 def notes():
@@ -257,7 +263,8 @@ def launch_with_note_behavior():
 
     def bound_note():
         desktop = ipc("scottland/desktop-model", {"slice": "desktop"})
-        view = next((row for row in desktop.get("windows", []) if row.get("title") == title), None)
+        view = next((row for row in desktop.get("windows", [])
+                     if title_matches(row, title, chromium_title=True)), None)
         if not view or view.get("provenance", {}).get("launcher") != writer:
             return None
         note_slice = notes()
@@ -294,9 +301,10 @@ def launch_with_note_behavior():
         {"window_id": view["id"], "note": note, "notes": note_slice})
 
     configured = {"x": 240, "y": 120, "width": 520, "height": 500}
-    place(title, configured)
+    place(title, configured, chromium_title=True)
     focus("Notes focus target")
-    browser = wait_for(lambda: scene(title), "Chromium scene for note rendering")
+    browser = wait_for(lambda: scene(title, chromium_title=True),
+        "Chromium scene for note rendering")
     frame = browser.get("scene_frame", browser["frame"])
     dot_x, dot_y = round(frame["x"] + frame["width"] + 8), round(frame["y"] + 4)
     _, dot_pixels = wait_shot("nt19-chromium-note-dot", lambda image:
@@ -305,7 +313,7 @@ def launch_with_note_behavior():
         pixel(dot_pixels, dot_x, dot_y) != pixel(dot_pixels, dot_x + 6, dot_y),
         {"dot": pixel(dot_pixels, dot_x, dot_y), "nearby": pixel(dot_pixels, dot_x + 6, dot_y)})
 
-    focus(title)
+    focus(title, chromium_title=True)
     _, panel_pixels = wait_shot("nt19-chromium-note-panel", lambda image:
         changed_pixels(dot_pixels, image,
             (dot_x - 4, dot_y - 4, dot_x + 340, dot_y + 420)) > 500)
@@ -334,8 +342,8 @@ def key(name, down):
         raise RuntimeError(reply)
 
 
-def focus(title):
-    row = wait_for(lambda: scene(title), f"{title} scene")
+def focus(title, chromium_title=False):
+    row = wait_for(lambda: scene(title, chromium_title), f"{title} scene")
     frame = row.get("scene_frame", row["frame"])
     pointer(frame["x"] + frame["width"] / 2, frame["y"] + frame["height"] / 2)
     button(True)
@@ -352,12 +360,12 @@ def launch(title, background):
         f"{title} mapped")
 
 
-def place(title, geometry):
-    row = wait_for(lambda: window(title), f"{title} listed")
+def place(title, geometry, chromium_title=False):
+    row = wait_for(lambda: window(title, chromium_title), f"{title} listed")
     reply = ipc("window-rules/configure-view", {"id": row["id"], "geometry": geometry})
     if isinstance(reply, dict) and "error" in reply:
         raise RuntimeError(reply)
-    wait_for(lambda: window(title), f"{title} after configure")
+    wait_for(lambda: window(title, chromium_title), f"{title} after configure")
 
 
 def shot(name):
