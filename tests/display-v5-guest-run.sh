@@ -8,6 +8,16 @@ fail() {
   exit 1
 }
 
+if [[ ${1:-} == --bounded-run ]]; then
+  shift
+  (($# == 0)) || fail 'unexpected argument to bounded launcher'
+else
+  (($# == 0)) || fail 'launcher does not accept arguments'
+  command -v timeout >/dev/null 2>&1 || fail 'GNU timeout is unavailable'
+  printf 'SCOTTLAND_LAUNCHER_BUDGET_SECONDS=6600 (pool limit: 7200)\n'
+  exec timeout --foreground --signal=USR1 --kill-after=300s 6600s "$0" --bounded-run
+fi
+
 [[ ${POOL_RUN_ID:-} =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || fail 'missing or invalid pool run id'
 pool_root=$(pwd -P)
 for parent in "$pool_root/disks" "$pool_root/scratch"; do
@@ -32,27 +42,37 @@ print_serial() {
 
 cleanup() {
   result=$?
+  cleanup_failed=0
   trap - EXIT INT TERM HUP
+  trap - USR1
   if [[ -n $qemu_pid ]] && kill -0 "$qemu_pid" 2>/dev/null; then
     kill -TERM "$qemu_pid" 2>/dev/null || true
     wait "$qemu_pid" 2>/dev/null || true
   fi
-  print_serial || true
+  print_serial || cleanup_failed=1
   if ((disk_owned)); then
     if [[ -d $disk_dir && ! -L $disk_dir && $(realpath -e -- "$disk_dir") == "$disk_dir" ]]; then
-      rm -rf -- "$disk_dir"
+      rm -rf -- "$disk_dir" || cleanup_failed=1
+      [[ ! -e $disk_dir && ! -L $disk_dir ]] || cleanup_failed=1
     else
       printf 'preserving changed run-owned disk path: %s\n' "$disk_dir" >&2
-      result=1
+      cleanup_failed=1
     fi
   fi
   if ((scratch_owned)); then
     if [[ -d $scratch_dir && ! -L $scratch_dir && $(realpath -e -- "$scratch_dir") == "$scratch_dir" ]]; then
-      rm -rf -- "$scratch_dir"
+      rm -rf -- "$scratch_dir" || cleanup_failed=1
+      [[ ! -e $scratch_dir && ! -L $scratch_dir ]] || cleanup_failed=1
     else
       printf 'preserving changed run-owned scratch path: %s\n' "$scratch_dir" >&2
-      result=1
+      cleanup_failed=1
     fi
+  fi
+  if ((cleanup_failed)); then
+    printf 'SCOTTLAND_LAUNCHER_CLEANUP=FAIL\n' >&2
+    result=1
+  else
+    printf 'SCOTTLAND_LAUNCHER_CLEANUP=PASS\n'
   fi
   exit "$result"
 }
@@ -60,6 +80,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
+trap 'printf "launcher deadline reached; stopping the run-owned guest\n" >&2; exit 124' USR1
 
 [[ ! -e $disk_dir && ! -L $disk_dir ]] || fail 'run disk directory already exists'
 mkdir -m 0700 -- "$disk_dir"
@@ -183,10 +204,10 @@ fi
 print_serial
 ((qemu_status == 0)) || fail "QEMU exited with status $qemu_status"
 
-guest_status=$(sed -n 's/^SCOTTLAND_GUEST_EXIT=//p' "$serial_log" | tail -n 1)
+guest_status=$(sed -n 's/^SCOTTLAND_VENUE_PREFLIGHT_EXIT=//p' "$serial_log" | tail -n 1)
 [[ $guest_status =~ ^[0-9]{1,3}$ ]] || fail 'guest did not report a completion status on the serial console'
 ((guest_status <= 255)) || fail 'guest reported an invalid completion status'
 if ((guest_status != 0)); then
-  fail "guest setup or Scottland checks exited with status $guest_status"
+  fail "guest property preflight exited with status $guest_status"
 fi
 printf 'Run-owned guest completed with status 0.\n'

@@ -20,23 +20,46 @@ write_files:
       source_mount=/run/scottland-source
       guest_user_created=0
       source_mounted=0
+      source_mount_created=0
+      uid=
+      runtime=
 
       finish() {
         result=$?
+        cleanup_failed=0
         trap - EXIT
         if ((guest_user_created)); then
           uid=$(id -u "$guest_user" 2>/dev/null || true)
           if [[ -n $uid ]]; then
-            loginctl disable-linger "$guest_user" >/dev/null 2>&1 || true
-            systemctl stop "user@$uid.service" >/dev/null 2>&1 || true
-            systemctl stop "user-runtime-dir@$uid.service" >/dev/null 2>&1 || true
+            loginctl disable-linger "$guest_user" >/dev/null 2>&1 || cleanup_failed=1
+            systemctl stop "user@$uid.service" >/dev/null 2>&1 || cleanup_failed=1
+            systemctl stop "user-runtime-dir@$uid.service" >/dev/null 2>&1 || cleanup_failed=1
+            if systemctl is-active --quiet "user@$uid.service" || \
+              systemctl is-active --quiet "user-runtime-dir@$uid.service"; then
+              cleanup_failed=1
+            fi
+            runtime="/run/user/$uid"
           fi
-          userdel --remove "$guest_user" >/dev/null 2>&1 || true
+          userdel --remove "$guest_user" >/dev/null 2>&1 || cleanup_failed=1
+          if id "$guest_user" >/dev/null 2>&1; then cleanup_failed=1; fi
+          if [[ -e $guest_home || -L $guest_home ]]; then cleanup_failed=1; fi
+          if [[ -n $runtime && -e $runtime ]]; then cleanup_failed=1; fi
         fi
-        if ((source_mounted)); then
-          umount "$source_mount" >/dev/null 2>&1 || true
+        if ((source_mounted)) || mountpoint -q -- "$source_mount"; then
+          umount "$source_mount" >/dev/null 2>&1 || cleanup_failed=1
+          if mountpoint -q -- "$source_mount"; then cleanup_failed=1; fi
         fi
-        printf '\nSCOTTLAND_GUEST_EXIT=%s\n' "$result"
+        if ((source_mount_created)); then
+          rmdir -- "$source_mount" >/dev/null 2>&1 || cleanup_failed=1
+          [[ ! -e $source_mount && ! -L $source_mount ]] || cleanup_failed=1
+        fi
+        if ((cleanup_failed)); then
+          printf 'SCOTTLAND_GUEST_CLEANUP=FAIL\n' >&2
+          result=1
+        else
+          printf 'SCOTTLAND_GUEST_CLEANUP=PASS\n'
+        fi
+        printf '\nSCOTTLAND_VENUE_PREFLIGHT_EXIT=%s\n' "$result"
         sync
         systemctl poweroff --no-block >/dev/null 2>&1 || true
       }
@@ -48,19 +71,26 @@ write_files:
       printf 'Scottland source commit: %s\nScottland source tree: %s\n' \
         "$source_commit" "$source_tree"
 
-      pacman -Syu --noconfirm --needed \
-        archlinux-keyring bubblewrap cairo dbus dconf foot gcc gdk-pixbuf2 git glib2 glm grim \
+      dependencies=(
+        archlinux-keyring bubblewrap cairo coreutils dbus dconf foot gcc gdk-pixbuf2 git glib2 glm grim \
         gtk4 gtk4-layer-shell imagemagick inotify-tools jq libglvnd libinput libxkbcommon lua \
         make mesa meson ninja pkgconf python python-cairo python-dbus python-gobject quickshell \
-        rust shadow systemd vulkan-headers wayfire wayland wayland-protocols wlroots0.20 \
+        rust shadow systemd util-linux vulkan-headers wayfire wayland wayland-protocols wlroots0.20 \
         xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr
-      pacman -Scc --noconfirm
+      )
+      pacman -Syu --noconfirm --needed "${dependencies[@]}"
+      pacman -Q -- "${dependencies[@]}"
+      printf 'SCOTTLAND_DEPENDENCIES=PASS\n'
 
       useradd --create-home --shell /bin/bash --user-group "$guest_user"
       guest_user_created=1
       uid=$(id -u "$guest_user")
       runtime="/run/user/$uid"
       systemctl start dbus.service systemd-logind.service
+      systemctl is-active --quiet dbus.service
+      system_bus=$(busctl --system --no-pager list)
+      [[ $system_bus == *org.freedesktop.DBus* ]]
+      printf 'SCOTTLAND_SYSTEM_DBUS=PASS\n'
       loginctl enable-linger "$guest_user"
       systemctl start "user-runtime-dir@$uid.service" "user@$uid.service"
       manager_ready=0
@@ -75,10 +105,13 @@ write_files:
       done
       [[ $manager_ready == 1 ]]
       [[ $(stat -c '%u:%a' -- "$runtime") == "$uid:700" ]]
-      printf 'Private user manager ready; runtime owner and mode: %s\n' \
+      systemctl is-active --quiet "user@$uid.service"
+      printf 'SCOTTLAND_USER_MANAGER=PASS\n'
+      printf 'SCOTTLAND_RUNTIME_DIR=PASS owner/mode=%s\n' \
         "$(stat -c '%u:%a' -- "$runtime")"
 
       install -d -m 0755 "$source_mount"
+      source_mount_created=1
       source_device=
       for _ in {1..100}; do
         source_device=$(blkid -L SCOTT_SRC 2>/dev/null || true)
@@ -104,36 +137,66 @@ write_files:
       mkdir -m 700 -- "$TMPDIR"
       cd -- "$checkout"
 
-      printf 'Building the checked-out Scottland source with make test-hooks\n'
-      make test-hooks
+      # Link the source-owned hooks needed by the unchanged wrapper; do not compile or
+      # run Scottland product suites during this environment-property preflight.
+      make hooks HOOKS_DIR="$checkout/build/hooks"
 
-      widgets_scratch="$checkout/build/display-v5-widgets-scratch"
-      mkdir -m 700 -- "$widgets_scratch"
-      export SCOTTLAND_TEST_SCRATCH="$widgets_scratch"
-      export SCOTTLAND_HEADLESS_DIR="$widgets_scratch/session"
-      printf 'Running the repository widget suite through its unchanged headless wrapper\n'
-      tests/widgets-test.sh
+      preflight_scratch="$checkout/build/display-v5-guest-preflight"
+      [[ ! -e $preflight_scratch && ! -L $preflight_scratch ]]
+      mkdir -m 700 -- "$preflight_scratch"
+      export SCOTTLAND_TEST_SCRATCH="$preflight_scratch"
+      export SCOTTLAND_HEADLESS_DIR="$preflight_scratch/session"
+      wrapper_sha_before=$(sha256sum -- tests/headless.sh | awk '{print $1}')
+      [[ $wrapper_sha_before =~ ^[0-9a-f]{64}$ ]]
+      printf 'SCOTTLAND_CANONICAL_WRAPPER_SHA256=%s\n' "$wrapper_sha_before"
 
-      cursor_scratch="$checkout/build/display-v5-cursor-scratch"
-      mkdir -m 700 -- "$cursor_scratch"
-      export SCOTTLAND_TEST_SCRATCH="$cursor_scratch"
-      export SCOTTLAND_HEADLESS_DIR="$cursor_scratch/session"
-      headless_started=0
-      cleanup_cursor_session() {
-        if ((headless_started)); then
-          tests/headless.sh stop || true
+      headless_start_attempted=0
+      cleanup_preflight() {
+        status=$?
+        cleanup_failed=0
+        trap - EXIT
+        if ((headless_start_attempted)); then
+          if tests/headless.sh stop; then
+            headless_start_attempted=0
+            printf 'SCOTTLAND_WRAPPER_STOP=PASS\n'
+          else
+            printf 'SCOTTLAND_WRAPPER_STOP=FAIL\n' >&2
+            cleanup_failed=1
+          fi
         fi
+        if ((cleanup_failed == 0)) && \
+          [[ -d $preflight_scratch && ! -L $preflight_scratch && \
+             $(realpath -e -- "$preflight_scratch") == "$preflight_scratch" ]]; then
+          rm -rf -- "$preflight_scratch" || cleanup_failed=1
+        elif [[ -e $preflight_scratch || -L $preflight_scratch ]]; then
+          printf 'preserving changed wrapper scratch path: %s\n' "$preflight_scratch" >&2
+          cleanup_failed=1
+        fi
+        if [[ -e $preflight_scratch || -L $preflight_scratch ]]; then cleanup_failed=1; fi
+        if ((cleanup_failed)); then
+          printf 'SCOTTLAND_WRAPPER_CLEANUP=FAIL\n' >&2
+          status=1
+        else
+          printf 'SCOTTLAND_WRAPPER_CLEANUP=PASS\n'
+        fi
+        exit "$status"
       }
-      trap cleanup_cursor_session EXIT
-      printf 'Starting the repository headless session for the cursor-size check\n'
-      tests/headless.sh start --widgets
-      headless_started=1
-      tests/headless.sh run python3 tests/cursor-size-live-test.py
-      tests/headless.sh stop
-      headless_started=0
-      trap - EXIT
+      trap cleanup_preflight EXIT
+      headless_start_attempted=1
+      tests/headless.sh start --stock
+      printf 'SCOTTLAND_CANONICAL_WRAPPER_START=PASS\n'
 
-      rm -rf -- "$widgets_scratch" "$cursor_scratch"
+      runtime_observed=$(tests/headless.sh run sh -c \
+        'printf "%s %s\n" "$XDG_RUNTIME_DIR" "$(stat -c "%u:%a" "$XDG_RUNTIME_DIR")"')
+      [[ $runtime_observed == "$XDG_RUNTIME_DIR $(id -u):700" ]]
+      printf 'SCOTTLAND_WRAPPER_RUNTIME=PASS %s\n' "$runtime_observed"
+
+      session_bus=$(tests/headless.sh run busctl --user --no-pager list)
+      [[ $session_bus == *org.freedesktop.DBus* ]]
+      printf 'SCOTTLAND_PRIVATE_SESSION_DBUS=PASS\n'
+
+      [[ $(sha256sum -- tests/headless.sh | awk '{print $1}') == "$wrapper_sha_before" ]]
+      printf 'SCOTTLAND_CANONICAL_WRAPPER_UNCHANGED=PASS\n'
       SCOTTLAND_RUN
 runcmd:
   - [bash, /usr/local/sbin/scottland-display-v5-run]
