@@ -21,13 +21,15 @@ call() {
   status=$?
 }
 
-# A shell that is not there, or has no notifications target, is not this hook's receiver: 69.
-# Anything else, including a shell that stopped responding mid-call, is a failure: 70.
+# A shell that is not there, or has no notifications target, is not this hook's receiver: 69. So is
+# an omarchy-shell that cannot look for one because OMARCHY_PATH is unset. Anything else, including
+# a shell that stopped responding mid-call, is a failure: 70.
 fail_unless_answered() {
   [ "$status" -eq 0 ] && return
   printf '%s\n' "${answer:-omarchy-shell $1 $2 failed}" >&2
   case $answer in
     *"is not running"* | *"is not ready"* | *"Target not found."* | *"Function not found."*) exit 69 ;;
+    *"OMARCHY_PATH is not set"*) exit 69 ;;
   esac
   exit 70
 }

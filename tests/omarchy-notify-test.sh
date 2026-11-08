@@ -8,6 +8,7 @@ mkdir -p "$t/bin" "$t/nobin"
 cat >"$t/bin/omarchy-shell" <<STUB
 #!/bin/sh
 printf '%s\n' "\$*" >>"$t/calls"
+[ -n "\${OMARCHY_PATH:-}" ] || { echo "OMARCHY_PATH is not set" >&2; exit 1; }
 case "\$*" in
   "notifications ping") exit 0 ;;
   "-q omarchy.indicators refresh") exit 0 ;;
@@ -29,6 +30,13 @@ chmod +x "$t/bin/omarchy-shell" "$t/bin/busctl" "$t/bin/quickshell"
 # Prints the hook's stdout with each NUL shown as |, then its exit status.
 run() {
   PATH="$t/bin:$PATH" OMARCHY_PATH=/opt/omarchy "$hook" "$@" >"$t/out" 2>/dev/null
+  shown
+}
+run_unset() {
+  env -u OMARCHY_PATH PATH="$t/bin:$PATH" "$hook" "$@" >"$t/out" 2>/dev/null
+  shown
+}
+shown() {
   status=$?
   tr '\000\n' '| ' <"$t/out"
   printf 'exit %s' "$status"
@@ -93,6 +101,12 @@ check "O35 an operation the contract does not name is not this hook's" "$(run dn
 check "O35 ...and asks the shell nothing" "$([ -e "$t/calls" ] && echo asked || echo none)" none
 check "O35 with no omarchy-shell every operation is not this hook's" \
   "$(PATH="$t/nobin" "$hook" dismiss Omarchy >/dev/null 2>&1; echo $?)" 69
+
+reset; echo ok >"$t/reply"
+check "O35 an omarchy-shell without OMARCHY_PATH: dismiss is not this hook's" "$(run_unset dismiss Omarchy)" "exit 69"
+check "O35 ...nor dnd-toggle" "$(run_unset dnd-toggle)" "exit 69"
+check "O35 ...nor reminder-ui" "$(run_unset reminder-ui)" "exit 69"
+check "O35 ...having asked omarchy-shell" "$(called "notifications dismiss Omarchy")" yes
 
 [ "$fails" -eq 0 ] && echo "all notify-hook checks passed"
 exit "$fails"
