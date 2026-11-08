@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import select
+import shlex
 import shutil
 import socket
 import struct
@@ -107,6 +108,468 @@ def notes():
 
 def note_action(action, **fields):
     return ipc("scottland/notes", {"action": action, **fields})
+
+
+_ACTIVATION_CLIENT_SOURCE = r'''#define _POSIX_C_SOURCE 200809L
+#include <errno.h>
+#include <fcntl.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <poll.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <wayland-client.h>
+#include "xdg-activation-v1-client-protocol.h"
+#include "xdg-shell-client-protocol.h"
+
+struct app {
+    struct wl_display *display;
+    struct wl_registry *registry;
+    struct wl_compositor *compositor;
+    struct wl_shm *shm;
+    struct xdg_wm_base *wm_base;
+    struct xdg_activation_v1 *activation;
+};
+
+struct test_window {
+    struct wl_surface *surface;
+    struct wl_buffer *buffer;
+    struct xdg_surface *xdg_surface;
+    struct xdg_toplevel *toplevel;
+    bool configured;
+};
+
+static void wm_ping(void *data, struct xdg_wm_base *wm_base, uint32_t serial)
+{
+    (void)data;
+    xdg_wm_base_pong(wm_base, serial);
+}
+
+static const struct xdg_wm_base_listener wm_listener = {.ping = wm_ping};
+
+static void surface_configure(void *data, struct xdg_surface *surface, uint32_t serial)
+{
+    struct test_window *window = data;
+    xdg_surface_ack_configure(surface, serial);
+    window->configured = true;
+}
+
+static const struct xdg_surface_listener surface_listener = {
+    .configure = surface_configure,
+};
+
+static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
+    int32_t width, int32_t height, struct wl_array *states)
+{
+    (void)data;
+    (void)toplevel;
+    (void)width;
+    (void)height;
+    (void)states;
+}
+
+static void toplevel_close(void *data, struct xdg_toplevel *toplevel)
+{
+    (void)data;
+    (void)toplevel;
+}
+
+static void toplevel_configure_bounds(void *data, struct xdg_toplevel *toplevel,
+    int32_t width, int32_t height)
+{
+    (void)data;
+    (void)toplevel;
+    (void)width;
+    (void)height;
+}
+
+static void toplevel_wm_capabilities(void *data, struct xdg_toplevel *toplevel,
+    struct wl_array *capabilities)
+{
+    (void)data;
+    (void)toplevel;
+    (void)capabilities;
+}
+
+static const struct xdg_toplevel_listener toplevel_listener = {
+    .configure = toplevel_configure,
+    .close = toplevel_close,
+    .configure_bounds = toplevel_configure_bounds,
+    .wm_capabilities = toplevel_wm_capabilities,
+};
+
+static void registry_global(void *data, struct wl_registry *registry,
+    uint32_t name, const char *interface, uint32_t version)
+{
+    struct app *app = data;
+    if (strcmp(interface, wl_compositor_interface.name) == 0) {
+        uint32_t selected = version < 4 ? version : 4;
+        app->compositor = wl_registry_bind(registry, name, &wl_compositor_interface, selected);
+    } else if (strcmp(interface, wl_shm_interface.name) == 0) {
+        app->shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
+    } else if (strcmp(interface, xdg_wm_base_interface.name) == 0) {
+        app->wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface, 1);
+        xdg_wm_base_add_listener(app->wm_base, &wm_listener, app);
+    } else if (strcmp(interface, xdg_activation_v1_interface.name) == 0) {
+        app->activation = wl_registry_bind(registry, name, &xdg_activation_v1_interface, 1);
+    }
+}
+
+static void registry_global_remove(void *data, struct wl_registry *registry, uint32_t name)
+{
+    (void)data;
+    (void)registry;
+    (void)name;
+}
+
+static const struct wl_registry_listener registry_listener = {
+    .global = registry_global,
+    .global_remove = registry_global_remove,
+};
+
+static bool init_app(struct app *app)
+{
+    memset(app, 0, sizeof(*app));
+    app->display = wl_display_connect(NULL);
+    if (!app->display) return false;
+    app->registry = wl_display_get_registry(app->display);
+    if (!app->registry) return false;
+    wl_registry_add_listener(app->registry, &registry_listener, app);
+    if (wl_display_roundtrip(app->display) < 0) return false;
+    return app->compositor && app->shm && app->wm_base && app->activation;
+}
+
+static struct wl_buffer *make_buffer(struct wl_shm *shm)
+{
+    const int width = 96, height = 64, stride = width * 4;
+    const size_t bytes = (size_t)stride * (size_t)height;
+    char path[] = "/tmp/scottland-notes-nt18-XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) return NULL;
+    unlink(path);
+    if (ftruncate(fd, (off_t)bytes) != 0) {
+        close(fd);
+        return NULL;
+    }
+    void *pixels = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (pixels == MAP_FAILED) {
+        close(fd);
+        return NULL;
+    }
+    memset(pixels, 0x38, bytes);
+    struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)bytes);
+    struct wl_buffer *buffer = pool ? wl_shm_pool_create_buffer(pool, 0, width, height,
+        stride, WL_SHM_FORMAT_XRGB8888) : NULL;
+    if (pool) wl_shm_pool_destroy(pool);
+    munmap(pixels, bytes);
+    close(fd);
+    return buffer;
+}
+
+static bool map_window(struct app *app, struct test_window *window, const char *title)
+{
+    memset(window, 0, sizeof(*window));
+    window->surface = wl_compositor_create_surface(app->compositor);
+    if (!window->surface) return false;
+    window->xdg_surface = xdg_wm_base_get_xdg_surface(app->wm_base, window->surface);
+    if (!window->xdg_surface) return false;
+    xdg_surface_add_listener(window->xdg_surface, &surface_listener, window);
+    window->toplevel = xdg_surface_get_toplevel(window->xdg_surface);
+    if (!window->toplevel) return false;
+    xdg_toplevel_add_listener(window->toplevel, &toplevel_listener, window);
+    xdg_toplevel_set_app_id(window->toplevel, "org.scottland.WindowNotesNT18Test");
+    xdg_toplevel_set_title(window->toplevel, title);
+    wl_surface_commit(window->surface);
+    if (wl_display_roundtrip(app->display) < 0 || !window->configured) return false;
+    window->buffer = make_buffer(app->shm);
+    if (!window->buffer) return false;
+    wl_surface_attach(window->surface, window->buffer, 0, 0);
+    wl_surface_damage(window->surface, 0, 0, 96, 64);
+    wl_surface_commit(window->surface);
+    return wl_display_roundtrip(app->display) >= 0;
+}
+
+int main(void)
+{
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    struct app app;
+    if (!init_app(&app)) {
+        fprintf(stderr, "could not connect to the headless Wayland compositor\n");
+        return 2;
+    }
+    puts("ready");
+    struct test_window window = {0};
+    char *line = NULL;
+    size_t capacity = 0;
+    struct pollfd events[2] = {
+        {.fd = STDIN_FILENO, .events = POLLIN},
+        {.fd = wl_display_get_fd(app.display), .events = POLLIN},
+    };
+    while (true) {
+        int ready = poll(events, 2, -1);
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            fprintf(stderr, "could not wait for NT18 client input\n");
+            free(line);
+            return 6;
+        }
+        if (events[1].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
+        if (events[1].revents & POLLIN) {
+            if (wl_display_dispatch(app.display) < 0) break;
+        }
+        if (!(events[0].revents & (POLLIN | POLLHUP))) continue;
+        if (getline(&line, &capacity, stdin) < 0) break;
+        size_t length = strlen(line);
+        while (length && (line[length - 1] == '\n' || line[length - 1] == '\r'))
+            line[--length] = '\0';
+        if (strcmp(line, "close") == 0) {
+            puts("closing");
+            break;
+        }
+        if (strncmp(line, "map ", 4) == 0 && !window.surface) {
+            if (!map_window(&app, &window, line + 4)) {
+                fprintf(stderr, "could not map the NT18 Wayland surface\n");
+                free(line);
+                return 3;
+            }
+            printf("mapped %s\n", line + 4);
+            continue;
+        }
+        if (strncmp(line, "activate ", 9) == 0 && window.surface) {
+            xdg_activation_v1_activate(app.activation, line + 9, window.surface);
+            if (wl_display_flush(app.display) < 0) {
+                fprintf(stderr, "could not send the activation request\n");
+                free(line);
+                return 4;
+            }
+            puts("activated");
+            continue;
+        }
+        fprintf(stderr, "unsupported NT18 fixture command\n");
+        free(line);
+        return 5;
+    }
+    free(line);
+    wl_display_disconnect(app.display);
+    return 0;
+}
+'''
+
+
+def build_activation_client():
+    build = art / "nt18-activation-client"
+    build.mkdir(exist_ok=True)
+    source = build / "activation-client.c"
+    source.write_text(_ACTIVATION_CLIENT_SOURCE, encoding="utf-8")
+    protocol_dir = Path(subprocess.check_output(
+        ["pkg-config", "--variable=pkgdatadir", "wayland-protocols"],
+        text=True).strip())
+    protocols = {
+        "xdg-shell": protocol_dir / "stable/xdg-shell/xdg-shell.xml",
+        "xdg-activation-v1": protocol_dir / "stable/xdg-activation/xdg-activation-v1.xml",
+    }
+    generated = []
+    for stem, xml in protocols.items():
+        header = build / f"{stem}-client-protocol.h"
+        protocol_code = build / f"{stem}-protocol.c"
+        subprocess.run(["wayland-scanner", "client-header", str(xml), str(header)], check=True)
+        subprocess.run(["wayland-scanner", "private-code", str(xml), str(protocol_code)], check=True)
+        generated.append(protocol_code)
+    flags = shlex.split(subprocess.check_output(
+        ["pkg-config", "--cflags", "--libs", "wayland-client"], text=True))
+    binary = build / "activation-client"
+    result = subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-I", str(build),
+        str(source), *(str(path) for path in generated), *flags, "-o", str(binary)],
+        text=True, capture_output=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"could not build the NT18 Wayland test client: {result.stderr}")
+    return binary
+
+
+def activation_client_line(process, seconds=8):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            stderr = Path(process.nt18_stderr_path).read_text(
+                encoding="utf-8", errors="replace")
+            raise AssertionError(f"NT18 Wayland client exited {process.returncode}: {stderr}")
+        ready, _, _ = select.select([process.stdout], [], [], min(.1, deadline - time.monotonic()))
+        if ready:
+            line = process.stdout.readline()
+            if not line:
+                raise AssertionError("NT18 Wayland client closed its output")
+            return line.rstrip("\r\n")
+    raise AssertionError("timed out waiting for NT18 Wayland client")
+
+
+def start_activation_client(binary, label):
+    stderr_path = art / f"nt18-activation-client-{label}.stderr"
+    with stderr_path.open("w", encoding="utf-8") as stderr:
+        process = subprocess.Popen([str(binary)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=stderr, text=True, bufsize=1)
+    process.nt18_stderr_path = stderr_path
+    clients.append(process)
+    ready = activation_client_line(process)
+    if ready != "ready":
+        raise AssertionError(f"NT18 Wayland client did not become ready: {ready!r}")
+    return process
+
+
+def activation_client_command(process, command, expected, seconds=8):
+    process.stdin.write(command + "\n")
+    process.stdin.flush()
+    observed = activation_client_line(process, seconds)
+    if observed != expected:
+        raise AssertionError(f"NT18 Wayland client replied {observed!r}, expected {expected!r}")
+
+
+def stop_activation_client(process):
+    if process.poll() is None:
+        try:
+            activation_client_command(process, "close", "closing", seconds=3)
+            process.wait(timeout=3)
+        except (BrokenPipeError, AssertionError, subprocess.TimeoutExpired):
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3)
+    if process in clients:
+        clients.remove(process)
+
+
+def staged_note_token(pid, title, writer, text):
+    declaration = ipc("scottland/provenance-declare", {
+        "pid": int(pid), "name": title, "launcher": writer,
+    })
+    if "error" in declaration or not declaration.get("token"):
+        raise AssertionError(f"NT18 provenance declaration failed: {declaration!r}")
+    token = declaration["token"]
+    staged = note_action("stage", token=token, writer=writer, text=text)
+    if "error" in staged or int(staged.get("id", 0)) <= 0:
+        raise AssertionError(f"NT18 note staging failed: {staged!r}")
+    return token, int(staged["id"])
+
+
+def stage_probe(token):
+    return note_action("stage", token=token, writer="", text="non-mutating pending-token probe")
+
+
+def nt18_pending_provenance_cases():
+    binary = build_activation_client()
+    first_client = start_activation_client(binary, "bound")
+    expiry_client = None
+    try:
+        writer = f"nt18-{os.getpid()}"
+        first_title = f"Notes NT18 bound token {time.monotonic_ns()}"
+        first_text = "accepted before the first window binds"
+        token, first_id = staged_note_token(first_client.pid, first_title, writer, first_text)
+        require("NT18 first note remains out of the Notes slice while pending",
+            not any(note.get("id") == first_id for _, entries in note_rows(notes()) for note in entries),
+            {"note_id": first_id, "notes": notes()})
+
+        activation_client_command(first_client, f"map {first_title}", f"mapped {first_title}")
+
+        def first_binding():
+            desktop = ipc("scottland/desktop-model", {"slice": "desktop"})
+            view = next((row for row in desktop.get("windows", [])
+                         if row.get("title") == first_title), None)
+            if not view or view.get("provenance", {}).get("launcher") != writer:
+                return None
+            note_slice = notes()
+            window_notes = row_for(note_slice, view["id"])
+            if not window_notes:
+                return None
+            note = next((entry for entry in window_notes["notes"] if entry.get("id") == first_id), None)
+            return (desktop, note_slice, view, note) if note else None
+
+        desktop, note_slice, view, note = wait_for(first_binding,
+            "NT18 first pending declaration binds with its staged note")
+        require("NT18 binding preserves the staged note id on its window",
+            note["id"] == first_id and note["writer"] == writer and note["text"] == first_text and
+                row_for(note_slice, view["id"])["notes"] == [note],
+            {"desktop": desktop, "notes": note_slice, "view": view, "note": note})
+
+        second_text = "must be discarded with the second token"
+        second_token, second_id = staged_note_token(first_client.pid, first_title, writer, second_text)
+        before_second_activation = notes()
+        require("NT18 second-token note stays out of the Notes slice while pending",
+            not any(note.get("id") == second_id for _, entries in note_rows(before_second_activation)
+                for note in entries),
+            {"note_id": second_id, "notes": before_second_activation})
+        activation_client_command(first_client, f"activate {second_token}", "activated")
+
+        def second_token_discarded():
+            reply = stage_probe(second_token)
+            if reply.get("error") == "provenance token is not pending":
+                return reply
+            if reply.get("error") != "writer must contain 1 to 64 Unicode scalar values without controls":
+                raise AssertionError(f"unexpected NT18 second-token probe reply: {reply!r}")
+            return None
+
+        wait_for(second_token_discarded, "NT18 second token is discarded on an already-bound window")
+        after_second_activation = notes()
+        bound_view = row_for(ipc("scottland/desktop-model", {"slice": "desktop"}), view["id"])
+        bound_notes = row_for(after_second_activation, view["id"])
+        require("NT18 second token is deleted without replacing the first bound note",
+            bound_view is not None and bound_view.get("provenance", {}).get("launcher") == writer and
+                bound_notes is not None and bound_notes["notes"] == [note] and
+                not any(entry.get("id") == second_id for _, entries in note_rows(after_second_activation)
+                    for entry in entries),
+            {"view": bound_view, "notes": after_second_activation, "first_id": first_id,
+             "discarded_id": second_id})
+
+        unknown_token = f"not-pending-{time.monotonic_ns()}"
+        before_unknown = notes()
+        unknown_reply = note_action("stage", token=unknown_token, writer=writer,
+            text="a non-pending token cannot add a note")
+        require("NT18 rejects a note for a token that is not pending",
+            unknown_reply.get("error") == "provenance token is not pending" and notes() == before_unknown,
+            {"reply": unknown_reply, "before": before_unknown, "after": notes()})
+
+        expiry_client = start_activation_client(binary, "expiry")
+        expiry_title = f"Notes NT18 expired token {time.monotonic_ns()}"
+        expiry_writer = f"nt18-expiry-{os.getpid()}"
+        expiry_text = "must be deleted when its declaration expires"
+        expiry_token, expiry_id = staged_note_token(
+            expiry_client.pid, expiry_title, expiry_writer, expiry_text)
+        before_expiry = notes()
+        require("NT18 expiring note stays out of the Notes slice while pending",
+            not any(note.get("id") == expiry_id for _, entries in note_rows(before_expiry)
+                for note in entries),
+            {"note_id": expiry_id, "notes": before_expiry})
+
+        deadline = time.monotonic() + 75
+        last_probe = None
+        while time.monotonic() < deadline:
+            last_probe = stage_probe(expiry_token)
+            if last_probe.get("error") == "provenance token is not pending":
+                break
+            if last_probe.get("error") != "writer must contain 1 to 64 Unicode scalar values without controls":
+                raise AssertionError(f"unexpected NT18 expiry probe reply: {last_probe!r}")
+            time.sleep(1)
+        else:
+            raise AssertionError(f"NT18 declaration did not expire within 75 seconds: {last_probe!r}")
+
+        activation_client_command(expiry_client, f"map {expiry_title}", f"mapped {expiry_title}")
+        expiry_view = wait_for(lambda: next((row for row in ipc("scottland/desktop-model", {
+            "slice": "desktop"}).get("windows", []) if row.get("title") == expiry_title), None),
+            "NT18 post-expiry window maps")
+        expiry_notes = notes()
+        require("NT18 expiry deletes the staged note and leaves the later window unbound",
+            not expiry_view.get("provenance") and row_for(expiry_notes, expiry_view["id"]) is None and
+                not any(entry.get("id") == expiry_id for _, entries in note_rows(expiry_notes)
+                    for entry in entries),
+            {"view": expiry_view, "note_id": expiry_id, "notes": expiry_notes})
+    finally:
+        stop_activation_client(first_client)
+        if expiry_client is not None:
+            stop_activation_client(expiry_client)
 
 
 def note_rows(snapshot=None):
@@ -761,6 +1224,7 @@ try:
 
     # One real ctl/launcher/writer/note/Chromium path covers NT-17–19. The model reads below
     # observe the same note id under the provenance-bound window; no follow-up ctl command adds it.
+    nt18_pending_provenance_cases()
     launch_with_note_behavior()
 
     print(f"window notes: {checks - failures}/{checks} checks passed", flush=True)
