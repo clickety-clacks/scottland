@@ -6,10 +6,23 @@
 set -uo pipefail
 cd "$(dirname -- "$0")/.."
 fails=0
+not_run_count=0
 pass() { echo "PASS  $*"; }
 fail() { echo "FAIL  $*"; fails=$((fails + 1)); }
 check() { local name=$1; shift; if "$@"; then pass "$name"; else fail "$name"; fi; }
-
+not_run() {
+  printf 'NOT_RUN  %s (%s)\n' "$1" "$2"
+  not_run_count=$((not_run_count + 1))
+}
+manager_check() {
+  local name=$1
+  shift
+  if [[ $user_manager == available ]]; then
+    check "$name" "$@"
+  else
+    not_run "$name" 'real user manager unavailable'
+  fi
+}
 h()    { tests/headless.sh ipc "$@" >/dev/null; }
 ipc()  { tests/headless.sh ipc "$@"; }
 # The canonical runner binds its private runtime inside each `run` invocation.
@@ -251,6 +264,14 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+user_manager=unavailable
+if hrun systemctl --user show-environment >/dev/null 2>&1; then
+  user_manager=available
+fi
+printf 'user_manager=%s\n' "$user_manager" >"$artifacts/user-manager.txt"
+if [[ $user_manager != available ]]; then
+  printf 'NOT_RUN rows 2, 4-8: real user manager unavailable\n' | tee "$artifacts/scope-not-run.txt"
+fi
 display=$(cat "$headless_dir/display")
 session_dir=$(hrun sh -c 'printf "%s" "$SCOTTLAND_SESSION_DIR"')
 state_dir=$session_dir/widgets/$display
@@ -407,15 +428,28 @@ if [[ $scope_group == /* ]]; then
 fi
 printf 'unit=%s\nprivate_manager=%s\ncontrol_group=%s\ninitial_pids=%s\n' \
   "$unit" "$manager_socket" "$scope_group" "$procs" >"$artifacts/scope-readback.txt"
-check "WG5 (timeout) the widget runs in its own scope, with its child" scope_contains_child
+record_row3_diagnostics() {
+  {
+    printf 'user_manager=%s\n' "$user_manager"
+    printf 'widget_app_view='
+    ipc window-rules/list-views | python3 -c 'import json,sys; print(json.dumps([v for v in json.load(sys.stdin) if v.get("title")=="widget-app4"], sort_keys=True))'
+    printf 'widget_state='
+    ipc scottland/widgets | python3 -c 'import json,sys; print(json.dumps([w for w in json.load(sys.stdin)["widgets"] if w.get("app_id")=="scottland-test-sleeper"], sort_keys=True))'
+    printf 'scope_readback='; cat "$artifacts/scope-readback.txt"
+    printf 'renderer_capture_log_matches=\n'
+    grep -Ei 'renderer|capture|egl|gles|screenshot' "$headless_dir/wayfire.log" || printf 'none\n'
+  } | tee "$artifacts/row3-wg5-wg22-visibility.txt"
+}
+manager_check "WG5 (timeout) the widget runs in its own scope, with its child" scope_contains_child
 check "WG11 a widget with no window yet has no window process (widget_pid 0)" \
   [ "$(ipc scottland/widgets | python3 -c "import json,sys; print(json.load(sys.stdin)['widgets'][0]['widget_pid'])")" = 0 ]
 check "WG5/WG22 (timeout) the app stays visible until a card can take its image" \
   [ "$(view_field widget-app4 "not v['hidden'] and v['widgetized']")" = True ]
+record_row3_diagnostics
 sleep 11
 check "WG5 (timeout) the app's window is restored after 8 s" \
   [ "$(view_field widget-app4 "not v['hidden'] and not v['widgetized']")" = True ]
-check "WG5 (timeout) every process of the widget was ended (it ignored SIGTERM; its child too)" \
+manager_check "WG5 (timeout) every process of the widget was ended (it ignored SIGTERM; its child too)" \
   scoped_children_ended
 h window-rules/close-view "{\"id\": $(view_field widget-app4 "v['id']")}"
 sleep 1
@@ -430,14 +464,14 @@ import json,sys
 v=[v for v in json.load(sys.stdin)['views'] if v.get('app_id')=='scottland-test-daemon' and not v['widget']][0]; f=v['frame']
 print(round(f['x']), round(f['y']), round(f['width']), round(f['height']))")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
-check "DM2 launcher exit is published as a newer full snapshot" \
+manager_check "DM2 launcher exit is published as a newer full snapshot" \
   tests/headless.sh run python3 tests/model-process-test.py
 sleep 3.5
 daemon_model=$(ipc scottland/widgets)
 daemon_views=$(views)
 printf '%s\n' "$daemon_model" >"$artifacts/daemon-widgets.json"
 printf '%s\n' "$daemon_views" >"$artifacts/daemon-layout.json"
-check "WG2 a widget that forks its window off and exits is adopted (placed, at 100%)" \
+manager_check "WG2 a widget that forks its window off and exits is adopted (placed, at 100%)" \
   python3 -c '
 import json,sys
 model=json.loads(sys.argv[1])
@@ -451,7 +485,7 @@ if ok:
 if not ok:
     print(f"daemon links={links!r}; widget views={widgets!r}", file=sys.stderr)
 sys.exit(0 if ok else 1)' "$daemon_model" "$daemon_views" "$screen_w"
-check "WG8 its argument arrived literally (\$ not expanded)" \
+manager_check "WG8 its argument arrived literally (\$ not expanded)" \
   python3 -c '
 import json,sys
 model=json.loads(sys.argv[1]); layout=json.loads(sys.argv[2]); expected=sys.argv[3]
@@ -461,7 +495,9 @@ if len(widgets)!=1 or widgets[0]["title"]!=expected:
     print(f"expected title={expected!r}; daemon links={links!r}; widget views={widgets!r}", file=sys.stderr)
     sys.exit(1)' "$daemon_model" "$daemon_views" "$weird"
 daemon_widget_view=$(python3 -c 'import json,sys; w=[w for w in json.load(sys.stdin)["widgets"] if w["app_id"]=="scottland-test-daemon"]; print(w[0]["widget_view"] if len(w)==1 else "")' <<<"$daemon_model")
-if [[ $daemon_widget_view =~ ^[0-9]+$ ]]; then
+if [[ $user_manager != available ]]; then
+  not_run "WG5 ...and closing it closes the app" 'real user manager unavailable'
+elif [[ $daemon_widget_view =~ ^[0-9]+$ ]]; then
   h window-rules/close-view "{\"id\": $daemon_widget_view}"
   sleep 2
   check "WG5 ...and closing it closes the app" \
@@ -827,6 +863,26 @@ sleep 1.5
 read -r ax ay aw ah <<<"$(view_field cover-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 on_top() { ipc window-rules/list-views | python3 -c "import json,sys; print([v['always-on-top'] for v in json.load(sys.stdin) if v['title']=='cover-app'][0])"; }
 pixel() { tests/headless.sh run grim -g "$ux,$uy 1x1" -t ppm - 2>/dev/null | tail -c 3 | od -An -tu1 | tr -s ' '; }
+record_l29_diagnostics() {
+  local top observed_pixel covered=no
+  top=$(on_top)
+  observed_pixel=$(pixel)
+  [[ $observed_pixel != "$card_pixel" ]] && covered=yes
+  {
+    printf 'always_on_top=%s\ncovered=%s\ncard_pixel=%s\ncover_pixel=%s\n' \
+      "$top" "$covered" "$card_pixel" "$observed_pixel"
+    printf 'cover_and_widget_views='
+    ipc window-rules/list-views | python3 -c 'import json,sys; print(json.dumps([v for v in json.load(sys.stdin) if v.get("title") in ("cover-app","under-app")], sort_keys=True))'
+    printf 'renderer_capture_log_matches=\n'
+    grep -Ei 'renderer|capture|egl|gles|screenshot' "$headless_dir/wayfire.log" || printf 'none\n'
+    printf 'failed_halves='
+    if [[ $top != True && $covered != yes ]]; then printf 'on_top,covered\n'
+    elif [[ $top != True ]]; then printf 'on_top\n'
+    elif [[ $covered != yes ]]; then printf 'covered\n'
+    else printf 'none\n'
+    fi
+  } | tee "$artifacts/row9-l29-diagnostics.txt"
+}
 # The card is translucent. Keep the cover centered behind the sampled point, and widen it enough
 # to expose a real grab strip beside the card.
 h window-rules/configure-view "{\"id\": $(view_field cover-app "v['id']"), \"geometry\": {\"x\": $((ux - 380)), \"y\": $((uy - 80)), \"width\": 760, \"height\": 160}}"
@@ -855,6 +911,7 @@ if [ "$strip_ok" = yes ]; then dragged_id=$(cover_drag "$drag_x" "$drag_y" $((dr
 check "L29 Super-drag selects the cover window" [ "$dragged_id" = "$cover_id" ]
 sleep 0.6
 check "L29 a window just let go of stays above the widgets" [ "$(on_top)/$([ "$(pixel)" != "$card_pixel" ] && echo covered)" = "True/covered" ]
+record_l29_diagnostics
 sleep 2.6
 check "L29 ...then the widgets float above it again" [ "$(on_top)/$(pixel)" = "False/$card_pixel" ]
 h window-rules/close-view "{\"id\": $(view_field cover-app "v['id']")}"
@@ -1190,5 +1247,11 @@ check "WG5 (no scope) its first process, which ignored SIGTERM, was ended" \
 check "WG5 (no scope) the app's window is back" [ "$(view_field fallback-app "not v['hidden']")" = True ]
 
 echo
-[ "$fails" -eq 0 ] && echo "all widget checks passed" || echo "$fails check(s) failed"
+if [[ $fails -gt 0 ]]; then
+  echo "$fails check(s) failed; $not_run_count check(s) NOT_RUN"
+elif [[ $not_run_count -gt 0 ]]; then
+  echo "no failures among executed checks; $not_run_count check(s) NOT_RUN"
+else
+  echo "all widget checks passed"
+fi
 exit $((fails > 0))

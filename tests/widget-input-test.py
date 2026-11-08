@@ -719,9 +719,10 @@ def modes():
     strip = 24 * ipc.call("scottland/hints").get("hint_text_scale", 1)
     check("WG16 after the attention peek it peeks in at its edge",
           settled(lambda: link("mode-right")["place"] == "peeking" and
-                  not card("mode-right")["frame"].get("presentation"), timeout=3) and
-          not card("mode-right")["hidden"] and
-          abs(screen["width"] - card("mode-right")["frame"]["x"] - strip) < 1,
+                  not card("mode-right")["frame"].get("presentation") and
+                  not card("mode-right")["hidden"] and
+                  abs(screen["width"] - card("mode-right")["frame"]["x"] - strip) < 1,
+                  timeout=3),
           (link("mode-right"), card("mode-right")["frame"], strip))
     shot("attention-peeking")
     if artifacts:

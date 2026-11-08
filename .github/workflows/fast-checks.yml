@@ -183,7 +183,7 @@ jobs:
           FROM ${BASE_REF}
           ARG CI_UID
           RUN pacman -Syu --noconfirm --needed \
-                archlinux-keyring bubblewrap dbus gdk-pixbuf2 git glm grim gtk4 gtk4-layer-shell imagemagick inotify-tools jq \
+                archlinux-keyring bubblewrap dbus foot gdk-pixbuf2 git glm grim gtk4 gtk4-layer-shell imagemagick inotify-tools jq lua \
                 libglvnd libinput libxkbcommon mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
                 quickshell rust shadow vulkan-headers wayfire wayland wayland-protocols wlroots0.20 cairo \
             && useradd --uid "$CI_UID" --gid 0 --create-home ci \
@@ -209,7 +209,7 @@ jobs:
               . /etc/os-release
               printf "%s %s\n" "$NAME" "$VERSION_ID"
               python3 tests/osd-foundation-smoke.py --record-versions
-              pacman -Q wayfire wlroots0.20 meson gcc rust python bubblewrap quickshell gtk4-layer-shell imagemagick
+              pacman -Q wayfire wlroots0.20 meson gcc rust python bubblewrap quickshell gtk4-layer-shell imagemagick foot lua
               printf "C++ compiler: "
               g++ --version | sed -n "1p"
               rustc --version
@@ -280,6 +280,17 @@ jobs:
                 timeout --signal=TERM --kill-after=30s 2m \
                 tests/config-watch-missing-settings-test.sh "$PWD/build/config-watch-evidence"
               rmdir -- build/config-watch-scratch
+              mkdir -m 700 build/widgets-fast-check-scratch
+              widgets_log="$PWD/build/widgets-fast-check-scratch/widgets-test.log"
+              if SCOTTLAND_TEST_SCRATCH="$PWD/build/widgets-fast-check-scratch" \
+                SCOTTLAND_HEADLESS_DIR="$PWD/build/widgets-fast-check-scratch/session" \
+                tests/widgets-test.sh >"$widgets_log" 2>&1; then
+                cat "$widgets_log"
+              else
+                test_status=$?
+                cat "$widgets_log"
+                exit "$test_status"
+              fi
             '
 
       - name: Upload middle-press events on failure
@@ -290,6 +301,19 @@ jobs:
           path: |
             build/middle-press-evidence/buttons.jsonl
             build/middle-press-evidence/pointer.jsonl
+          if-no-files-found: warn
+
+      - name: Upload widget suite diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: widget-suite-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/widgets-fast-check-scratch/widgets-test.log
+            build/widgets-fast-check-scratch/session.results/
+            build/widgets-fast-check-scratch/session/wayfire.log
+            build/widgets-fast-check-scratch/session/.headless-start-failure.txt
+            build/widgets-fast-check-scratch/session/.headless-start-stderr.log
           if-no-files-found: warn
 
       - name: Run OSD foundation smoke
