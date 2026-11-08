@@ -86,6 +86,21 @@ def state():
     return ipc("scottland/test-input")
 
 
+def hit_target(x, y, a_title, b_title):
+    raw = ipc("scottland/test-hit-target", {"x": round(x), "y": round(y)})
+    a_id = view(a_title)["id"]
+    b_id = view(b_title)["id"]
+    target_id = raw.get("window_id", -1)
+    window = "A" if target_id == a_id else "B" if target_id == b_id else "other"
+    return {"window": window, "part": raw.get("part", "other"),
+            "window_id": target_id, "title": raw.get("window", "other")}
+
+
+def valid_release_target(target):
+    return target["window"] == "B" and target["part"] in (
+        "client_surface", "frame_or_expanded_hit_area")
+
+
 def pointer(x, y):
     ipc("stipc/move_cursor", {"x": round(x), "y": round(y)})
 
@@ -352,6 +367,7 @@ try:
     settle("A", "B")
     clear_events()
     a = geometry("A")
+    b = geometry("B")
     a_frame = frame_state("A")
     b_frame = frame_state("B")
     b_halo_left = b_frame["x"] - b_frame["thickness"]
@@ -371,20 +387,36 @@ try:
     pointer(round(a_frame["x"] + a_frame["width"] / 2), y)
     wait(lambda: bool(pointer_events("A")), what="A surface at the R3(b) approach point")
     clear_events()
-    pointer(x, y)
-    wait(lambda: bool(pointer_events("A")),
-         what=f"original surface at ({x},{y}) with A frame={a_frame} and B frame={b_frame}")
-    button("BTN_MIDDLE", True)
-    wait(lambda: state()["mouse_middle_pending"], what="cross-surface middle pending")
-    pointer(x + 8, y)
-    wait(lambda: any(event["edge"] == "leave" for event in pointer_events("A")),
-         what="8 px move leaves A's surface for B's frame")
-    button("BTN_MIDDLE", False)
-    wait(lambda: len(events("A")) == 2, what="original-surface replay")
-    check([(event["edge"], event["button"]) for event in events("A")] ==
-          [("press", 2), ("release", 2)], "pointer: cross-window replay sends one ordered click to A")
-    check(len(events("B")) == 0, "pointer: crossing onto B never transfers A's click")
-    check(geometry("A") == a, "pointer: an 8 px click ending over B's frame does not drag")
+    press_target = hit_target(x, y, "A", "B")
+    print(f"INFO R3(b) pointer hit target at press ({x},{y}): {press_target}", flush=True)
+    press_is_a_client = press_target["window"] == "A" and press_target["part"] == "client_surface"
+    check(press_is_a_client, "pointer R3(b) press hit-tests to A client", str(press_target))
+    if press_is_a_client:
+        pointer(x, y)
+        press_target = hit_target(x, y, "A", "B")
+        print(f"INFO R3(b) pointer target immediately before press at ({x},{y}): {press_target}", flush=True)
+        press_is_a_client = press_target["window"] == "A" and press_target["part"] == "client_surface"
+        check(press_is_a_client, "pointer R3(b) actual press target is A client", str(press_target))
+    if press_is_a_client:
+        wait(lambda: bool(pointer_events("A")),
+             what=f"A client at ({x},{y}) with recorded hit target {press_target}")
+        button("BTN_MIDDLE", True)
+        wait(lambda: state()["mouse_middle_pending"], what="cross-surface middle pending")
+        pointer(x + 8, y)
+        release_target = hit_target(x + 8, y, "A", "B")
+        print(f"INFO R3(b) pointer hit target at release ({x + 8},{y}): {release_target}", flush=True)
+        release_is_b = valid_release_target(release_target)
+        check(release_is_b, "pointer R3(b) release hit-tests to B", str(release_target))
+        if release_is_b:
+            wait(lambda: any(event["edge"] == "leave" for event in pointer_events("A")),
+                 what=f"8 px move leaves A for recorded B target {release_target}")
+        button("BTN_MIDDLE", False)
+        wait(lambda: len(events("A")) == 2, what="original-surface replay")
+        check([(event["edge"], event["button"]) for event in events("A")] ==
+              [("press", 2), ("release", 2)], "pointer: cross-window replay sends one ordered click to A")
+        check(len(events("B")) == 0, "pointer: crossing onto B never transfers A's click")
+        check(geometry("A") == a, "pointer: an 8 px click ending over B's frame does not drag")
+        check(geometry("B") == b, "pointer: an 8 px click leaves B geometry unchanged")
 
     # R3(a), R1: the virtual touchpad's middle button uses the same replay path.
     setup()
