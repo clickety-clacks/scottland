@@ -142,6 +142,7 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     // same scene grab and adopt it if the gesture crosses into a live drag; otherwise the gap
     // between two grabs could expose wlroots' still-pressed tablet button to a client.
     std::unique_ptr<wf::input_grab_t> pending_grab;
+    wf::scene::node_ptr tablet_capture_node;
     wf::output_t *pending_grab_output = nullptr;
     int finger = -1;
     bool pointer_motion_managed_externally = false;
@@ -192,6 +193,7 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     {
         if (pending_grab) pending_grab->ungrab_input();
         pending_grab.reset();
+        tablet_capture_node.reset();
         pending_grab_output = nullptr;
         if (grab) grab->ungrab_input();
         grab.reset();
@@ -216,6 +218,7 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     bool begin_input_capture(wf::output_t *output)
     {
         if (!output || view || grab || pending_grab) return false;
+        tablet_capture_node.reset();
         pending_grab_output = output;
         pending_grab = std::make_unique<wf::input_grab_t>("scottland-tablet-middle", output,
             nullptr, this, this);
@@ -228,8 +231,19 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
             return false;
         }
 
+        // Keep the exact scene node so quick-click hit-testing can look below this grab
+        // without ungrabbing early and replaying the held button to the wrong surface.
+        tablet_capture_node = wf::get_core().get_cursor_focus();
+        if (!tablet_capture_node ||
+            !dynamic_cast<wf::scene::grab_node_t*>(tablet_capture_node.get()))
+        {
+            release_input_grabs();
+            return false;
+        }
+
         return true;
     }
+    wf::scene::node_ptr get_tablet_capture_node() const { return tablet_capture_node; }
     void cancel_input_capture()
     {
         if (!view) release_input_grabs();

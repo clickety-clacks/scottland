@@ -5871,9 +5871,33 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return view;
     }
 
-    wlr_surface *middle_surface_at(const wf::pointf_t& at)
+    wlr_surface *middle_surface_at(const wf::pointf_t& at, wf::scene::node_ptr excluded_grab = nullptr)
     {
-        auto hit = wf::get_core().scene()->find_node_at(at);
+        auto root = wf::get_core().scene();
+        std::optional<wf::scene::input_node_t> hit;
+        if (excluded_grab && dynamic_cast<wf::scene::grab_node_t*>(excluded_grab.get()))
+        {
+            // input_grab_t inserts its node directly into the root's top-to-bottom children.
+            // Preserve normal scene order while omitting only the tablet capture grab.
+            auto local = root->to_local(at);
+            for (const auto& node : root->get_children())
+            {
+                if ((node == excluded_grab) || !node->is_enabled())
+                {
+                    continue;
+                }
+
+                hit = node->find_node_at(local);
+                if (hit)
+                {
+                    break;
+                }
+            }
+        } else
+        {
+            hit = root->find_node_at(at);
+        }
+
         auto surface_node = hit ? dynamic_cast<wf::scene::wlr_surface_node_t*>(hit->node.get()) : nullptr;
         return surface_node ? surface_node->get_surface() : nullptr;
     }
@@ -6320,8 +6344,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto target = wf::toplevel_cast(tablet_middle_view.lock());
             if (tablet_middle_surface && target && target->is_mapped())
             {
+                auto capture_node = drag->get_tablet_capture_node();
                 auto release_output = core.output_layout->find_closest_output(tablet_middle_release_point);
-                bool warp_to_press = (middle_surface_at(tablet_middle_release_point) != tablet_middle_surface) ||
+                bool warp_to_press = (middle_surface_at(tablet_middle_release_point, capture_node) != tablet_middle_surface) ||
                     (release_output != tablet_middle_output);
                 if (warp_to_press)
                 {
@@ -6329,7 +6354,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     tablet_middle_restore_cursor = true;
                 }
 
-                if (middle_surface_at(core.get_cursor_position()) == tablet_middle_surface)
+                if (middle_surface_at(core.get_cursor_position(), capture_node) == tablet_middle_surface)
                 {
                     // Removing the grab refocuses the original tablet surface synchronously.
                     // wlroots then replays the held press there, before Wayfire forwards release.
