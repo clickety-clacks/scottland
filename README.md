@@ -61,8 +61,7 @@ matching core version. The associated `gooarchy-flavorings` package is 0.2.2-1.
 
 For later full-system upgrades, follow Gooarchy's [supported Omarchy system
 update guidance](https://github.com/clickety-clacks/gooarchy/blob/main/README.md#refresh-the-system-through-omarchy).
-For later Scottland package additions or upgrades, use the package-only
-transaction above.
+To add these packages later, use the package-only transaction above.
 
 A package upgrade does not replace code already loaded by a running Wayfire
 session. Enter a new Scottland session to use the new package, or use
