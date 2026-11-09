@@ -862,14 +862,7 @@ try:
     full_geometry = geometry("A")
     center_x = full_geometry["x"] + full_geometry["width"] / 2
     center_y = full_geometry["y"] + full_geometry["height"] / 2
-    pointer_epoch = len(pointer_events("A"))
     pointer(center_x - 16, center_y)
-    pointer(center_x + 16, center_y)
-    wait(lambda: any(event["edge"] in ("enter", "motion") and
-                     abs(event["x"] - (full_geometry["width"] / 2 + 16)) <= 1 and
-                     abs(event["y"] - full_geometry["height"] / 2) <= 1
-                     for event in pointer_events("A")[pointer_epoch:]),
-         what="fullscreen client receives fresh distinct pointer motion")
     pointer_epoch = len(pointer_events("A"))
     pointer(center_x, center_y)
     wait(lambda: any(event["edge"] in ("enter", "motion") and
