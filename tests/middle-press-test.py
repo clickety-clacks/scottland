@@ -862,13 +862,19 @@ try:
     full_geometry = geometry("A")
     center_x = full_geometry["x"] + full_geometry["width"] / 2
     center_y = full_geometry["y"] + full_geometry["height"] / 2
-    pointer(center_x - 16, center_y)
-    pointer_epoch = len(pointer_events("A"))
-    pointer(center_x, center_y)
-    wait(lambda: any(event["edge"] in ("enter", "motion") and
+
+    # Fullscreen geometry jumps before its drawn transition settles. Keep making
+    # distinct moves until the client reports the final fullscreen center.
+    def fullscreen_center_event():
+        pointer(center_x - 16, center_y)
+        pointer_epoch = len(pointer_events("A"))
+        pointer(center_x, center_y)
+        return next((event for event in pointer_events("A")[pointer_epoch:]
+                     if event["edge"] in ("enter", "motion") and
                      abs(event["x"] - full_geometry["width"] / 2) <= 1 and
-                     abs(event["y"] - full_geometry["height"] / 2) <= 1
-                     for event in pointer_events("A")[pointer_epoch:]),
+                     abs(event["y"] - full_geometry["height"] / 2) <= 1), None)
+
+    wait(fullscreen_center_event,
          what="fullscreen client receives fresh center pointer motion")
     button("BTN_MIDDLE", True)
     wait(lambda: len(events("A")) == 1, what="immediate fullscreen press")
