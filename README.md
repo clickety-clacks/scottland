@@ -44,29 +44,24 @@ matching core version. The associated `gooarchy-flavorings` package is 0.2.2-1.
    [Gooarchy README](https://github.com/clickety-clacks/gooarchy/blob/main/README.md#enroll-and-trust-gooarchy-on-stock-omarchy).
    Gooarchy maintains the repository URL and key trust procedure; use its
    instructions rather than duplicating them here.
-2. After enrolling Gooarchy, run Omarchy's supported full-system update once:
-
-   ```sh
-   omarchy update
-   ```
-
-   This refreshes and upgrades the system through Omarchy's update flow.
-3. Install the signed Scottland core, Omarchy adapter, and Gooarchy Flavorings
+2. After enrolling Gooarchy and following its [supported Omarchy system update
+   guidance](https://github.com/clickety-clacks/gooarchy/blob/main/README.md#refresh-the-system-through-omarchy),
+   install the signed Scottland core, Omarchy adapter, and Gooarchy Flavorings
    together in one package-only transaction. Inspect the complete proposed
    transaction before accepting it:
 
    ```sh
    sudo pacman -S scottland scottland-omarchy gooarchy-flavorings
    ```
-4. Verify the installed package versions:
+3. Verify the installed package versions:
 
    ```sh
    pacman -Q scottland scottland-omarchy gooarchy-flavorings
    ```
 
-For later system and installed-package upgrades, use Omarchy's supported
-`omarchy update` flow. If you need to install the packages after a system
-update, use the package-only transaction above.
+For later full-system upgrades, follow Gooarchy's [supported Omarchy system
+update guidance](https://github.com/clickety-clacks/gooarchy/blob/main/README.md#refresh-the-system-through-omarchy).
+To add these packages later, use the package-only transaction above.
 
 A package upgrade does not replace code already loaded by a running Wayfire
 session. Enter a new Scottland session to use the new package, or use
