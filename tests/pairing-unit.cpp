@@ -92,10 +92,11 @@ int main()
     check(gap_rule, "the full halo gap is kept whenever it fits with the padding, and never exceeded");
 
     // Hint holds (WK35/WK36). A press acts immediately; only a held press past the delay pairs.
-    alt_mode mode; uint64_t focus = 1, selected = 0; std::vector<destination> moves;
+    alt_mode mode; uint64_t focus = 1, selected = 0; std::vector<cycle_step> moves;
     std::vector<std::pair<uint64_t, uint64_t>> pairs; std::vector<uint64_t> solos, flashes;
     mode.select = [&] (uint64_t id, bool) { selected = id; focus = id; };
-    mode.move = [&] (uint64_t, destination d) { moves.push_back(d); };
+    mode.move = [&] (uint64_t, cycle_step d) { moves.push_back(d); };
+    mode.cycle_side = [] (uint64_t, bool) { return false; };
     mode.close = [] (uint64_t) {};
     mode.hint_action = [&] (uint64_t id) { flashes.push_back(id); };
     mode.focused = [&] () { return focus; };
@@ -108,6 +109,8 @@ int main()
     auto reset = [&] (uint64_t focused) { mode.end(); focus = focused; selected = 0; moves.clear();
         pairs.clear(); solos.clear(); flashes.clear(); mode.begin(entries, focused); };
     using D = destination;
+    using S = cycle_step;
+    const S periphery{D::periphery, false}, widget{D::widget, false};
 
     reset(1); mode.letter('s', 1000);
     check(selected == 2 && moves.empty() && mode.hold_waiting(), "held unfocused hint selects at once (WK6) and waits");
@@ -129,7 +132,7 @@ int main()
     reset(1); mode.letter('a', 1000);
     check(moves.empty() && mode.hold_waiting(), "focused hint press waits for its release");
     mode.release('a', 1100);
-    check(moves == std::vector<D>{D::periphery} && flashes == std::vector<uint64_t>{1} && !mode.hold_due(2000),
+    check(moves == std::vector<S>{periphery} && flashes == std::vector<uint64_t>{1} && !mode.hold_due(2000),
         "focused hint tap acts on release (WK6 next zone), and is not a hold");
     reset(1); mode.letter('a', 1000);
     check(!mode.hold_due(1499) && mode.hold_due(1500) && solos == std::vector<uint64_t>{1} && pairs.empty() && moves.empty(),
@@ -137,18 +140,18 @@ int main()
     mode.release('a', 1700);
     check(moves.empty(), "releasing after a focused hold does not also tap");
     mode.letter('a', 1800); mode.release('a', 1850);
-    check(moves == std::vector<D>{D::periphery}, "a quick tap after a focused hold is a tap, not a double-tap");
+    check(moves == std::vector<S>{periphery}, "a quick tap after a focused hold is a tap, not a double-tap");
     reset(1); mode.letter('a', 1000); mode.release('a', 1080); mode.letter('a', 1200); mode.release('a', 1250);
-    check(moves == std::vector<D>{D::periphery, D::widget} && !mode.hold_waiting(),
+    check(moves == std::vector<S>{periphery, widget} && !mode.hold_waiting(),
         "focused double-tap: each tap acts on its release, the second to the rail");
     reset(1); mode.letter('a', 1000); mode.interrupt();
-    check(moves == std::vector<D>{D::periphery} && !mode.hold_due(2000), "another key acts a waiting focused tap first");
+    check(moves == std::vector<S>{periphery} && !mode.hold_due(2000), "another key acts a waiting focused tap first");
     reset(1); mode.letter('a', 1000); mode.letter('s', 1100);
-    check(moves == std::vector<D>{D::periphery} && selected == 2, "rolling onto another hint acts the focused tap, then the next");
+    check(moves == std::vector<S>{periphery} && selected == 2, "rolling onto another hint acts the focused tap, then the next");
     reset(1); mode.letter('a', 1000); mode.cancel_pending(); mode.release('a', 1100);
     check(moves.empty() && !mode.hold_due(2000) && solos.empty(), "Esc drops a waiting focused tap");
     reset(1); mode.letter('a', 1000); mode.interrupt(); mode.end(); mode.release('a', 1100);
-    check(moves == std::vector<D>{D::periphery}, "Alt release before the key acts the focused tap once");
+    check(moves == std::vector<S>{periphery}, "Alt release before the key acts the focused tap once");
     reset(1); mode.letter('a', 1000);
     check(mode.hold_remaining(1000) == 500 && mode.hold_remaining(1300) == 200 && mode.hold_remaining(1600) == 0 &&
         mode.hold_remaining(900) == 500, "hold timing re-arms for the remainder, never past the delay");
@@ -185,31 +188,31 @@ int main()
         "tap then tap and hold on an unfocused window pairs it instead of double-tapping");
     mode.select = [&] (uint64_t id, bool) { selected = id; focus = id; };
     reset(1); mode.letter('s', 1000); mode.release('s', 1050); mode.letter('s', 1100); mode.release('s', 1150);
-    check(moves == std::vector<D>{D::widget} && !mode.hold_waiting() && !mode.hold_due(2000) && solos.empty(),
+    check(moves == std::vector<S>{widget} && !mode.hold_waiting() && !mode.hold_due(2000) && solos.empty(),
         "two quick releases are still a double-tap, to the rail");
     reset(1); mode.letter('s', 1000); mode.release('s', 1050); mode.letter('s', 1100); mode.release('s', 1350);
-    check(moves == std::vector<D>{D::widget}, "two releases exactly the delay apart are a double-tap");
+    check(moves == std::vector<S>{widget}, "two releases exactly the delay apart are a double-tap");
     reset(1); mode.letter('s', 1000); mode.release('s', 1050); mode.letter('s', 1100); mode.release('s', 1351);
-    check(moves == std::vector<D>{D::periphery} && solos.empty(),
+    check(moves == std::vector<S>{periphery} && solos.empty(),
         "a second release past the delay is a second tap, the next cycle step");
     reset(1); mode.letter('s', 1000); mode.release('s', 1050); mode.letter('s', 1100);
     check(!mode.hold_due(1200), "repeat can be interrupted before the two-release interval expires");
     mode.tab(false);
-    check(moves == std::vector<D>{D::periphery},
+    check(moves == std::vector<S>{periphery},
         "another key before expiry ends an unreleased repeat as an ordinary tap");
     reset(1); mode.letter('s', 1000); mode.release('s', 1050); mode.letter('s', 1100);
     check(!mode.hold_due(1500), "repeat can be interrupted after the two-release interval expires but before hold");
     mode.tab(false);
-    check(moves == std::vector<D>{D::periphery},
+    check(moves == std::vector<S>{periphery},
         "another key after expiry ends an unreleased repeat as an ordinary tap");
     reset(1); mode.letter('s', 1000); mode.release('s', 1050); mode.letter('s', 1100);
     check(!mode.hold_due(1200), "repeat can be interrupted by Alt before expiry");
     mode.interrupt(); mode.end();
-    check(moves == std::vector<D>{D::periphery}, "Alt before expiry ends an unreleased repeat as an ordinary tap");
+    check(moves == std::vector<S>{periphery}, "Alt before expiry ends an unreleased repeat as an ordinary tap");
     reset(1); mode.letter('s', 1000); mode.release('s', 1050); mode.letter('s', 1100);
     check(!mode.hold_due(1500), "repeat can be interrupted by Alt after expiry but before hold");
     mode.interrupt(); mode.end();
-    check(moves == std::vector<D>{D::periphery}, "Alt after expiry ends an unreleased repeat as an ordinary tap");
+    check(moves == std::vector<S>{periphery}, "Alt after expiry ends an unreleased repeat as an ordinary tap");
     reset(1); mode.letter('s', 1000); mode.release('s', 1050); mode.letter('s', 1100); mode.cancel_pending();
     mode.release('s', 1150);
     check(moves.empty() && !mode.hold_due(2000) && solos.empty(), "Esc drops a waiting repeat");
@@ -222,7 +225,7 @@ int main()
     mode.select = [&] (uint64_t id, bool) { selected = id; focus = id; };
     reset(1); mode.double_tap_delay = 3000; mode.letter('s', 1000); mode.hold_due(1500);
     mode.release('s', 1600); mode.letter('s', 1700); mode.release('s', 1750);
-    check(moves == std::vector<D>{D::periphery}, "after a hold the next press cycles from the pair, never a double-tap");
+    check(moves == std::vector<S>{periphery}, "after a hold the next press cycles from the pair, never a double-tap");
     mode.double_tap_delay = 300;
 
     // Widgets pair as their app; multi-letter hints hold on their final letter.

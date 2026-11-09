@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WP4/WP8: Window-mode cycles reach the periphery, with real stipc input and Mike's zone settings.
+"""WK7-WK9/WP4/WP8: Window-mode cycles reach both sides with real stipc input and Mike's zone settings.
 
 Mike's report (2026-10-04, on 2560x1600 with a 30% center zone and a steep scale curve):
 1. A periphery window dragged back to the center, dropped just past the center zone's edge where it
@@ -133,12 +133,13 @@ def launch(name, x, y, w, h):
     return v['id']
 
 
-def drag(name, x, y):
+def drag(name, x, y, shift=False):
     """Super+drag the window by its middle so its center ends at (x, y); a deliberate stop, no coast."""
     v = view(name)
     f = v['frame']
     cx, cy = f['x'] + f['width'] / 2, f['y'] + f['height'] / 2
     ipc('stipc/move_cursor', {'x': round(cx), 'y': round(cy)})
+    if shift: key('LEFTSHIFT', True)
     key('LEFTMETA', True)
     ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'press'})
     for step in range(1, 11):
@@ -147,6 +148,7 @@ def drag(name, x, y):
     time.sleep(.12)
     ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
     key('LEFTMETA', False)
+    if shift: key('LEFTSHIFT', False)
     time.sleep(.8)
 
 
@@ -158,7 +160,9 @@ def stops(identifier, name, count):
     for _ in range(count):
         press_hint(identifier)
         time.sleep(1.0)
-        result.append(view(name))
+        current = wait_for(lambda: view(name))
+        current['widget_rail'] = wait_for(lambda: widget_rail(identifier)) if current['widgetized'] else None
+        result.append(current)
     release()
     return result
 
@@ -173,8 +177,11 @@ def settled(name, duration=.6):
 
 
 def summary(v):
-    return {'x': round(center(v)[0], 1), 'zone': v['zone'], 'scale': round(v['scale'], 3),
-            'applied': round(v['applied_scale'], 3), 'widget': v['widgetized']}
+    result = {'x': round(center(v)[0], 1), 'zone': v['zone'], 'scale': round(v['scale'], 3),
+              'applied': round(v['applied_scale'], 3), 'widget': v['widgetized']}
+    if 'widget_rail' in v:
+        result['widget_rail'] = v['widget_rail']
+    return result
 
 
 def on_screen(v):
@@ -217,6 +224,24 @@ def close_all():
     time.sleep(.3)
 
 
+def widget_rail(identifier):
+    link = next((w for w in ipc('scottland/widgets')['widgets'] if int(w['id']) == identifier), None)
+    return link['rail'] if link else None
+
+
+def launch_dialog(name, x, y):
+    ipc('wayfire/set-config-options', {'place/mode': 'pointer'})
+    ipc('stipc/move_cursor', {'x': round(x), 'y': round(y)})
+    clients.append(subprocess.Popen(['python3', str(Path('tests/dialog-window-app.py').resolve()), name],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+    def parented_dialog():
+        current = next((v for v in ipc('scottland/layout-state')['views']
+            if v['title'] == name and not v['widget']), None)
+        owner = view(name + 'Owner')
+        return current if current and current.get('parented') and owner else None
+    return wait_for(parented_dialog)['id']
+
+
 try:
     ipc('wayfire/set-config-options', {'output:HEADLESS-1/mode': '2560x1600@60000'})
     time.sleep(.5)
@@ -245,12 +270,20 @@ try:
     check(memory(a, 0) is not None and abs(memory(a, 0) - edge_x) < 2,
           'it is remembered as the center instead (WP8)', {'center memory': memory(a, 0), 'edge': edge_x})
     subprocess.run(['grim', str(artifacts / 'edge-drop.png')], check=True)
-    loop = stops(a, 'Edge', 3)
+    loop = stops(a, 'Edge', 6)
     check(abs(center(loop[0])[0] - deep_x) < 2 and lands_in_periphery(loop[0]),
           'cycling from there goes to the remembered periphery spot, scaled', summary(loop[0]))
-    check(loop[1]['widgetized'], 'then to a widget', summary(loop[1]))
+    check(loop[1]['widgetized'] and loop[1]['widget_rail'] == 'right', 'then to the start-side widget rail', summary(loop[1]))
     check(abs(center(loop[2])[0] - edge_x) < 2 and loop[2]['applied_scale'] > .99,
           'then back to the spot it was dropped at, full scale', summary(loop[2]))
+    check(lands_in_periphery(loop[3]) and abs(memory(a, 1) - center(loop[3])[0]) < 2,
+          'the next step reaches and remembers the other-side periphery', summary(loop[3]))
+    check(loop[4]['widgetized'] and loop[4]['widget_rail'] == 'left', 'the other-side widget uses its own rail', summary(loop[4]))
+    check(lands_in_periphery(loop[5]) and abs(center(loop[5])[0] - deep_x) < 2,
+          'the five-step cycle wraps to its original side and remembered spot', summary(loop[5]))
+    centered = stops(a, 'Edge', 1)[0]
+    check(abs(center(centered)[0] - edge_x) < 2 and centered['applied_scale'] > .99,
+          'a fresh hold from the wrapped periphery starts at center', summary(centered))
     for attempt in range(2):
         out, back = stops(a, 'Edge', 1)[0], stops(a, 'Edge', 1)[0]
         check(abs(center(out)[0] - deep_x) < 2 and lands_in_periphery(out) and
@@ -271,6 +304,55 @@ try:
     out = stops(a, 'Edge', 1)[0]
     check(abs(center(out)[0] - left_deep) < 2 and lands_in_periphery(out),
           'left: cycling from there reaches the remembered periphery spot', summary(out))
+    # Seed independent pins on both sides, then cycle from a left-side start through the right-side
+    # memory. The opposite-side step must use that side's remembered spot and scale pin.
+    drag('Edge', width * .84, height * .5)
+    drag('Edge', width * .82, height * .5, shift=True)
+    right_pin_x = center(view('Edge'))[0]
+    right_pin = hint(a)['memories'][2].get('pin')
+    drag('Edge', width * .16, height * .5)
+    drag('Edge', width * .18, height * .5, shift=True)
+    left_pin_x = center(view('Edge'))[0]
+    left_pin = hint(a)['memories'][1].get('pin')
+    drag('Edge', width * .45, height * .5)
+    cross = stops(a, 'Edge', 4)
+    check(left_pin is not None and abs(center(cross[0])[0] - left_pin_x) < 2 and
+          abs(cross[0]['applied_scale'] - left_pin) < .003,
+          'a left-side cycle starts from its own remembered pinned periphery', summary(cross[0]))
+    check(right_pin is not None and abs(center(cross[3])[0] - right_pin_x) < 2 and
+          abs(cross[3]['applied_scale'] - right_pin) < .003 and
+          abs(hint(a)['memories'][2].get('pin', 0) - right_pin) < .003,
+          'the other-side step restores that side’s independent position and pin', summary(cross[3]))
+    close_all()
+
+    # A parented GTK dialog skips both widget steps. Its repeated hint is a no-op and does not
+    # consume the next cycle position.
+    dialog_name = 'Modal'
+    dialog = launch_dialog(dialog_name, width * .5, height * .5)
+    ipc('window-rules/configure-view', {'id': dialog,
+        'geometry': {'x': round(width * .5 - 360), 'y': round(height * .5 - 240), 'width': 720, 'height': 480}})
+    dialog_loop = stops(dialog, 'Modal', 3)
+    check(all(v is not None and not v['widgetized'] for v in dialog_loop) and
+          [v['zone'] for v in dialog_loop] == ['continuous', 'center', 'continuous'],
+          'a parented dialog cycles periphery, center, other periphery without widget steps',
+          [summary(v) if v else None for v in dialog_loop])
+    dialog_left_x = center(dialog_loop[2])[0]
+    ipc('window-rules/focus-view', {'id': dialog}); time.sleep(.1); hold()
+    press_hint(dialog); time.sleep(.08); press_hint(dialog); time.sleep(.2)
+    no_op_repeat = view(dialog_name)
+    time.sleep(.35); press_hint(dialog); time.sleep(1.0)
+    next_dialog_step = view(dialog_name); release()
+    check(no_op_repeat is not None and next_dialog_step is not None and
+          abs(center(next_dialog_step)[0] - dialog_left_x) < 2 and
+          math.dist(center(no_op_repeat), center(next_dialog_step)) > 20 and
+          next_dialog_step['zone'] == 'continuous',
+          'a dialog no-op repeat preserves its next start-relative periphery step',
+          summary(next_dialog_step) if next_dialog_step else None)
+    dialog_process = clients[-1]
+    if dialog_process.poll() is None:
+        dialog_process.terminate()
+        dialog_process.wait(timeout=3)
+    wait_for(lambda: not [v for v in views() if v['title'] in (dialog_name, dialog_name + 'Owner')])
     close_all()
 
     # --- 2. Never in the periphery, cycled there: visibly scaled, as close to the center as it
