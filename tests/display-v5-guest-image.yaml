@@ -11,6 +11,32 @@ write_files:
       set -Eeuo pipefail
       exec >/dev/ttyS0 2>&1
 
+      diagnostic_only='@@SCOTTLAND_DIAGNOSTIC_ONLY@@'
+      [[ $diagnostic_only == 0 || $diagnostic_only == 1 ]]
+      stage_name=guest-cloud-init
+      printf 'SCOTTLAND_GUEST_BOOT=START diagnostic=%s\n' "$diagnostic_only"
+
+      guest_stage() {
+        stage_name=$1
+        printf 'SCOTTLAND_GUEST_STAGE=%s elapsed_seconds=%s\n' "$stage_name" "$SECONDS"
+      }
+
+      run_guest_stage() {
+        local name=$1 budget=$2 status
+        shift 2
+        guest_stage "$name"
+        if timeout --foreground --signal=TERM --kill-after=10s "${budget}s" "$@"; then
+          printf 'SCOTTLAND_GUEST_STAGE_DONE=%s elapsed_seconds=%s\n' "$name" "$SECONDS"
+        else
+          status=$?
+          printf 'SCOTTLAND_GUEST_STAGE_FAILED=%s status=%s elapsed_seconds=%s\n' \
+            "$name" "$status" "$SECONDS" >&2
+          return "$status"
+        fi
+      }
+
+      trap 'status=$?; printf "SCOTTLAND_GUEST_STAGE_FAILED=%s status=%s line=%s\\n" "$stage_name" "$status" "$LINENO" >&2' ERR
+
       source_commit='@@SCOTTLAND_SOURCE_SHA@@'
       source_tree='@@SCOTTLAND_SOURCE_TREE@@'
       source_archive_sha256='@@SCOTTLAND_SOURCE_ARCHIVE_SHA256@@'
@@ -28,25 +54,36 @@ write_files:
         result=$?
         cleanup_failed=0
         trap - EXIT
+        trap - ERR
+        printf 'SCOTTLAND_GUEST_STAGE=cleanup-start elapsed_seconds=%s\n' "$SECONDS"
         if ((guest_user_created)); then
           uid=$(id -u "$guest_user" 2>/dev/null || true)
           if [[ -n $uid ]]; then
-            loginctl disable-linger "$guest_user" >/dev/null 2>&1 || cleanup_failed=1
-            systemctl stop "user@$uid.service" >/dev/null 2>&1 || cleanup_failed=1
-            systemctl stop "user-runtime-dir@$uid.service" >/dev/null 2>&1 || cleanup_failed=1
-            if systemctl is-active --quiet "user@$uid.service" || \
-              systemctl is-active --quiet "user-runtime-dir@$uid.service"; then
-              cleanup_failed=1
-            fi
+            timeout --foreground --signal=TERM --kill-after=10s 30s \
+              loginctl disable-linger "$guest_user" >/dev/null 2>&1 || cleanup_failed=1
+            timeout --foreground --signal=TERM --kill-after=10s 45s \
+              systemctl stop "user@$uid.service" >/dev/null 2>&1 || cleanup_failed=1
+            timeout --foreground --signal=TERM --kill-after=10s 45s \
+              systemctl stop "user-runtime-dir@$uid.service" >/dev/null 2>&1 || cleanup_failed=1
+            service_status=0
+            timeout --foreground --signal=TERM --kill-after=5s 10s \
+              systemctl is-active --quiet "user@$uid.service" || service_status=$?
+            if ((service_status != 3)); then cleanup_failed=1; fi
+            service_status=0
+            timeout --foreground --signal=TERM --kill-after=5s 10s \
+              systemctl is-active --quiet "user-runtime-dir@$uid.service" || service_status=$?
+            if ((service_status != 3)); then cleanup_failed=1; fi
             runtime="/run/user/$uid"
           fi
-          userdel --remove "$guest_user" >/dev/null 2>&1 || cleanup_failed=1
+          timeout --foreground --signal=TERM --kill-after=10s 30s \
+            userdel --remove "$guest_user" >/dev/null 2>&1 || cleanup_failed=1
           if id "$guest_user" >/dev/null 2>&1; then cleanup_failed=1; fi
           if [[ -e $guest_home || -L $guest_home ]]; then cleanup_failed=1; fi
           if [[ -n $runtime && -e $runtime ]]; then cleanup_failed=1; fi
         fi
         if ((source_mounted)) || mountpoint -q -- "$source_mount"; then
-          umount "$source_mount" >/dev/null 2>&1 || cleanup_failed=1
+          timeout --foreground --signal=TERM --kill-after=5s 20s \
+            umount "$source_mount" >/dev/null 2>&1 || cleanup_failed=1
           if mountpoint -q -- "$source_mount"; then cleanup_failed=1; fi
         fi
         if ((source_mount_created)); then
@@ -59,9 +96,14 @@ write_files:
         else
           printf 'SCOTTLAND_GUEST_CLEANUP=PASS\n'
         fi
-        printf '\nSCOTTLAND_VENUE_PREFLIGHT_EXIT=%s\n' "$result"
-        sync
-        systemctl poweroff --no-block >/dev/null 2>&1 || true
+        if [[ $diagnostic_only == 1 ]]; then
+          printf '\nSCOTTLAND_GUEST_DIAGNOSTIC_EXIT=%s\n' "$result"
+        else
+          printf '\nSCOTTLAND_VENUE_PREFLIGHT_EXIT=%s\n' "$result"
+        fi
+        timeout --foreground --signal=TERM --kill-after=5s 15s sync || true
+        timeout --foreground --signal=TERM --kill-after=5s 15s \
+          systemctl poweroff --no-block >/dev/null 2>&1 || true
       }
       trap finish EXIT
 
@@ -71,6 +113,7 @@ write_files:
       printf 'Scottland source commit: %s\nScottland source tree: %s\n' \
         "$source_commit" "$source_tree"
 
+      guest_stage 'dependency-list'
       dependencies=(
         archlinux-keyring bubblewrap cairo coreutils dbus dconf foot gcc gdk-pixbuf2 git glib2 glm grim \
         gtk4 gtk4-layer-shell imagemagick inotify-tools jq libglvnd libinput libxkbcommon lua \
@@ -78,21 +121,38 @@ write_files:
         rust shadow systemd util-linux vulkan-headers wayfire wayland wayland-protocols wlroots0.20 \
         xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr
       )
-      pacman -Syu --noconfirm --needed "${dependencies[@]}"
-      pacman -Q -- "${dependencies[@]}"
-      printf 'SCOTTLAND_DEPENDENCIES=PASS\n'
+      pacman_budget=1800
+      package_list_budget=90
+      if [[ $diagnostic_only == 1 ]]; then
+        pacman_budget=300
+        package_list_budget=30
+      fi
+      run_guest_stage dependency-install "$pacman_budget" \
+        pacman -Syu --noconfirm --needed "${dependencies[@]}"
+      if [[ $diagnostic_only == 0 ]]; then
+        run_guest_stage dependency-version-readback "$package_list_budget" \
+          pacman -Q -- "${dependencies[@]}"
+        printf 'SCOTTLAND_DEPENDENCIES=PASS\n'
+      else
+        printf 'SCOTTLAND_DIAGNOSTIC_DEPENDENCIES=installed; version assertions skipped\n'
+      fi
 
+      guest_stage 'create-isolated-user'
       useradd --create-home --shell /bin/bash --user-group "$guest_user"
       guest_user_created=1
       uid=$(id -u "$guest_user")
       runtime="/run/user/$uid"
-      systemctl start dbus.service systemd-logind.service
-      systemctl is-active --quiet dbus.service
-      system_bus=$(busctl --system --no-pager list)
-      [[ $system_bus == *org.freedesktop.DBus* ]]
-      printf 'SCOTTLAND_SYSTEM_DBUS=PASS\n'
-      loginctl enable-linger "$guest_user"
-      systemctl start "user-runtime-dir@$uid.service" "user@$uid.service"
+      run_guest_stage system-services-start 90 \
+        systemctl start dbus.service systemd-logind.service
+      if [[ $diagnostic_only == 0 ]]; then
+        systemctl is-active --quiet dbus.service
+        system_bus=$(busctl --system --no-pager list)
+        [[ $system_bus == *org.freedesktop.DBus* ]]
+        printf 'SCOTTLAND_SYSTEM_DBUS=PASS\n'
+      fi
+      run_guest_stage enable-user-linger 30 loginctl enable-linger "$guest_user"
+      run_guest_stage user-manager-start 90 \
+        systemctl start "user-runtime-dir@$uid.service" "user@$uid.service"
       manager_ready=0
       for _ in {1..100}; do
         if [[ -S $runtime/systemd/private ]] && \
@@ -104,12 +164,17 @@ write_files:
         sleep 0.1
       done
       [[ $manager_ready == 1 ]]
-      [[ $(stat -c '%u:%a' -- "$runtime") == "$uid:700" ]]
-      systemctl is-active --quiet "user@$uid.service"
-      printf 'SCOTTLAND_USER_MANAGER=PASS\n'
-      printf 'SCOTTLAND_RUNTIME_DIR=PASS owner/mode=%s\n' \
-        "$(stat -c '%u:%a' -- "$runtime")"
+      if [[ $diagnostic_only == 0 ]]; then
+        [[ $(stat -c '%u:%a' -- "$runtime") == "$uid:700" ]]
+        systemctl is-active --quiet "user@$uid.service"
+        printf 'SCOTTLAND_USER_MANAGER=PASS\n'
+        printf 'SCOTTLAND_RUNTIME_DIR=PASS owner/mode=%s\n' \
+          "$(stat -c '%u:%a' -- "$runtime")"
+      else
+        printf 'SCOTTLAND_DIAGNOSTIC_USER_SERVICES=started; acceptance assertions skipped\n'
+      fi
 
+      guest_stage 'prepare-source-mount'
       install -d -m 0755 "$source_mount"
       source_mount_created=1
       source_device=
@@ -119,10 +184,12 @@ write_files:
         sleep 0.1
       done
       [[ -b $source_device ]]
-      mount -t vfat -o ro,nosuid,nodev,noexec "$source_device" "$source_mount"
+      run_guest_stage mount-read-only-source 30 \
+        mount -t vfat -o ro,nosuid,nodev,noexec "$source_device" "$source_mount"
       source_mounted=1
       archive="$source_mount/scottland-source.tar.gz"
       printf '%s  %s\n' "$source_archive_sha256" "$archive" | sha256sum --check --status
+      guest_stage 'extract-source-archive'
       install -d -o "$guest_user" -g "$guest_user" -m 0755 "$checkout"
       tar -xzf "$archive" --strip-components=1 -C "$checkout"
       chown -R "$guest_user:$guest_user" "$checkout"
@@ -130,16 +197,35 @@ write_files:
       runuser -u "$guest_user" -- env \
         HOME="$guest_home" USER="$guest_user" LOGNAME="$guest_user" \
         XDG_RUNTIME_DIR="$runtime" TMPDIR="$guest_home/tmp" \
+        SCOTTLAND_DIAGNOSTIC_ONLY="$diagnostic_only" \
         SCOTTLAND_HEADLESS_ISOLATION=1 \
         /usr/bin/bash -euo pipefail -s -- "$checkout" <<'SCOTTLAND_RUN'
       checkout=$1
-      export HOME USER LOGNAME XDG_RUNTIME_DIR TMPDIR SCOTTLAND_HEADLESS_ISOLATION
+      diagnostic_only=$SCOTTLAND_DIAGNOSTIC_ONLY
+      stage_name=guest-user-session
+      run_guest_stage() {
+        local name=$1 budget=$2 status
+        shift 2
+        stage_name=$name
+        printf 'SCOTTLAND_GUEST_STAGE=%s elapsed_seconds=%s\n' "$name" "$SECONDS"
+        if timeout --foreground --signal=TERM --kill-after=10s "${budget}s" "$@"; then
+          printf 'SCOTTLAND_GUEST_STAGE_DONE=%s elapsed_seconds=%s\n' "$name" "$SECONDS"
+        else
+          status=$?
+          printf 'SCOTTLAND_GUEST_STAGE_FAILED=%s status=%s elapsed_seconds=%s\n' \
+            "$name" "$status" "$SECONDS" >&2
+          return "$status"
+        fi
+      }
+      trap 'status=$?; printf "SCOTTLAND_GUEST_STAGE_FAILED=%s status=%s line=%s\\n" "$stage_name" "$status" "$LINENO" >&2' ERR
+      export HOME USER LOGNAME XDG_RUNTIME_DIR TMPDIR SCOTTLAND_DIAGNOSTIC_ONLY \
+        SCOTTLAND_HEADLESS_ISOLATION
       mkdir -m 700 -- "$TMPDIR"
       cd -- "$checkout"
 
       # Link the source-owned hooks needed by the unchanged wrapper; do not compile or
       # run Scottland product suites during this environment-property preflight.
-      make hooks HOOKS_DIR="$checkout/build/hooks"
+      run_guest_stage create-test-hooks 180 make hooks HOOKS_DIR="$checkout/build/hooks"
 
       preflight_scratch="$checkout/build/display-v5-guest-preflight"
       [[ ! -e $preflight_scratch && ! -L $preflight_scratch ]]
@@ -147,8 +233,12 @@ write_files:
       export SCOTTLAND_TEST_SCRATCH="$preflight_scratch"
       export SCOTTLAND_HEADLESS_DIR="$preflight_scratch/session"
       wrapper_sha_before=$(sha256sum -- tests/headless.sh | awk '{print $1}')
-      [[ $wrapper_sha_before =~ ^[0-9a-f]{64}$ ]]
-      printf 'SCOTTLAND_CANONICAL_WRAPPER_SHA256=%s\n' "$wrapper_sha_before"
+      if [[ $diagnostic_only == 0 ]]; then
+        [[ $wrapper_sha_before =~ ^[0-9a-f]{64}$ ]]
+        printf 'SCOTTLAND_CANONICAL_WRAPPER_SHA256=%s\n' "$wrapper_sha_before"
+      else
+        printf 'SCOTTLAND_DIAGNOSTIC_WRAPPER_SHA256=%s\n' "$wrapper_sha_before"
+      fi
 
       headless_start_attempted=0
       cleanup_preflight() {
@@ -156,9 +246,13 @@ write_files:
         cleanup_failed=0
         trap - EXIT
         if ((headless_start_attempted)); then
-          if tests/headless.sh stop; then
+          if timeout --foreground --signal=TERM --kill-after=10s 45s tests/headless.sh stop; then
             headless_start_attempted=0
-            printf 'SCOTTLAND_WRAPPER_STOP=PASS\n'
+            if [[ $diagnostic_only == 0 ]]; then
+              printf 'SCOTTLAND_WRAPPER_STOP=PASS\n'
+            else
+              printf 'SCOTTLAND_DIAGNOSTIC_WRAPPER_STOP=PASS\n'
+            fi
           else
             printf 'SCOTTLAND_WRAPPER_STOP=FAIL\n' >&2
             cleanup_failed=1
@@ -182,8 +276,16 @@ write_files:
         exit "$status"
       }
       trap cleanup_preflight EXIT
+      guest_stage 'canonical-wrapper-start'
       headless_start_attempted=1
-      tests/headless.sh start --stock
+      wrapper_start_budget=600
+      if [[ $diagnostic_only == 1 ]]; then wrapper_start_budget=180; fi
+      run_guest_stage canonical-wrapper-start "$wrapper_start_budget" \
+        tests/headless.sh start --stock
+      if [[ $diagnostic_only == 1 ]]; then
+        printf 'SCOTTLAND_GUEST_DIAGNOSTIC_STOP=after-canonical-wrapper-start\n'
+        exit 0
+      fi
       printf 'SCOTTLAND_CANONICAL_WRAPPER_START=PASS\n'
 
       runtime_observed=$(tests/headless.sh run sh -c \
