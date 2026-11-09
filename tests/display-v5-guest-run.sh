@@ -188,9 +188,9 @@ qemu-system-x86_64 \
   -monitor none \
   -serial "file:$serial_log" \
   -drive "file=$overlay,format=qcow2,if=virtio" \
-  -blockdev "driver=vvfat,node-name=seed,dir=$scratch_dir/seed,label=cidata,rw=off" \
+  -blockdev "driver=vvfat,node-name=seed,dir=$scratch_dir/seed,label=cidata,rw=off,read-only=on" \
   -device virtio-blk-pci,drive=seed \
-  -blockdev "driver=vvfat,node-name=source,dir=$scratch_dir/source,label=SCOTT_SRC,rw=off" \
+  -blockdev "driver=vvfat,node-name=source,dir=$scratch_dir/source,label=SCOTT_SRC,rw=off,read-only=on" \
   -device virtio-blk-pci,drive=source \
   -nic user,model=e1000 \
   -no-reboot >"$qemu_log" 2>&1 &
