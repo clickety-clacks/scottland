@@ -252,9 +252,21 @@ pub mod testing {
 mod tests {
     use super::*;
 
+    // A child process writes the hook, so this process never holds it open for writing. Tests
+    // run in parallel threads, and a child forked by another test inherits every descriptor open
+    // at that moment until it execs; a hook written with fs::write here can then still have a
+    // writer when this test runs it, and exec fails with ETXTBSY (rust-lang/rust#114554).
     fn hook(directory: &Path, name: &str, body: &str, executable: bool) {
         let path = directory.join(name);
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let mut writer = Command::new("/bin/sh")
+            .args(["-c", "cat >\"$1\"", "sh"])
+            .arg(&path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let contents = format!("#!/bin/sh\n{body}\n");
+        std::io::Write::write_all(&mut writer.stdin.take().unwrap(), contents.as_bytes()).unwrap();
+        assert!(writer.wait().unwrap().success());
         let mode = if executable { 0o755 } else { 0o644 };
         fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
     }
