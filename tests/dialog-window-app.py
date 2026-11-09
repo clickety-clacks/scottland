@@ -7,6 +7,7 @@ from gi.repository import Gtk
 
 name = sys.argv[1]
 app = Gtk.Application(application_id='org.scottland.CycleDialog.' + name)
+windows = []
 
 
 def activate(application):
@@ -20,6 +21,7 @@ def activate(application):
     dialog.set_modal(True)
     dialog.set_default_size(720, 480)
     dialog.set_child(Gtk.Label(label=name + ' dialog'))
+    windows.extend((owner, dialog))
     dialog.present()
 
 

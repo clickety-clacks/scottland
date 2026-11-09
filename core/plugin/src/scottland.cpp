@@ -9622,6 +9622,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             entry["widget"] = is_widget(view);
             auto link = link_of_window(view);
             entry["widgetized"] = link && !link->previewing();
+            if (getenv("SCOTTLAND_TEST_MODEL")) entry["parented"] = bool(view->parent);
             entry["preview"] = (link && link->previewing()) || (link_of_widget(view) && link_of_widget(view)->previewing());
             entry["hidden"] = !view->get_root_node()->is_enabled();
             entry["zone"]  = zone_name(placement.zone);
