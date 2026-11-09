@@ -860,9 +860,35 @@ try:
     wait(lambda: view("A").get("fullscreen") and geometry("A")["width"] >= 1000 and
          geometry("A")["height"] >= 700, what="A fullscreen geometry")
     full_geometry = geometry("A")
-    pointer(full_geometry["x"] + full_geometry["width"] / 2,
-            full_geometry["y"] + full_geometry["height"] / 2)
-    wait(lambda: pointer_events("A"), what="fullscreen client receives pointer motion")
+    center_x = full_geometry["x"] + full_geometry["width"] / 2
+    center_y = full_geometry["y"] + full_geometry["height"] / 2
+
+    # Fullscreen geometry jumps before its drawn transition settles. Keep making
+    # distinct moves until the client reports the final fullscreen center. The
+    # event log can lag behind the input IPC, so retain one freshness boundary
+    # and inspect earlier attempts before sending another move.
+    pointer_epoch = [None]
+
+    def final_center_event():
+        if pointer_epoch[0] is None:
+            return None
+        return next((event for event in pointer_events("A")[pointer_epoch[0]:]
+                     if event["edge"] in ("enter", "motion") and
+                     abs(event["x"] - full_geometry["width"] / 2) <= 1 and
+                     abs(event["y"] - full_geometry["height"] / 2) <= 1), None)
+
+    def fullscreen_center_event():
+        event = final_center_event()
+        if event:
+            return event
+        pointer(center_x - 16, center_y)
+        if pointer_epoch[0] is None:
+            pointer_epoch[0] = len(pointer_events("A"))
+        pointer(center_x, center_y)
+        return final_center_event()
+
+    wait(fullscreen_center_event,
+         what="fullscreen client receives fresh center pointer motion")
     button("BTN_MIDDLE", True)
     wait(lambda: len(events("A")) == 1, what="immediate fullscreen press")
     check(events("A")[0]["edge"] == "press", "fullscreen: client receives press before release")
