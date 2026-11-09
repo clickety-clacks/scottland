@@ -44,27 +44,29 @@ matching core version. The associated `gooarchy-flavorings` package is 0.2.2-1.
    [Gooarchy README](https://github.com/clickety-clacks/gooarchy/blob/main/README.md#enroll-and-trust-gooarchy-on-stock-omarchy).
    Gooarchy maintains the repository URL and key trust procedure; use its
    instructions rather than duplicating them here.
-2. Install the matched Scottland packages and Gooarchy Flavorings together in
-   one full system upgrade transaction. This single command synchronizes the
-   package databases, upgrades the system, and installs all three targets;
-   don't split it into a separate sync followed by installation. Inspect the
-   complete proposed transaction before accepting it:
+2. After enrolling Gooarchy, run Omarchy's supported full-system update once:
 
    ```sh
-   sudo pacman -Syu scottland scottland-omarchy gooarchy-flavorings
+   omarchy update
    ```
 
-   Do not add `agentd` or `agentd-attention` to the command; pacman resolves
-   them from Gooarchy Flavorings' declared dependencies. Do not install
-   individual dependencies ahead of time.
-3. Verify the installed package versions:
+   This refreshes and upgrades the system through Omarchy's update flow.
+3. Install the signed Scottland core, Omarchy adapter, and Gooarchy Flavorings
+   together in one package-only transaction. Inspect the complete proposed
+   transaction before accepting it:
+
+   ```sh
+   sudo pacman -S scottland scottland-omarchy gooarchy-flavorings
+   ```
+4. Verify the installed package versions:
 
    ```sh
    pacman -Q scottland scottland-omarchy gooarchy-flavorings
    ```
 
-For later Gooarchy releases, repeat the same package-name transaction to
-select the current packages from the enabled repositories.
+For later system and installed-package upgrades, use Omarchy's supported
+`omarchy update` flow. If you need to install the packages after a system
+update, use the package-only transaction above.
 
 A package upgrade does not replace code already loaded by a running Wayfire
 session. Enter a new Scottland session to use the new package, or use
