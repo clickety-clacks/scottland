@@ -161,9 +161,13 @@ PY
 printf 'Scottland 0.4 source commit: %s\nScottland source tree: %s\n' "$source_sha" "$source_tree"
 
 recipe_url="https://raw.githubusercontent.com/clickety-clacks/scottland/$source_sha/tests/display-v5-guest-image.yaml"
+source_recipe="$scratch_dir/image.yaml.source"
 stage 'fetch-guest-recipe'
+curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
+  --connect-timeout 15 --max-time 180 "$recipe_url" --output "$source_recipe"
 if [[ -n ${SCOTTLAND_EMBEDDED_RECIPE_B64:-} ]]; then
-  python3 - "$scratch_dir/image.yaml.in" <<'PY'
+  embedded_recipe="$scratch_dir/image.yaml.embedded"
+  python3 - "$embedded_recipe" <<'PY'
 import base64
 import os
 import sys
@@ -171,9 +175,16 @@ from pathlib import Path
 
 Path(sys.argv[1]).write_bytes(base64.b64decode(os.environ['SCOTTLAND_EMBEDDED_RECIPE_B64'], validate=True))
 PY
+  if [[ $diagnostic_mode == 1 ]]; then
+    cp -- "$embedded_recipe" "$scratch_dir/image.yaml.in"
+  else
+    if ! cmp -s -- "$embedded_recipe" "$source_recipe"; then
+      fail 'embedded guest recipe does not match the recipe pinned to current 0.4 source'
+    fi
+    cp -- "$source_recipe" "$scratch_dir/image.yaml.in"
+  fi
 else
-  curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
-    --connect-timeout 15 --max-time 180 "$recipe_url" --output "$scratch_dir/image.yaml.in"
+  cp -- "$source_recipe" "$scratch_dir/image.yaml.in"
 fi
 source_archive="$scratch_dir/scottland-source.tar.gz"
 stage 'fetch-source-archive'
