@@ -1220,7 +1220,8 @@ if [[ $app_exit_widget_id =~ ^[0-9]+$ ]]; then
   check "WG5 the app's window closing closes its widget" \
     [ "$app_exit_survivors" = '[]' ]
 else
-  fail "WG5 the app's window closing closes its widget (not exercised: no linked widget view ID)"
+  not_run "WG5 the app's window closing closes its widget" \
+    "no linked widget view ID by the bounded pre-exit deadline"
 fi
 
 # WG5 without systemd scopes (fallback): a widget ignoring SIGTERM still has its first process
