@@ -73,7 +73,15 @@ local function active_window()
 end
 
 local noop
-noop = setmetatable({}, { __index = function() return noop end, __call = function() return noop end })
+noop = setmetatable({}, {
+  __index = function(_, key)
+    -- Unsupported list-returning APIs behave like an empty list during config loading.
+    -- Keep named properties chainable, but let ipairs stop at the first numeric index.
+    if type(key) == "number" then return nil end
+    return noop
+  end,
+  __call = function() return noop end,
+})
 
 local binds = {}
 local handlers = {}  -- hl.on(event, fn); only HANDLED_EVENTS ever run
