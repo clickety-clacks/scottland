@@ -7,7 +7,8 @@ rules are in [../AGENTS.md](../AGENTS.md).
 Status: **verified** = exercised with real input on a real session (AMD test host); **implemented** =
 built and tested headless or by IPC only; **candidate** or **pending verification** = scoped code is present but required behavior evidence, including shared-runner evidence where required, is pending; **not built** = agreed but not implemented yet.
 
-Window naming follows [../docs/window-names.md](../docs/window-names.md) (WN1–WN14).
+Window naming follows [../docs/window-names.md](../docs/window-names.md) (WN1–WN14); Window-mode
+name captions and their asynchronous consumer follow NC1–NC9 there.
 
 ## Principles (tenet candidates)
 

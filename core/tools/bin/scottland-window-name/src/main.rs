@@ -1,5 +1,6 @@
 mod command;
 mod desktop;
+mod invocation;
 mod ipc;
 mod mpris;
 mod process;
@@ -24,6 +25,8 @@ with no WINDOW_ID arguments it prints every open window.
 Options:
   --display DISPLAY  select a recorded Scottland session
   --explain          include each recipe's match/failure reason
+  --invocation-budget-ms MS  opt into a total naming budget
+  --invocation-start-monotonic-ns NS  use the caller's CLOCK_MONOTONIC origin
   -h, --help         show this help
   -V, --version      show the version";
 
@@ -31,14 +34,70 @@ struct Options {
     display: Option<String>,
     explain: bool,
     ids: Vec<u64>,
+    invocation_budget_ms: Option<u64>,
+    invocation_start_ns: Option<u64>,
     help: bool,
     version: bool,
 }
 
 fn main() -> ExitCode {
-    match run() {
-        Ok(has_missing_window) if has_missing_window => ExitCode::FAILURE,
-        Ok(_) => ExitCode::SUCCESS,
+    run()
+}
+
+fn run() -> ExitCode {
+    let entry_ns = invocation::monotonic_ns().ok();
+    let options = match parse_args(env::args_os().skip(1)) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("scottland-window-name: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    if options.help {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if options.version {
+        println!("scottland-window-name {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+
+    let invocation = match options.invocation_budget_ms {
+        Some(budget_ms) => {
+            let entry_ns = match entry_ns {
+                Some(entry_ns) => entry_ns,
+                None => {
+                    eprintln!("scottland-window-name: cannot read monotonic clock at entry");
+                    return ExitCode::from(1);
+                }
+            };
+            let start_ns = options.invocation_start_ns.unwrap_or(entry_ns);
+            match invocation::Invocation::new(budget_ms, start_ns, entry_ns) {
+                Ok(invocation) => Some(invocation),
+                Err(error) => {
+                    eprintln!("scottland-window-name: {error}");
+                    return ExitCode::from(1);
+                }
+            }
+        }
+        None => None,
+    };
+
+    let result = execute(&options, invocation.as_ref());
+    match result {
+        Ok(has_missing_window) => {
+            if let Some(invocation) = invocation.as_ref() {
+                if let Err(error) = invocation.finish() {
+                    eprintln!("scottland-window-name: {error}");
+                    return ExitCode::from(1);
+                }
+            }
+            if has_missing_window {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
         Err(error) => {
             eprintln!("scottland-window-name: {error}");
             ExitCode::from(1)
@@ -46,54 +105,85 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<bool, String> {
-    let options = parse_args(env::args_os().skip(1))?;
-    if options.help {
-        println!("{USAGE}");
-        return Ok(false);
+fn execute(options: &Options, invocation: Option<&invocation::Invocation>) -> Result<bool, String> {
+    if let Some(invocation) = invocation {
+        invocation.ensure_work()?;
     }
-    if options.version {
-        println!("scottland-window-name {}", env!("CARGO_PKG_VERSION"));
-        return Ok(false);
-    }
-
     let selected = session::current(options.display.as_deref())
         .map_err(|error| format!("cannot select a running Scottland session: {error}"))?;
+    if let Some(invocation) = invocation {
+        invocation.ensure_work()?;
+    }
     let socket = selected
         .wayfire_socket()
         .ok_or_else(|| "the selected session has no Wayfire IPC socket".to_string())?;
     let windows = ipc::read_windows(socket)?;
+    if let Some(invocation) = invocation {
+        invocation.ensure_work()?;
+    }
     let ids = if options.ids.is_empty() {
         windows.iter().map(|window| window.id).collect::<Vec<_>>()
     } else {
-        options.ids
+        options.ids.clone()
     };
 
     let desktop_index =
         desktop::Index::read_from(&|name| selected.var(name).map(OsStr::to_os_string));
-    let process_snapshot = process::Snapshot::read();
-    let recipes = recipe::load(&recipe_directories(&selected));
-    let outputs = service::name(
-        &ids,
-        &windows,
-        &desktop_index,
-        &process_snapshot,
-        &recipes,
-        selected.var("DBUS_SESSION_BUS_ADDRESS"),
-        &selected.env,
-        options.explain,
-    );
-
-    let stdout = io::stdout();
-    let mut output = stdout.lock();
-    for result in &outputs {
-        to_writer(&mut output, &service::json_value(result, options.explain))
-            .map_err(|error| format!("cannot encode window result: {error}"))?;
-        output
-            .write_all(b"\n")
-            .map_err(|error| format!("cannot write window result: {error}"))?;
+    if let Some(invocation) = invocation {
+        invocation.ensure_work()?;
     }
-    Ok(outputs.iter().any(|result| result.missing))
+    let process_snapshot = process::Snapshot::read();
+    if let Some(invocation) = invocation {
+        invocation.ensure_work()?;
+    }
+    let recipes = recipe::load(&recipe_directories(&selected));
+    if let Some(invocation) = invocation {
+        invocation.ensure_work()?;
+        let stdout = io::stdout();
+        let mut output = stdout.lock();
+        service::name_with_invocation(
+            &ids,
+            &windows,
+            &desktop_index,
+            &process_snapshot,
+            &recipes,
+            selected.var("DBUS_SESSION_BUS_ADDRESS"),
+            &selected.env,
+            options.explain,
+            invocation,
+            |result| {
+                to_writer(&mut output, &service::json_value(result, options.explain))
+                    .map_err(|error| format!("cannot encode window result: {error}"))?;
+                output
+                    .write_all(b"\n")
+                    .map_err(|error| format!("cannot write window result: {error}"))?;
+                output
+                    .flush()
+                    .map_err(|error| format!("cannot flush window result: {error}"))
+            },
+        )
+    } else {
+        let outputs = service::name(
+            &ids,
+            &windows,
+            &desktop_index,
+            &process_snapshot,
+            &recipes,
+            selected.var("DBUS_SESSION_BUS_ADDRESS"),
+            &selected.env,
+            options.explain,
+        );
+        let stdout = io::stdout();
+        let mut output = stdout.lock();
+        for result in &outputs {
+            to_writer(&mut output, &service::json_value(result, options.explain))
+                .map_err(|error| format!("cannot encode window result: {error}"))?;
+            output
+                .write_all(b"\n")
+                .map_err(|error| format!("cannot write window result: {error}"))?;
+        }
+        Ok(outputs.iter().any(|result| result.missing))
+    }
 }
 
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> {
@@ -101,6 +191,8 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Options, Strin
         display: None,
         explain: false,
         ids: Vec::new(),
+        invocation_budget_ms: None,
+        invocation_start_ns: None,
         help: false,
         version: false,
     };
@@ -119,6 +211,33 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Options, Strin
             "-h" | "--help" => options.help = true,
             "-V" | "--version" => options.version = true,
             "--explain" => options.explain = true,
+            "--invocation-budget-ms" => {
+                if options.invocation_budget_ms.is_some() {
+                    return Err("--invocation-budget-ms may be supplied only once".to_string());
+                }
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--invocation-budget-ms requires a value".to_string())?;
+                let value = parse_decimal_option(&value, "--invocation-budget-ms")?;
+                if value == 0 {
+                    return Err("--invocation-budget-ms must be positive".to_string());
+                }
+                options.invocation_budget_ms = Some(value);
+            }
+            "--invocation-start-monotonic-ns" => {
+                if options.invocation_start_ns.is_some() {
+                    return Err(
+                        "--invocation-start-monotonic-ns may be supplied only once".to_string()
+                    );
+                }
+                let value = args.next().ok_or_else(|| {
+                    "--invocation-start-monotonic-ns requires a value".to_string()
+                })?;
+                options.invocation_start_ns = Some(parse_decimal_option(
+                    &value,
+                    "--invocation-start-monotonic-ns",
+                )?);
+            }
             "--display" => {
                 let display = args
                     .next()
@@ -140,7 +259,21 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Options, Strin
     if options.help && options.version {
         return Err("--help and --version cannot be used together".to_string());
     }
+    if options.invocation_start_ns.is_some() && options.invocation_budget_ms.is_none() {
+        return Err("--invocation-start-monotonic-ns requires --invocation-budget-ms".to_string());
+    }
     Ok(options)
+}
+
+fn parse_decimal_option(argument: &OsStr, option: &str) -> Result<u64, String> {
+    let text = argument
+        .to_str()
+        .ok_or_else(|| format!("{option} must be a decimal integer"))?;
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!("{option} must be a decimal integer"));
+    }
+    text.parse::<u64>()
+        .map_err(|_| format!("{option} is out of range"))
 }
 
 fn parse_id(argument: &OsStr) -> Result<u64, String> {
