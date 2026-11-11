@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 repo=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
 cd "$repo"
@@ -15,15 +16,40 @@ tmp="$run_root/tmp"
 mkdir -m 700 -- "$tmp"
 export SCOTTLAND_HEADLESS_DIR="$headless"
 export TMPDIR="$tmp"
+export SCOTTLAND_HEADLESS_ISOLATION=1
+export SCOTTLAND_TEST_SCRATCH="$run_root"
+unset SCOTTLAND_SESSION_DIR
 
 cleanup() {
   status=$?
   trap - EXIT
-  if [[ -f $headless/wayfire.log ]]; then
+  cleanup_ok=1
+  if [[ -f $headless/wayfire.log && ! -L $headless/wayfire.log ]]; then
     cp -- "$headless/wayfire.log" "$run_root/wayfire.log" || true
   fi
-  tests/headless.sh stop --preserve-scratch >"$run_root/headless-stop.log" 2>&1 || true
-  rm -rf -- "$headless" "$tmp"
+  if [[ -e $headless || -L $headless ]]; then
+    if ! tests/headless.sh stop >"$run_root/headless-stop.log" 2>&1; then
+      echo 'headless stop failed; preserving its owned scratch for inspection' >&2
+      cleanup_ok=0
+    fi
+  fi
+  if [[ -e $headless || -L $headless ]]; then
+    echo 'headless wrapper retained its scratch; preserving it for inspection' >&2
+    cleanup_ok=0
+  fi
+  if ((cleanup_ok)); then
+    if [[ -d $run_root && ! -L $run_root && \
+          $(realpath -e -- "$run_root") == "$run_root" && \
+          $(stat -c '%u:%a' -- "$run_root") == "$(id -u):700" && \
+          -d $tmp && ! -L $tmp && $(realpath -e -- "$tmp") == "$run_root/tmp" && \
+          $(stat -c '%u:%a' -- "$tmp") == "$(id -u):700" ]]; then
+      rm -rf -- "$tmp"
+    else
+      echo 'temporary scratch ownership check failed; preserving it' >&2
+      cleanup_ok=0
+    fi
+  fi
+  ((cleanup_ok)) || status=1
   exit "$status"
 }
 trap cleanup EXIT
