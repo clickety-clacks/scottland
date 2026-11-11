@@ -26,6 +26,28 @@ reports every window in the snapshot.
 | WN-13 | Resolve every field to exactly one window field, title capture, or source field; validate pointer mappings and reject prohibited collisions. | not yet validated |
 | WN-14 | Warn on invalid winning recipe files and unknown keys; an invalid winner shadows later copies of the same ID. | not yet validated |
 
+## Window-mode captions and asynchronous consumption
+
+These requirements extend the existing service output into Window-mode hint presentation. They do
+not change the service's recipe evaluation or add widget naming. The service's +2400 ms and +2600 ms
+and the consumer's +2800 ms and +3000 ms boundaries are future policy targets, not measurements or
+guarantees of the current source. A consumer slot is released only after CLI termination is
+observed, its endpoints are closed, and consumer work for that invocation has settled. If the
+consumer target is missed, the slot remains counted and the miss is logged; the target does not
+guarantee slot release or progress for pending work by that time.
+
+| ID | Invariant | Status |
+|---|---|---|
+| NC1 | Request names from `scottland-window-name` by numeric window ID, preserve complete returned strings, and do not evaluate recipes in the renderer. | not yet validated |
+| NC2 | Refresh on Window-mode entry, eligibility, title/app-id/process identity and relevant MPRIS events; do not poll. | not yet validated |
+| NC3 | Keep CLI work off Wayfire's main loop, cap active work, and coalesce to one latest pending request per window. Consumer Dk=T0+2800 ms is the direct-child kill target; D=T0+3000 ms is the settlement target. Neither guarantees release by a fixed time: retain/count/log until termination is observed, endpoints are closed, and consumer work is settled. | not yet validated |
+| NC4 | Apply only when mode, live window object, eligibility and latest request generations still match in the same main-loop action. | not yet validated |
+| NC5 | A usable string is preserved, explicit `null` suppresses the caption, and missing/error results clear stale service content and use current local title then app-id. | not yet validated |
+| NC6 | While a refresh is pending, show the current local fallback rather than the previously resolved content name; update without restarting Window mode or delaying hint input. | not yet validated |
+| NC7 | Center a secondary name plate below the dominant hint, at 15 logical px nominal and 12 px minimum at text scale 1, with both sizes following desktop text scale only. | not yet validated |
+| NC8 | Fit by rendered text metrics; use one-line end ellipsis at the floor without splitting displayed graphemes, while retaining the full model value. | not yet validated |
+| NC9 | Keep the caption within its owning output and preserve the hint's existing anchor/action; report concrete infeasible geometry rather than lowering the font floor or moving the window. | not yet validated |
+
 ## Recipe lookup and templates
 
 Recipes are individual `.toml` files. Lookup precedence is:
