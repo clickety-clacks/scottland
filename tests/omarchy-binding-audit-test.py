@@ -304,10 +304,17 @@ def classify_rows(rows, importer, base_assignments, generated_assignments, outpu
         allowed = [heading for heading in report_groups if heading in ALLOWED_DISPLACEMENT_HEADINGS]
         unsupported = "Unsupported in Scottland" in report_groups
         displaced = skip["reason"].startswith("displaced:")
+        intentionally_unbound = (
+            row["mods"].strip().casefold() == "super" and row["key"].strip().casefold() == "w" and
+            row["kind"] == "lua" and row["action"] == "hl.dsp.window.close()" and
+            skip["reason"] == "O9: close remains unbound" and
+            "Scottland leaves Super+W unbound" in allowed
+        )
         # O20 can account for source actions with no Scottland equivalent. It cannot excuse losing
         # a command/dispatcher that the audit expects to import; those need a real feature collision.
         intentional_unsupported = route[0] == "unsupported" and (allowed or unsupported)
-        if (route[0] != "unsupported" and displaced and allowed) or intentional_unsupported:
+        if ((route[0] != "unsupported" and displaced and allowed) or intentional_unsupported or
+                intentionally_unbound):
             audit.append({**row, "status": "deliberately displaced", "result": "",
                           "reason": f"{skip['reason']}; O20: "
                                     f"{', '.join(sorted(set(allowed or ['Unsupported in Scottland'])))}."})
