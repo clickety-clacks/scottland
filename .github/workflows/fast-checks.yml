@@ -157,6 +157,7 @@ jobs:
               tests/spread-unit.sh
               tests/windowing-unit.sh
               python3 tests/omarchy-luahost-noop-list-test.py
+              python3 tests/omarchy-compat-test.py
               python3 tests/output-scale-unit.py
               mkdir -p build
               g++ -std=c++17 -Wall -Wextra -Werror -O2 -Icore/plugin/src \

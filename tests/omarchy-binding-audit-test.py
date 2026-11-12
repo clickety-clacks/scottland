@@ -22,8 +22,8 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 
-OMARCHY_VERSION = "v4.5.0"
-OMARCHY_COMMIT = "ac2690cd7be4f47e4a255f5e2e78d904d436b068"
+OMARCHY_VERSION = os.environ.get("OMARCHY_AUDIT_VERSION", "v4.5.0")
+OMARCHY_COMMIT = os.environ.get("OMARCHY_AUDIT_COMMIT", "ac2690cd7be4f47e4a255f5e2e78d904d436b068")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 IMPORTER_PATH = REPO_ROOT / "omarchy/config.d/50-omarchy-shortcuts"
 SOURCE_SCAN_PATH = REPO_ROOT / "tests/fixtures/omarchy-bindings-scan.lua"

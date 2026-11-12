@@ -173,6 +173,8 @@ package_scottland-omarchy() {
   install -Dm755 "$o/bin/scottland-switch" "$pkgdir/usr/bin/scottland-switch"
   install -Dm755 "$o/bin/scottland-omarchy-logout" "$pkgdir/usr/bin/scottland-omarchy-logout"
   install -Dm755 "$o/bin/scottland-omarchy-setup" "$pkgdir/usr/bin/scottland-omarchy-setup"
+  install -Dm755 "$o/libexec/scottland-omarchy-compat" "$pkgdir/usr/lib/scottland/libexec/scottland-omarchy-compat"
+  install -Dm644 "$o/supported-series" "$pkgdir/usr/lib/scottland/supported-series"
   install -Dm755 "$o/helper/scottland-session-helper" "$pkgdir/usr/lib/scottland/scottland-session-helper"
   install -Dm644 "$o/helper/org.scottland.session.policy" "$pkgdir/usr/share/polkit-1/actions/org.scottland.session.policy"
   install -Dm755 "$o/hooks/10-fall-back-to-hyprland" "$pkgdir/usr/lib/scottland/early-exit.d/10-fall-back-to-hyprland"
