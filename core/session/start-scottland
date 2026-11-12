@@ -46,6 +46,7 @@ main() {
   # and with the configured displays, not a previous session's output settings (scottland-output).
   rm -rf "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/plugins"
   rm -f "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/session-outputs.json"
+  rm -f "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/session-output-scales.json"
 
   state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
   mkdir -p "$state"

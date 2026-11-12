@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Append explicit scale changes made over an overrides.ini pin in this session only."""
+import json
+import os
+import re
+import sys
+
+
+def session_dir():
+    configured = os.environ.get("SCOTTLAND_SESSION_DIR")
+    if configured:
+        return configured
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return os.path.join(runtime, "scottland")
+
+
+path = os.path.join(session_dir(), "session-output-scales.json")
+if len(sys.argv) > 1 and sys.argv[1] == "--watch-paths":
+    print(path)
+    raise SystemExit(0)
+
+try:
+    with open(path, encoding="utf-8") as source:
+        scales = json.load(source)
+except FileNotFoundError:
+    raise SystemExit(0)
+except (OSError, ValueError) as error:
+    print(f"95-session-output-scales: could not read {path}: {error}", file=sys.stderr)
+    raise SystemExit(1)
+
+if not isinstance(scales, dict):
+    print(f"95-session-output-scales: invalid scale map in {path}", file=sys.stderr)
+    raise SystemExit(1)
+
+for name, scale in sorted(scales.items()):
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        print(f"95-session-output-scales: invalid output name in {path}", file=sys.stderr)
+        raise SystemExit(1)
+    if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not 1 <= scale <= 4:
+        print(f"95-session-output-scales: invalid scale for {name} in {path}", file=sys.stderr)
+        raise SystemExit(1)
+    print(f"[output:{name}]\n# set for this session over overrides.ini\nscale = {scale:g}")

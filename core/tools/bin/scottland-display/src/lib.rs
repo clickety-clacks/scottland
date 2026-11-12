@@ -4,13 +4,16 @@ use std::process::{Command, Output};
 
 pub(crate) mod color_scheme;
 pub(crate) mod brightness_target;
+pub(crate) mod appearance;
+pub(crate) mod brightness;
 pub(crate) mod gamma;
 pub(crate) mod night_light;
+pub(crate) mod outputs;
 
 const SCHEMA: &str = "org.gnome.desktop.interface";
 const KEY: &str = "text-scaling-factor";
 const RANGE_ERROR: &str = "text size must be a number in the range 0.5 to 3.0";
-const USAGE: &str = "usage: scottland-display text-size [set <factor>|reset] | color-scheme [once|watch|ensure|cursor-size] | cursor-size | terminal-theme push | night-light <on|off|toggle|status>";
+const USAGE: &str = "usage: scottland-display text-size [set <factor>|reset] | color-scheme [once|watch|ensure|cursor-size] | cursor-size | brightness [--no-osd] [--output NAME] [STEP|off|on] | brightness keyboard [--no-osd] [up|down|cycle|off|restore] | output focused|internal|external-active|scale [up|down|SCALE] | wake | palette --all|KEY [FALLBACK] | terminal-theme push | night-light <on|off|toggle|status>";
 
 pub fn run(args: &[OsString]) -> Result<(), String> {
     match run_with_exit_status(args)? {
@@ -39,12 +42,16 @@ pub fn run_with_exit_status(args: &[OsString]) -> Result<u8, String> {
         ["text-size"] => show().map(|()| 0),
         ["text-size", "set", factor] => set(factor).map(|()| 0),
         ["text-size", "reset"] => reset().map(|()| 0),
-        ["color-scheme"] | ["color-scheme", "once"] => color_scheme::once().map(|()| 0),
+        ["color-scheme"] | ["color-scheme", "once"] => appearance::apply_current().map(|()| 0),
         ["color-scheme", "watch"] => color_scheme::watch().map(|()| 0),
         ["color-scheme", "ensure"] => color_scheme::ensure().map(|()| 0),
-        ["color-scheme", "cursor-size"] => color_scheme::cursor_size().map(|()| 0),
-        ["cursor-size"] => color_scheme::cursor_size().map(|()| 0),
-        ["terminal-theme", "push"] => color_scheme::push_terminal_theme().map(|()| 0),
+        ["color-scheme", "cursor-size"] => appearance::cursor_size().map(|()| 0),
+        ["cursor-size"] => appearance::cursor_size().map(|()| 0),
+        ["brightness", command @ ..] => brightness::run(command).map(|()| 0),
+        ["output", command @ ..] => outputs::run(command).map(|()| 0),
+        ["wake"] => brightness::wake().map(|()| 0),
+        ["palette", command @ ..] => appearance::palette(command).map(|()| 0),
+        ["terminal-theme", "push"] => appearance::push_terminal_theme().map(|()| 0),
         ["night-light", command @ ..] => {
             let outcome = night_light::execute(command)?;
             let stdout = io::stdout();

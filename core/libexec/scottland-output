@@ -7,7 +7,7 @@ position, scale and transform.
       (name, description, make, model, serial, physical size, enabled, current mode, modes,
       position, scale, transform, adaptive sync), as Wayfire reports it over wlr-output-management.
   scottland-output set NAME [--on | --off] [--mode MODE] [--position X,Y|auto] [--scale S|auto]
-                            [--transform T]
+                            [--transform T] [--session-only]
       MODE: auto (the preferred mode), highres, highrr, WIDTHxHEIGHT or WIDTHxHEIGHT@HZ,
       or "mirror OTHER". S: 0.1-10, or auto. T: 0-7 (wl_output numbering) or normal, 90, 180,
       270, flipped, 90_flipped, 180_flipped, 270_flipped. Prints the output as the compositor
@@ -21,7 +21,8 @@ which still wins) and applied by Wayfire when it reloads it. So they survive con
 output reconnecting, and end with the session. Turning an output off keeps its other settings, so
 turning it on again brings it back at the same mode, position and scale. Changes made at the same
 time (several integrations) are made one after another, each kept. Persistent display
-settings belong in the config itself ([output:NAME] sections, e.g. in overrides.ini).
+settings belong in the config itself ([output:NAME] sections, e.g. in overrides.ini). A
+session-only scale is emitted after overrides.ini and is discarded when the session ends.
 
 Scale auto is the output's natural scale, from the physical size and mode the compositor reports
 for it: pixel density along the diagonal of 200 per inch or more gives 2, 140 or more 1.5, anything
@@ -66,6 +67,10 @@ def settings_path():
     return os.path.join(directory, "session-outputs.json")
 
 
+def session_scales_path():
+    return os.path.join(os.path.dirname(settings_path()), "session-output-scales.json")
+
+
 def read_settings(handle):
     handle.seek(0)
     text = handle.read()
@@ -74,6 +79,23 @@ def read_settings(handle):
         return value if isinstance(value, dict) else {}
     except ValueError:
         return {}
+
+
+def write_session_scales(path, directory, scales):
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=directory, prefix=".session-output-scales.",
+                                         delete=False) as out:
+            temporary = out.name
+            json.dump(scales, out, indent=1, sort_keys=True)
+        os.replace(temporary, path)
+    except OSError:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+        raise
 
 
 def wayfire_mode(text):
@@ -188,7 +210,7 @@ def mismatches(head, wanted):
     return wrong
 
 
-def change(name, update):
+def change(name, update, session_scale=None, clear_session_scale=None, clear_all_scales=False):
     """update(settings) edits this session's settings; then apply them. Returns the exit status."""
     path = settings_path()
     directory = os.path.dirname(path)
@@ -203,13 +225,37 @@ def change(name, update):
         except FileNotFoundError:
             settings = {}
         wanted = update(settings)
+        scales_path = session_scales_path()
+        try:
+            with open(scales_path) as handle:
+                scales = json.load(handle)
+            if not isinstance(scales, dict):
+                scales = {}
+        except FileNotFoundError:
+            scales = {}
+        except (OSError, ValueError) as error:
+            print(f"scottland-output: could not read session-only scales: {error}", file=sys.stderr)
+            return 2
+        if clear_all_scales:
+            scales.clear()
+        elif clear_session_scale is not None:
+            scales.pop(clear_session_scale, None)
+        if session_scale is not None:
+            scales[name] = float(session_scale)
+        if clear_all_scales or clear_session_scale is not None or session_scale is not None:
+            try:
+                write_session_scales(scales_path, directory, scales)
+            except OSError as error:
+                print(f"scottland-output: could not write session-only scales: {error}", file=sys.stderr)
+                return 2
         with tempfile.NamedTemporaryFile("w", dir=directory, prefix=".session-outputs.",
                                          delete=False) as out:
             json.dump(settings, out, indent=1, sort_keys=True)
         os.replace(out.name, path)
         auto = (wanted or {}).get("scale") == "auto"
+        apply_error = None
+        found, wrong = [], []
         try:
-            found, wrong = [], []
             # Auto scale is worked out for the mode in the config, or else the output's current
             # one; a second build catches a mode this change moved the output to (e.g. highres).
             for _ in range(2 if auto else 1):
@@ -225,7 +271,9 @@ def change(name, update):
                 if not wrong:
                     break
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
-            print(f"scottland-output: {error}", file=sys.stderr)
+            apply_error = error
+        if apply_error is not None:
+            print(f"scottland-output: {apply_error}", file=sys.stderr)
             return 2
     if not name:
         return 0
@@ -256,6 +304,7 @@ def main():
     setter.add_argument("--position")
     setter.add_argument("--scale")
     setter.add_argument("--transform")
+    setter.add_argument("--session-only", action="store_true")
     reset = commands.add_parser("reset")
     reset.add_argument("name", nargs="?")
     try:
@@ -282,7 +331,8 @@ def main():
             else:
                 settings.clear()
             return None
-        sys.exit(change(args.name, drop))
+        sys.exit(change(args.name, drop, clear_session_scale=args.name,
+                        clear_all_scales=args.name is None))
 
     wanted = {}
     if args.enabled is not None:
@@ -314,11 +364,24 @@ def main():
     if not wanted:
         print("scottland-output: nothing to set", file=sys.stderr)
         sys.exit(64)
+    if args.session_only and (
+        args.scale is None
+        or set(wanted) != {"scale"}
+        or wanted["scale"] == "auto"
+        or not 1 <= wanted["scale"] <= 4
+    ):
+        print("scottland-output: --session-only requires a numeric scale-only change", file=sys.stderr)
+        sys.exit(64)
 
     def merge(settings):
         settings.setdefault(args.name, {}).update(wanted)
         return wanted
-    sys.exit(change(args.name, merge))
+    sys.exit(change(
+        args.name,
+        merge,
+        session_scale=wanted["scale"] if args.session_only else None,
+        clear_session_scale=args.name if args.scale is not None and not args.session_only else None,
+    ))
 
 
 if __name__ == "__main__":

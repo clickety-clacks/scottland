@@ -1,6 +1,7 @@
 //! The command's user-visible text-size behavior with an isolated GSettings boundary.
 
 use std::fs;
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -26,7 +27,6 @@ struct Scratch {
     home: PathBuf,
     hooks: PathBuf,
     calls: PathBuf,
-    helper_calls: PathBuf,
     monitor_calls: PathBuf,
     state: PathBuf,
 }
@@ -47,7 +47,6 @@ impl Scratch {
         fs::create_dir(&home).unwrap();
         fs::create_dir_all(hooks.join("libexec")).unwrap();
         let calls = root.join("calls");
-        let helper_calls = root.join("helper-calls");
         let monitor_calls = root.join("monitor-calls");
         let state = root.join("state");
         let fake = bin.join("gsettings");
@@ -107,29 +106,10 @@ esac
             fs::set_permissions(path, permissions).unwrap();
         }
 
-        let fake_helper = hooks.join("libexec/scottland-color-scheme");
-        fs::write(
-            &fake_helper,
-            r##"#!/bin/sh
-set -eu
-printf '%s\n' "$*" >>"$HELPER_CALLS"
-if [ "${FAIL_HELPER:-0}" = 1 ]; then
-  echo 'fixture helper failure' >&2
-  exit 9
-fi
-case "$1" in
-  cursor-size) printf '24\n' ;;
-  once|terminal-theme-push) ;;
-  *) echo "unexpected action: $1" >&2; exit 64 ;;
-esac
-"##,
-        )
-        .unwrap();
-        let mut permissions = fs::metadata(&fake_helper).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&fake_helper, permissions).unwrap();
+        std::os::unix::fs::symlink(BINARY, hooks.join("libexec/scottland-display"))
+            .expect("install the command in the session hook tree");
         std::os::unix::fs::symlink(BINARY, bin.join("scottland-display"))
-            .expect("link the command into the session hook PATH");
+            .expect("link the command into the fixture PATH");
 
         Self {
             root,
@@ -137,7 +117,6 @@ esac
             home,
             hooks,
             calls,
-            helper_calls,
             monitor_calls,
             state,
         }
@@ -159,28 +138,8 @@ esac
             .env("HOME", &self.home)
             .env("SCOTTLAND_HOOKS", &self.hooks)
             .env("CALLS", &self.calls)
-            .env("HELPER_CALLS", &self.helper_calls)
             .env("STATE_FILE", &self.state)
             .env("FAIL_GSETTINGS", if fail { "1" } else { "0" })
-            .output()
-            .unwrap()
-    }
-
-    fn run_with_helper_failure(&self, args: &[&str], fail: bool) -> Output {
-        let mut paths = vec![self.bin.clone()];
-        paths.extend(std::env::split_paths(
-            &std::env::var_os("PATH").unwrap_or_default(),
-        ));
-        let path = std::env::join_paths(paths).unwrap();
-        Command::new(BINARY)
-            .args(args)
-            .env("PATH", path)
-            .env("HOME", &self.home)
-            .env("SCOTTLAND_HOOKS", &self.hooks)
-            .env("CALLS", &self.calls)
-            .env("HELPER_CALLS", &self.helper_calls)
-            .env("STATE_FILE", &self.state)
-            .env("FAIL_HELPER", if fail { "1" } else { "0" })
             .output()
             .unwrap()
     }
@@ -195,14 +154,6 @@ esac
 
     fn ghostty_config(&self) -> PathBuf {
         self.home.join(".config/ghostty/config")
-    }
-
-    fn helper_calls(&self) -> Vec<String> {
-        fs::read_to_string(&self.helper_calls)
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_string)
-            .collect()
     }
 
     fn monitor_pids(&self) -> Vec<i32> {
@@ -264,7 +215,20 @@ impl WaylandSocket {
             thread::spawn(move || {
                 while listening.load(Ordering::Acquire) {
                     match listener.accept() {
-                        Ok((stream, _)) => drop(stream),
+                        Ok((mut stream, _)) => {
+                            let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+                            let mut header = [0; 4];
+                            if stream.read_exact(&mut header).is_ok() {
+                                let length = u32::from_le_bytes(header) as usize;
+                                if length <= 4 * 1024 * 1024 {
+                                    let mut request = vec![0; length];
+                                    if stream.read_exact(&mut request).is_ok() {
+                                        let _ = stream.write_all(&2_u32.to_le_bytes());
+                                        let _ = stream.write_all(b"{}");
+                                    }
+                                }
+                            }
+                        }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(10));
                         }
@@ -309,10 +273,10 @@ fn launch_watcher(scratch: &Scratch) -> (Watcher, PathBuf, WaylandSocket) {
         .env("XDG_CONFIG_HOME", scratch.home.join(".config"))
         .env("XDG_RUNTIME_DIR", &scratch.root)
         .env("WAYLAND_DISPLAY", "wayland-0")
+        .env("WAYFIRE_SOCKET", &socket.path)
         .env("SCOTTLAND_SESSION_DIR", &session_dir)
         .env("SCOTTLAND_HOOKS", &scratch.hooks)
         .env("CALLS", &scratch.calls)
-        .env("HELPER_CALLS", &scratch.helper_calls)
         .env("MONITOR_PIDS", &monitor_log)
         .env("MONITOR_CALLS", &scratch.monitor_calls)
         .spawn()
@@ -375,19 +339,16 @@ fn documented_help_dispatch_succeeds_without_reading_settings() {
 }
 
 #[test]
-fn color_scheme_defaults_to_once_and_accepts_nested_cursor_size() {
-    let once = Scratch::new();
-    let output = once.run(&["color-scheme"]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(once.helper_calls(), ["once"]);
-    assert!(once.calls().is_empty());
-
+fn cursor_size_command_reads_native_text_scale_and_has_no_helper_dependency() {
     let cursor = Scratch::new();
     let output = cursor.run(&["color-scheme", "cursor-size"]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(stdout(&output), "24\n");
-    assert_eq!(cursor.helper_calls(), ["cursor-size"]);
-    assert!(cursor.calls().is_empty());
+    assert!(cursor
+        .calls()
+        .iter()
+        .any(|call| call == &format!("get {SCHEMA} {KEY}")));
+    assert!(!cursor.hooks.join("libexec/scottland-color-scheme").exists());
 }
 
 #[test]
@@ -471,35 +432,16 @@ fn unsupported_arguments_are_rejected_before_calling_gsettings() {
 }
 
 #[test]
-fn terminal_theme_push_calls_only_the_private_helper_action_once() {
+fn terminal_theme_push_without_a_theme_location_is_a_successful_noop() {
     let scratch = Scratch::new();
     let output = scratch.run(&["terminal-theme", "push"]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(scratch.calls().is_empty());
-    assert_eq!(scratch.helper_calls(), ["terminal-theme-push"]);
+    assert!(!scratch.hooks.join("libexec/scottland-color-scheme").exists());
 }
 
 #[test]
-fn terminal_theme_push_propagates_helper_failure_and_stderr() {
-    let scratch = Scratch::new();
-    let output = scratch.run_with_helper_failure(&["terminal-theme", "push"], true);
-    assert!(!output.status.success());
-    assert!(
-        stderr(&output).contains("terminal-theme-push failed"),
-        "unexpected error: {}",
-        stderr(&output)
-    );
-    assert!(
-        stderr(&output).contains("fixture helper failure"),
-        "unexpected error: {}",
-        stderr(&output)
-    );
-    assert_eq!(scratch.helper_calls(), ["terminal-theme-push"]);
-    assert!(scratch.calls().is_empty());
-}
-
-#[test]
-fn terminal_theme_push_rejects_malformed_arguments_before_calling_helper() {
+fn terminal_theme_push_rejects_malformed_arguments_before_session_io() {
     let scratch = Scratch::new();
 
     for args in [
@@ -512,7 +454,6 @@ fn terminal_theme_push_rejects_malformed_arguments_before_calling_helper() {
         assert!(stderr(&output).contains("usage: scottland-display"));
     }
 
-    assert!(scratch.helper_calls().is_empty());
     assert!(scratch.calls().is_empty());
 }
 
@@ -524,17 +465,6 @@ fn night_light_parse_errors_preserve_the_policy_status_without_session_io() {
     assert_eq!(output.status.code(), Some(2));
     assert!(stdout(&output).is_empty());
     assert!(stderr(&output).contains("usage: scottland-display night-light"));
-    assert!(scratch.helper_calls().is_empty());
-    assert!(scratch.calls().is_empty());
-}
-
-#[test]
-fn cursor_size_command_returns_the_helper_value_without_settings_side_effects() {
-    let scratch = Scratch::new();
-    let output = scratch.run(&["cursor-size"]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(stdout(&output), "24\n");
-    assert_eq!(scratch.helper_calls(), ["cursor-size"]);
     assert!(scratch.calls().is_empty());
 }
 
@@ -547,8 +477,6 @@ fn sourced_session_environment_exports_the_cursor_size_from_its_session_tool() {
 
     // The hook must use the Display binary belonging to this session's hooks
     // tree, even when another binary with the same name is available on PATH.
-    std::os::unix::fs::symlink(BINARY, scratch.hooks.join("libexec/scottland-display"))
-        .expect("link Display into the session hooks tree");
     let path_decoy = scratch.bin.join("scottland-display");
     fs::remove_file(&path_decoy).unwrap();
     let path_calls = scratch.root.join("path-display-calls");
@@ -575,13 +503,13 @@ fn sourced_session_environment_exports_the_cursor_size_from_its_session_tool() {
         .env("CURSOR_SCRIPT", &script)
         .env("PATH", path)
         .env("SCOTTLAND_HOOKS", &scratch.hooks)
-        .env("HELPER_CALLS", &scratch.helper_calls)
+        .env("CALLS", &scratch.calls)
+        .env("STATE_FILE", &scratch.state)
         .env("PATH_DISPLAY_CALLS", &path_calls)
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(stdout(&output), "24\n");
-    assert_eq!(scratch.helper_calls(), ["cursor-size"]);
     assert!(!path_calls.exists(), "hook invoked Display through PATH");
 }
 

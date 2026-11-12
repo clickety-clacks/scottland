@@ -522,7 +522,7 @@ accessibility, or the app talking to its own widget (WG11, or its own service) c
   is never read as this one's). A synchronous Prepare handshake creates it before exec; the
   resolved desktop identity is in the model, without a launch side file.
 - **Palette:** `$XDG_RUNTIME_DIR/scottland/<display>.palette.json` (`scheme`, `background`,
-  `foreground`, `muted`, `accent`, `alert`), kept current by `scottland-color-scheme` from the
+  `foreground`, `muted`, `accent`, `alert`), kept current by `scottland-display color-scheme` from the
   desktop's light/dark setting and accent, overlaid by an integration's palette (an `accent.d`
   provider run with `--palette`; the Omarchy adapter's reads the Omarchy theme). Core never reads
   an integration's files itself.
@@ -593,7 +593,7 @@ used; this is headless validation, not physical-screen verification.
 
 Final regression runs also passed `widgets-test` (all checks) and the retired widget-morph suite (185/185),
 `goo-test` (46/46), and `goo-overlap-hover-test` (27/27). The morph run initialized its private
-session palette through `scottland-color-scheme ensure` before reading window-mode hints.
+session palette through `scottland-display color-scheme ensure` before reading window-mode hints.
 
 GO16 also verifies WG10/WG16/WG22/WG23 against the widget's visible alpha body,
 including badges, in isolated sessions. Real-input shape/control checks pass
