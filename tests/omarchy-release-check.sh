@@ -6,16 +6,12 @@ repo=${GITHUB_REPOSITORY:?}
 last=$(cat omarchy/tested-release)
 [[ $last =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid tested release: $last" >&2; exit 2; }
 mkdir -p build/omarchy-release-check
-if [[ -n $(gh api "repos/$repo/pulls?state=open&per_page=100" \
-  --jq '[.[] | select(.head.ref | startswith("bot/omarchy-tested-"))] | .[0].number // empty') ]]; then
-  echo 'A tested-series update is awaiting review; checking resumes after it lands'
-  exit 0
-fi
 
 mapfile -t releases < <(gh api --paginate repos/omacom/omarchy/releases --jq '.[].tag_name' |
   grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -Vu)
 
 seen=0
+audited=0
 for tag in "${releases[@]}"; do
   if [[ $tag == "$last" ]]; then seen=1; continue; fi
   [[ $seen == 1 ]] || continue
@@ -69,37 +65,13 @@ PY
     exit 1
   fi
   rm -rf build/omarchy-release-check/upstream
+  audited=$((audited + 1))
   last=$tag
 done
 [[ $seen == 1 ]] || { echo "tested release $last is absent from upstream releases" >&2; exit 2; }
 
-if [[ $last == "$(cat omarchy/tested-release)" ]]; then
+if [[ $audited == 0 ]]; then
   echo 'No new Omarchy release to audit'
-  exit 0
-fi
-
-series=${last#v}
-series=${series%.*}
-branch="bot/omarchy-tested-${last#v}"
-if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-  echo "Reusing existing proposal branch $branch"
 else
-  git switch -c "$branch"
-  printf '%s\n' "$last" >omarchy/tested-release
-  if ! grep -Fxq "$series" omarchy/supported-series; then
-    printf '%s\n' "$series" >>omarchy/supported-series
-    sort -Vu -o omarchy/supported-series omarchy/supported-series
-  fi
-  pkgrel=$(sed -n 's/^pkgrel=//p' packaging/arch/PKGBUILD)
-  [[ $pkgrel =~ ^[0-9]+$ ]] || { echo "invalid package release: $pkgrel" >&2; exit 2; }
-  sed -i "s/^pkgrel=$pkgrel$/pkgrel=$((pkgrel + 1))/" packaging/arch/PKGBUILD
-  git add omarchy/tested-release omarchy/supported-series packaging/arch/PKGBUILD
-  git -c user.name='Scottland release audit' -c user.email='github-actions[bot]@users.noreply.github.com' \
-    commit -m "adapter: verify Omarchy through $last"
-  git push origin "$branch"
+  echo "Audited $audited newer Omarchy release(s) through $last with no binding failures; reports are in the run artifacts"
 fi
-printf 'Omarchy releases through %s passed the real-config binding audit.\n\nThe newly tested series is %s.x; previously tested series remain supported. This PR also increments pkgrel for the adapter package cut. Audit artifacts are attached to run %s. Continue through checks, independent review, the merge queue and exact-cut release review before publication.\n' \
-  "$last" "$series" "$GITHUB_SERVER_URL/$repo/actions/runs/$GITHUB_RUN_ID" \
-  >build/omarchy-release-check/pr.md
-gh pr create --repo "$repo" --base 0.4 --head "$branch" \
-  --title "Adapter: verify Omarchy through $last" --body-file build/omarchy-release-check/pr.md

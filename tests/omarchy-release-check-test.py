@@ -9,8 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tests/omarchy-release-check.sh"
 
 
-def exercise(audit_passes, release, branch_exists=False, pr_succeeds=True,
-             existing_issue=False):
+def exercise(audit_passes, release, existing_issue=False):
     with tempfile.TemporaryDirectory(prefix="scottland-release-check-") as tmp:
         work = Path(tmp)
         (work / "omarchy").mkdir()
@@ -29,7 +28,6 @@ def exercise(audit_passes, release, branch_exists=False, pr_succeeds=True,
 
         command("gh", r'''
 printf 'gh %s\n' "$*" >>"$CALLS"
-if [[ $1 == api && $2 == *pulls* ]]; then exit 0; fi
 if [[ $1 == api ]]; then printf 'v4.5.0\n%s\n' "$NEW_RELEASE"; exit 0; fi
 if [[ $1 == issue && $2 == list ]]; then
   if [[ $ISSUE_EXISTS == 1 ]]; then
@@ -39,13 +37,11 @@ if [[ $1 == issue && $2 == list ]]; then
   fi
   exit 0
 fi
-if [[ $1 == pr && $2 == create ]]; then exit "$PR_STATUS"; fi
 ''')
         command("git", r'''
 printf 'git %s\n' "$*" >>"$CALLS"
 if [[ $1 == clone ]]; then mkdir -p "${@: -1}"; fi
 if [[ $1 == -C ]]; then printf '0123456789abcdef0123456789abcdef01234567\n'; fi
-if [[ $1 == ls-remote ]]; then exit "$BRANCH_STATUS"; fi
 ''')
         command("docker", '''
 printf 'docker %s\n' "$*" >>"$CALLS"
@@ -57,8 +53,6 @@ exit "${AUDIT_STATUS:?}"
 ''')
         env = dict(os.environ, PATH=f"{bin_dir}:/usr/bin:/bin", CALLS=str(log),
                    AUDIT_STATUS="0" if audit_passes else "1",
-                   BRANCH_STATUS="0" if branch_exists else "2",
-                   PR_STATUS="0" if pr_succeeds else "1",
                    ISSUE_EXISTS="1" if existing_issue else "0",
                    NEW_RELEASE=release,
                    GITHUB_REPOSITORY="example/scottland", GITHUB_SERVER_URL="https://github.com",
@@ -66,24 +60,20 @@ exit "${AUDIT_STATUS:?}"
         result = subprocess.run(["bash", str(SCRIPT)], cwd=work, env=env,
                                 text=True, capture_output=True, timeout=15)
         calls = log.read_text()
+        assert (work / "omarchy/tested-release").read_text() == "v4.5.0\n"
+        assert (work / "omarchy/supported-series").read_text() == "4.5\n"
+        assert "pkgrel=1\n" in (work / "packaging/arch/PKGBUILD").read_text()
+        assert "gh pr" not in calls and "git push" not in calls, calls
         if audit_passes:
-            assert result.returncode == (0 if pr_succeeds else 1), result.stderr
-            assert "gh pr create" in calls and "gh issue create" not in calls, calls
-            if branch_exists:
-                assert "git push" not in calls, calls
-                assert (work / "omarchy/tested-release").read_text() == "v4.5.0\n"
+            assert result.returncode == 0, result.stderr
+            if release == "v4.5.0":
+                assert "No new Omarchy release to audit" in result.stdout
+                assert "docker " not in calls, calls
             else:
-                assert (work / "omarchy/tested-release").read_text() == release + "\n"
-                expected = "4.5\n"
-                if release.startswith("v4.6."):
-                    expected += "4.6\n"
-                assert (work / "omarchy/supported-series").read_text() == expected
-                assert "pkgrel=2\n" in (work / "packaging/arch/PKGBUILD").read_text()
+                assert "Audited 1 newer Omarchy release(s)" in result.stdout
+            assert "gh issue" not in calls, calls
         else:
             assert result.returncode == 1, result.stderr
-            assert (work / "omarchy/tested-release").read_text() == "v4.5.0\n"
-            assert "pkgrel=1\n" in (work / "packaging/arch/PKGBUILD").read_text()
-            assert "gh pr create" not in calls, calls
             assert ("gh issue edit 42" if existing_issue else "gh issue create") in calls, calls
             if existing_issue:
                 assert "gh issue reopen 42" in calls, calls
@@ -93,9 +83,9 @@ exit "${AUDIT_STATUS:?}"
             assert "https://github.com/example/scottland/actions/runs/12345" in issue
 
 
+exercise(True, "v4.5.0")
 exercise(True, "v4.5.1")
 exercise(True, "v4.6.0")
-exercise(True, "v4.6.0", branch_exists=True, pr_succeeds=False)
 exercise(False, "v4.6.0")
 exercise(False, "v4.6.0", existing_issue=True)
-print("new release pass proposes tested series; failure files fix issue without widening")
+print("new release pass records audit without source writes; failure files one version issue")

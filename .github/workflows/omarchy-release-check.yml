@@ -6,9 +6,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   issues: write
-  pull-requests: write
 
 concurrency:
   group: omarchy-release-audit
@@ -21,13 +20,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: '0.4'
+          persist-credentials: false
       - name: Prepare disposable audit container
         run: |
           docker build --tag scottland-omarchy-audit - <<'DOCKERFILE'
           FROM archlinux:base-devel
           RUN pacman -Syu --noconfirm --needed git lua python
           DOCKERFILE
-      - name: Audit each new release and propose tested series
+      - name: Audit each new release
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash tests/omarchy-release-check.sh
