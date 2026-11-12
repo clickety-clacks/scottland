@@ -292,6 +292,10 @@ jobs:
                 cat "$widgets_log"
                 exit "$test_status"
               fi
+              mkdir -m 700 build/omarchy-global-actions-scratch
+              SCOTTLAND_TEST_SCRATCH="$PWD/build/omarchy-global-actions-scratch" \
+                timeout --signal=TERM --kill-after=30s 2m \
+                python3 tests/omarchy-global-actions-test.py
             '
 
       - name: Upload middle-press events on failure

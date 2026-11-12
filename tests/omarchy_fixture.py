@@ -36,10 +36,11 @@ printf '%s\\t%s\\n' "$(basename "$0")" "$*" >>'{log}'
 
 
 class Fixture:
-    def __init__(self, root, modules=(), lua="", recorders=(), commands=None):
+    def __init__(self, root, modules=(), lua="", recorders=(), commands=None, helpers=True):
         """modules: installed Omarchy Lua modules to load unchanged, e.g. "default.hypr.bindings.voxtype".
         lua: extra config appended after them. recorders: command names to replace with recorders.
-        commands: {name: shell body} for stand-ins that must do more than record."""
+        commands: {name: shell body} for stand-ins that must do more than record. helpers controls
+        whether the installed Omarchy helpers load."""
         self.root = Path(root).resolve()
         if self.root.exists():
             shutil.rmtree(self.root)
@@ -51,10 +52,11 @@ class Fixture:
         self.bin.mkdir(parents=True)
         self.log.touch()
         requires = "\n".join(f'require("{m}")' for m in modules)
+        helper = 'require("default.hypr.helpers")' if helpers else ""
         (hypr / "hyprland.lua").write_text(f"""-- Test fixture: installed Omarchy files, unchanged.
 local root = "{OMARCHY}"
 package.path = root .. "/?.lua;" .. root .. "/?/init.lua;" .. package.path
-require("default.hypr.helpers")
+{helper}
 {requires}
 {lua}
 """)
