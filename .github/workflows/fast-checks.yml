@@ -88,6 +88,14 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      - name: Check out Omarchy 4.5.0 binding source
+        uses: actions/checkout@v4
+        with:
+          repository: omacom/omarchy
+          ref: ac2690cd7be4f47e4a255f5e2e78d904d436b068
+          path: omarchy-v4.5.0
+          persist-credentials: false
+
       - name: Prepare build environment
         run: |
           printf 'Hosted machine image: %s %s\n' "$ImageOS" "$ImageVersion"
@@ -155,6 +163,26 @@ jobs:
                 tests/cycle-spring-unit.cpp -o build/cycle-spring-unit
               build/cycle-spring-unit
             '
+
+      - name: Audit supported Omarchy bindings
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/home/ci \
+            --env OMARCHY_PATH=/work/omarchy-v4.5.0 \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            scottland-checks:phase1 \
+            python3 tests/omarchy-binding-audit-test.py \
+              --audit-output build/omarchy-binding-audit-v4.5.0.tsv
+
+      - name: Upload Omarchy binding audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omarchy-binding-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/omarchy-binding-audit-v4.5.0.tsv
+          if-no-files-found: warn
 
   headless:
     name: Scottland 0.3 headless
