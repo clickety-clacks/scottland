@@ -97,6 +97,10 @@ hl = setmetatable({
     bindings[mods .. "+" .. key .. ":release"] = nil
     return noop
   end,
+  -- This inventory captures config declarations without a running compositor.
+  get_workspace = function() return nil end,
+  get_active_monitor = function() return nil end,
+  get_workspace_windows = function() return {} end,
   get_config = function() return nil end,
 }, { __index = function() return noop_function end })
 

@@ -374,6 +374,10 @@ package.path = root .. "/?.lua;" .. root .. "/?/init.lua;" .. package.path
 _G.omarchy_preinstalled_bindings = true
 _G.omarchy_default_bindings = true
 require("default.hypr.helpers")
+-- The real setup declares config without a running compositor in this audit.
+hl.get_workspace = function() return nil end
+hl.get_active_monitor = function() return nil end
+hl.get_workspace_windows = function() return {} end
 -- Include optional upstream bindings in the audit even though CI does not install Omarchy apps.
 o.cmd_present = function() return true end
 require("default.hypr.omarchy")

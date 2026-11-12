@@ -248,6 +248,10 @@ if baseline then
     real_require("default.hypr.helpers")
     -- Audit every conditional shortcut too. The live config checks which commands are installed;
     -- the default inventory is the full shipped set, independent of this machine's installed apps.
+    -- The audit has no running compositor; report empty runtime state to setup modules that inspect it.
+    hl.get_workspace = function() return nil end
+    hl.get_active_monitor = function() return nil end
+    hl.get_workspace_windows = function() return {} end
     o.cmd_present = function() return true end
     real_require("default.hypr.omarchy")
   end)
