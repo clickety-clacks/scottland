@@ -13,7 +13,7 @@ else
   installed_series=unknown
 fi
 
-message="Scottland does not support Omarchy ${version:-unknown} yet. Omarchy will continue normally. Scottland supports Omarchy ${series}.x."
+message="Scottland supports Omarchy ${series}.x. Installed ${version:-unknown} is unsupported. Omarchy is running."
 
 case ${1:---check} in
   --check)
