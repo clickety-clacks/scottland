@@ -246,17 +246,10 @@ if baseline then
   _G.omarchy_default_bindings = true
   local ok, err = pcall(function()
     real_require("default.hypr.helpers")
-    local loaded = 0
-    for _, module in ipairs({ "media", "clipboard", "tiling", "utilities", "voxtype", "applications" }) do
-      local path = root .. "/default/hypr/bindings/" .. module .. ".lua"
-      local file = io.open(path, "r")
-      if file then
-        file:close()
-        real_require("default.hypr.bindings." .. module)
-        loaded = loaded + 1
-      end
-    end
-    if loaded == 0 then error("no shipped binding modules found under " .. root) end
+    -- Audit every conditional shortcut too. The live config checks which commands are installed;
+    -- the default inventory is the full shipped set, independent of this machine's installed apps.
+    o.cmd_present = function() return true end
+    real_require("default.hypr.bindings")
   end)
   if not ok then
     io.stderr:write("baseline scan failed: " .. tostring(err) .. "\n")
