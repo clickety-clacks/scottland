@@ -68,4 +68,9 @@ with tempfile.TemporaryDirectory(prefix="scottland-compat-") as scratch:
     assert result.returncode == 1 and "notify -u critical" in calls.read_text(), result
     assert "pkexec " not in calls.read_text(), "unsupported switch altered the session"
 
+    (hooks / "supported-series").unlink()
+    (hooks / "supported-series").write_text("4.5\n4.6\n")
+    result, invoked = run(launcher, "4.6.3-1")
+    assert result.returncode == 0 and "wayfire " in invoked and "pkexec " not in invoked, (result, invoked)
+
 print("Omarchy 4.5 patch starts Scottland; unsupported login and switch return to working Omarchy")

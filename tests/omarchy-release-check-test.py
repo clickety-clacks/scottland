@@ -50,7 +50,10 @@ exit "${AUDIT_STATUS:?}"
         if audit_passes:
             assert result.returncode == 0, result.stderr
             assert (work / "omarchy/tested-release").read_text() == release + "\n"
-            assert (work / "omarchy/supported-series").read_text() == ".".join(release[1:].split(".")[:2]) + "\n"
+            expected = "4.5\n"
+            if release.startswith("v4.6."):
+                expected += "4.6\n"
+            assert (work / "omarchy/supported-series").read_text() == expected
             assert "gh pr create" in calls and "gh issue create" not in calls, calls
         else:
             assert result.returncode == 1, result.stderr
