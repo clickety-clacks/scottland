@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Exercise tablet BTN_MIDDLE delivery through Wayfire's virtual tablet path."""
+import configparser
 import json
 import math
 import os
+import re
 from pathlib import Path
 import socket
 import struct
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 
 out = Path(sys.argv[1]).resolve()
 app = Path(sys.argv[2]).resolve()
@@ -268,6 +271,31 @@ def check(ok, label, detail=""):
           (f" [{detail}]" if detail and not ok else ""), flush=True)
     passed += bool(ok)
     failed += not bool(ok)
+
+
+def core_pen_middle_remap_options():
+    repo = Path(__file__).resolve().parents[1]
+    surfaces = []
+
+    config = configparser.RawConfigParser(strict=False, allow_no_value=True)
+    with (repo / "core/config/scottland.ini").open() as source:
+        config.read_file(source)
+    for section in config.sections():
+        for name, value in config.items(section):
+            surfaces.append(f"config [{section}] {name} = {value or ''}")
+
+    metadata = ET.parse(repo / "core/plugin/metadata/scottland.xml").getroot()
+    for option in metadata.findall(".//option"):
+        name = option.get("name", "")
+        description = " ".join(part.strip() for part in option.itertext() if part.strip())
+        surfaces.append(f"plugin option {name}: {description}")
+
+    def normalized(text):
+        return re.sub(r"[^a-z0-9]+", " ", text.casefold())
+
+    return [surface for surface in surfaces
+            if re.search(r"\b(pen|stylus|tablet)\b", normalized(surface))
+            and re.search(r"\bmiddle\b|\bbutton\s*(2|274)\b|\b274\b", normalized(surface))]
 
 
 processes = {}
@@ -759,6 +787,10 @@ try:
         tablet_proximity(0, 0, False)
 
     # Other tablet buttons are not intercepted or remapped by the middle-button path.
+    remap_options = core_pen_middle_remap_options()
+    check(not remap_options,
+          "Core config and plugin schema expose no pen/stylus-to-middle remapping setting",
+          "; ".join(remap_options))
     setup()
     clear_events("Tablet-Middle-A", "Tablet-Middle-B")
     a = geometry("Tablet-Middle-A")
