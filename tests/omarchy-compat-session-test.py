@@ -11,7 +11,7 @@ from omarchy_fixture import REPO, Checks, Fixture, Session  # noqa: E402
 scratch = Path(os.environ.get("SCOTTLAND_TEST_SCRATCH", REPO / "build"))
 fixture = Fixture(scratch / "omarchy-compat-session-fixture", helpers=False,
                   commands={"omarchy-version": 'printf "4.5.8-2\\n"'},
-                  lua='hl.bind("CTRL + ALT + F12", "exec true")')
+                  lua='hl.bind("CTRL + ALT + F12", hl.dsp.global("omarchy:menu.theme"))')
 checks = Checks()
 guard = REPO / "build/hooks/libexec/scottland-omarchy-compat"
 result = subprocess.run([str(guard), "--check"], capture_output=True, text=True,
@@ -21,6 +21,11 @@ checks("the installed 4.5 patch passes the packaged-series guard",
 if result.returncode == 0:
     with Session(fixture, "compat-patch-headless") as session:
         ready, _ = session.wait_shim(timeout=20)
+        if not ready:
+            for name in ("wayfire.log", "state/scottland/hyprshim.log"):
+                log = session.dir / name
+                if log.exists():
+                    print(f"{name}:\n{log.read_text(errors='replace')[-3000:]}", flush=True)
         checks("Scottland's Omarchy headless session starts and answers monitor IPC",
                ready and bool(session.owned(r"wayfire")),
                (ready, session.owned(r"wayfire")))
