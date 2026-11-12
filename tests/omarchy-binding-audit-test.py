@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Exercise every binding from the supported Omarchy source through Scottland's importer.
 
-The CI checkout is pinned to OMARCHY_COMMIT. The Lua fixture loads Omarchy's real binding
-aggregator and all conditional bindings; no compositor or installed Omarchy session is needed.
+The CI checkout is pinned to OMARCHY_COMMIT. The Lua fixture loads Omarchy's real Hyprland
+setup entrypoint and all conditional bindings; no compositor or installed Omarchy session is needed.
 The TSV output is also the per-binding audit artifact for this test run.
 """
 
@@ -376,7 +376,7 @@ _G.omarchy_default_bindings = true
 require("default.hypr.helpers")
 -- Include optional upstream bindings in the audit even though CI does not install Omarchy apps.
 o.cmd_present = function() return true end
-require("default.hypr.bindings")
+require("default.hypr.omarchy")
 ''', encoding="utf-8")
         try:
             importer = importer_module(home, omarchy_path)
@@ -400,7 +400,7 @@ require("default.hypr.bindings")
                                f"(exit {source_scan.returncode}): {source_scan.stderr.strip() or '(no stderr)'}")
         source_rows = scan_rows(source_scan.stdout)
         if not rows:
-            diagnostics.append("the real Omarchy binding aggregator produced no bindings")
+            diagnostics.append("the real Omarchy Hyprland setup produced no bindings")
         if semantic_scan_rows(rows) != semantic_scan_rows(default_rows):
             diagnostics.append(f"live and baseline binding inventories differ ({len(rows)} live, {len(default_rows)} baseline)")
         if semantic_scan_rows(rows) != semantic_scan_rows(source_rows):

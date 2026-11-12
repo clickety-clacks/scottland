@@ -249,7 +249,7 @@ if baseline then
     -- Audit every conditional shortcut too. The live config checks which commands are installed;
     -- the default inventory is the full shipped set, independent of this machine's installed apps.
     o.cmd_present = function() return true end
-    real_require("default.hypr.bindings")
+    real_require("default.hypr.omarchy")
   end)
   if not ok then
     io.stderr:write("baseline scan failed: " .. tostring(err) .. "\n")

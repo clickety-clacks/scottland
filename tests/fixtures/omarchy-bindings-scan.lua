@@ -1,5 +1,5 @@
 -- Independent source inventory for the Omarchy binding audit test. This deliberately does not
--- load Scottland's Lua scanner: it captures the real upstream module aggregator directly.
+-- load Scottland's Lua scanner: it captures the bindings produced by Omarchy's real setup.
 local root = os.getenv("OMARCHY_PATH")
 if not root or root == "" then error("OMARCHY_PATH is required") end
 package.path = root .. "/?.lua;" .. root .. "/?/init.lua;" .. package.path
@@ -105,7 +105,7 @@ _G.omarchy_default_bindings = true
 require("default.hypr.helpers")
 -- Include optional upstream bindings regardless of the packages installed in the CI image.
 o.cmd_present = function() return true end
-require("default.hypr.bindings")
+require("default.hypr.omarchy")
 
 local printed = {}
 for _, id in ipairs(order) do
