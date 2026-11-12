@@ -596,6 +596,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "scottland-capture"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "scottland-lib",
+ "serde_json",
+]
+
+[[package]]
 name = "scottland-ctl"
 version = "0.2.0"
 dependencies = [
@@ -659,6 +668,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "scottland-sender-window"
+version = "0.2.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "scottland-source"
 version = "0.2.0"
 dependencies = [
@@ -674,13 +690,6 @@ name = "scottland-weather"
 version = "0.2.0"
 dependencies = [
  "scottland-lib",
-]
-
-[[package]]
-name = "scottland-sender-window"
-version = "0.2.0"
-dependencies = [
- "serde_json",
 ]
 
 [[package]]

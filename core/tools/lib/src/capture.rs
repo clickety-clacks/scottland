@@ -47,7 +47,7 @@ pub struct Point {
 }
 
 /// Order window rectangles by CP1 geometry-text byte order and collapse exact duplicates.
-fn ordered_unique_window_rectangles(rectangles: &[Rect]) -> Vec<Rect> {
+pub fn ordered_unique_window_rectangles(rectangles: &[Rect]) -> Vec<Rect> {
     let mut ordered = rectangles.to_vec();
     ordered.sort_by(|a, b| {
         a.geometry_text()
@@ -64,16 +64,22 @@ fn ordered_unique_window_rectangles(rectangles: &[Rect]) -> Vec<Rect> {
 /// Duplicate rectangles are a single candidate. This function intentionally does not
 /// select the focused output or apply window/output eligibility policy.
 pub fn select_window_rectangle(point: Point, rectangles: &[Rect]) -> Option<Rect> {
+    smallest_containing(point, &ordered_unique_window_rectangles(rectangles))
+}
+
+/// [`select_window_rectangle`] over rectangles already in the order
+/// [`ordered_unique_window_rectangles`] gives, without sorting or allocating.
+pub fn smallest_containing(point: Point, ordered: &[Rect]) -> Option<Rect> {
     let mut selected: Option<(Rect, u128)> = None;
 
-    for rectangle in ordered_unique_window_rectangles(rectangles) {
+    for rectangle in ordered {
         if !rectangle.contains(point) {
             continue;
         }
 
         let area = rectangle.area();
         if selected.is_none_or(|(_, selected_area)| area < selected_area) {
-            selected = Some((rectangle, area));
+            selected = Some((*rectangle, area));
         }
     }
 
