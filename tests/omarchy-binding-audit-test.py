@@ -144,13 +144,13 @@ def wanted_identity(row, importer):
     mods = row["mods"]
     if row["release"] == "1" and row["kind"] in ("exec", "function") and row["ignore_mods"] == "1":
         mods = ""
-    return importer.normalized_combo(importer.combo(mods, row["key"]))
+    combo = importer.combo(mods, row["key"])
+    return importer.normalized_combo(combo) if combo else None
 
 
 def command_result(row, expected, base_assignments, generated_assignments, importer):
     effective = dict(base_assignments)
     effective.update(generated_assignments)
-    identity = wanted_identity(row, importer)
 
     switch = re.fullmatch(r"switch:(?:(on|off):)?(.+)", row["key"], re.IGNORECASE)
     if switch and not row["mods"]:
@@ -165,6 +165,10 @@ def command_result(row, expected, base_assignments, generated_assignments, impor
             command = generated_assignments.get(("scottland", f"switch_command_omarchy_{index}"))
             if state == wanted_state and command == expected:
                 return f"[scottland] switch_device_omarchy_{index}={device} ({state}) -> {command}"
+        return None
+
+    identity = wanted_identity(row, importer)
+    if identity is None:
         return None
 
     if row["release"] == "1" and row["kind"] in ("exec", "function"):
@@ -197,7 +201,7 @@ def command_result(row, expected, base_assignments, generated_assignments, impor
 def dispatcher_result(row, section, option, generated_assignments, importer):
     wanted = wanted_identity(row, importer)
     value = generated_assignments.get((section, option))
-    if not value:
+    if wanted is None or not value:
         return None
     for key in value.split("|"):
         if importer.normalized_combo(key.strip()) == wanted:
@@ -423,7 +427,12 @@ require("default.hypr.bindings")
             report = report_path.read_text(encoding="utf-8")
         base_assignments = parse_ini(BASE_CONFIG.read_text(encoding="utf-8"))
         generated_assignments = parse_ini(generated)
-        audit = classify_rows(rows, importer, base_assignments, generated_assignments, generated, report)
+        try:
+            audit = classify_rows(rows, importer, base_assignments, generated_assignments, generated, report)
+        except Exception as error:
+            diagnostic = f"per-binding classification failed: {type(error).__name__}: {error}"
+            diagnostics.append(diagnostic)
+            print(f"ERROR: {diagnostic}", file=sys.stderr)
         for diagnostic in diagnostics:
             print(f"ERROR: {diagnostic}", file=sys.stderr)
 
