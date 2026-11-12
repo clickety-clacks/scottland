@@ -340,6 +340,36 @@ TRANSLATED_HYPRLAND = re.compile(r"\s*omarchy-hyprland-monitor-clamshell\s*")
 def hyprland_only(command):
     return bool(HYPRLAND_ONLY.search(command)) and not TRANSLATED_HYPRLAND.fullmatch(command)
 
+# Omarchy's shell-level global shortcut API has no Wayfire equivalent. Use the same command
+# fallbacks Omarchy's helper defines for those actions so the shell still performs them in Scottland.
+OMARCHY_GLOBAL_ACTION = re.compile(
+    r'''^hl\.dsp\.global\(\s*["']omarchy:([a-z]+)\.([A-Za-z0-9_.-]+)["']\s*\)$'''
+)
+
+
+def omarchy_global_command(action):
+    match = OMARCHY_GLOBAL_ACTION.fullmatch(action)
+    if not match:
+        return None
+
+    kind, target = match.groups()
+    if kind == "menu" and re.fullmatch(r"[A-Za-z0-9_-]+", target):
+        return f"omarchy-menu toggle {shlex.quote(target)}"
+    if kind == "panel" and re.fullmatch(r"[A-Za-z0-9_.-]+", target):
+        return f"omarchy-shell shell toggle {shlex.quote(target)}"
+    if kind == "audio" and target in {"raise", "lower", "mute-toggle"}:
+        return f"omarchy-audio-output-volume {target}"
+    if kind == "brightness":
+        brightness = {"raise": "+5%", "lower": "5%-"}.get(target)
+        return f"omarchy-brightness-display {brightness}" if brightness else None
+    if kind == "ipc":
+        ipc_target, separator, method = target.partition(".")
+        if (separator and re.fullmatch(r"[A-Za-z0-9_-]+", ipc_target) and
+                re.fullmatch(r"[A-Za-z0-9_.-]+", method)):
+            return f"omarchy-shell {shlex.quote(ipc_target)} {shlex.quote(method)}"
+    return None
+
+
 # Hyprland dispatchers with a Wayfire equivalent: expression prefix -> (section, option)
 DISPATCHERS = {
     "hl.dsp.window.close": ("core", "close_top_view"),
@@ -1335,18 +1365,26 @@ def main():
                 continue
             target = ("command", arg)
         elif kind == "lua":
-            for prefix, (section, option) in DISPATCHERS.items():
-                if arg.startswith(prefix):
-                    target = (section, option)
-                    break
-            # An untranslated action on keys a Scottland feature holds is reported as that feature.
-            if not target and feature_owners_of(wanted):
-                target = ("lua", arg)
-            if not target:
-                omitted(label, description, f"window/workspace action: {arg[:60]}",
-                        omission_report_group(kind, arg, description, "untranslated dispatcher"),
-                        kind=kind, action=arg)
-                continue
+            if arg.startswith("hl.dsp.global("):
+                command = omarchy_global_command(arg)
+                if not command:
+                    omitted(label, description, f"unsupported Omarchy global action: {arg[:60]}",
+                            kind=kind, action=arg)
+                    continue
+                target = ("command", command)
+            else:
+                for prefix, (section, option) in DISPATCHERS.items():
+                    if arg.startswith(prefix):
+                        target = (section, option)
+                        break
+                # An untranslated action on keys a Scottland feature holds is reported as that feature.
+                if not target and feature_owners_of(wanted):
+                    target = ("lua", arg)
+                if not target:
+                    omitted(label, description, f"window/workspace action: {arg[:60]}",
+                            omission_report_group(kind, arg, description, "untranslated dispatcher"),
+                            kind=kind, action=arg)
+                    continue
         elif kind == "function":
             # scottland-luahost keeps the function (and its state) and runs it on demand.
             target = ("command", '"${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-lua-call '
