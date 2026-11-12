@@ -546,6 +546,44 @@ try:
           f"{before_center} -> {after_center}")
     check(not all_events(), "touchpad click-drag: release does not reach A")
 
+    # L24: a three-finger click-drag still center-resizes with touchpad gestures off.
+    setup()
+    clear_events()
+    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": False})
+    before = geometry("A")
+    x, y = before["x"] + before["width"] / 2, before["y"] + before["height"] / 2
+    pointer(x, y)
+    pad_button(True)
+    wait(lambda: state()["middle_pending"], what="touchpad setting off: resize pending")
+    for step in range(1, 11):
+        pad_motion(x + 20 * step, y)
+        if step == 1:
+            wait(lambda: state()["middle_resizing"],
+                 what="touchpad setting off: center resize start")
+        time.sleep(.02)
+    check(not all_events(),
+          "three-finger click-drag with gestures off: middle button stays withheld")
+    pad_button(False)
+    wait(lambda: not state()["middle_resizing"],
+         what="touchpad setting off: resize end")
+    settle("A", "B")
+    after = geometry("A")
+    before_center = (before["x"] + before["width"] / 2,
+                     before["y"] + before["height"] / 2)
+    after_center = (after["x"] + after["width"] / 2,
+                    after["y"] + after["height"] / 2)
+    check(after["width"] >= before["width"] + 80 and
+          after["height"] == before["height"],
+          "three-finger click-drag with gestures off: motion resizes A horizontally",
+          f"{before} -> {after}")
+    check(abs(after_center[0] - before_center[0]) <= 3 and
+          abs(after_center[1] - before_center[1]) <= 3,
+          "three-finger click-drag with gestures off: resize keeps A centered",
+          f"{before_center} -> {after_center}")
+    check(not all_events(),
+          "three-finger click-drag with gestures off: release does not reach A")
+    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": True})
+
     # L23: an unclicked three-finger swipe still moves the window and preserves its size.
     setup()
     clear_events()
