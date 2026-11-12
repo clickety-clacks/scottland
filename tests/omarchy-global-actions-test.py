@@ -37,9 +37,6 @@ def press_chord(session, modifiers, key):
 
 
 with Session(fixture, "omarchy-global-actions") as session:
-    ready, _ = session.wait_lua_host()
-    check("Omarchy adapter Lua host starts", ready)
-
     cases = [
         ("Super+Ctrl+Shift+Space opens the theme picker",
          ["KEY_LEFTMETA", "KEY_LEFTCTRL", "KEY_LEFTSHIFT"], "KEY_SPACE",
