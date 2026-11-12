@@ -18,6 +18,14 @@ main() {
     SCOTTLAND_HOOKS=/usr/lib/scottland
   fi
   export SCOTTLAND_HOOKS
+  # The Omarchy adapter is optional. When installed, check before starting any
+  # Scottland services or Wayfire so an untested upgrade returns to Omarchy.
+  compat="$SCOTTLAND_HOOKS/libexec/scottland-omarchy-compat"
+  if [ -x "$compat" ] && ! "$compat" --check; then
+    "$compat" --prepare-fallback || exit 1
+    pkexec /usr/lib/scottland/scottland-session-helper switch hyprland close "${XDG_SESSION_ID:-}" || exit 1
+    exit 0
+  fi
   if [ -d "$dev/plugins" ]; then
     export WAYFIRE_PLUGIN_PATH="$dev/plugins${WAYFIRE_PLUGIN_PATH:+:$WAYFIRE_PLUGIN_PATH}"
     export WAYFIRE_PLUGIN_XML_PATH="$dev/metadata:/usr/share/wayfire/metadata"

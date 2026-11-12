@@ -38,6 +38,11 @@ fi
 [[ $target == "$(current)" ]] && { echo "already in $target" >&2; exit 0; }
 
 if [[ $(current) == hyprland ]]; then
+  compat=${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-omarchy-compat
+  if [[ -x $compat ]] && ! "$compat" --check; then
+    "$compat" --notify
+    exit 1
+  fi
   # Let apps shut down cleanly (browsers save their tabs) before the session ends.
   command -v omarchy-osd >/dev/null && omarchy-osd -i logout -m "Switching to Scottland" -d 5000 || true
   command -v omarchy-hyprland-window-close-all >/dev/null && omarchy-hyprland-window-close-all || true

@@ -157,6 +157,8 @@ jobs:
               tests/spread-unit.sh
               tests/windowing-unit.sh
               python3 tests/omarchy-luahost-noop-list-test.py
+              python3 tests/omarchy-compat-test.py
+              python3 tests/omarchy-release-check-test.py
               python3 tests/output-scale-unit.py
               mkdir -p build
               g++ -std=c++17 -Wall -Wextra -Werror -O2 -Icore/plugin/src \
@@ -270,6 +272,10 @@ jobs:
                 printf "FAIL\\tmake test-hooks exited %s\\n" "$status" >build/osd-foundation-smoke/hooks-build.outcome
                 exit "$status"
               fi
+              mkdir -m 700 build/omarchy-compat-session-scratch
+              SCOTTLAND_TEST_SCRATCH="$PWD/build/omarchy-compat-session-scratch" \
+                timeout --signal=TERM --kill-after=30s 2m \
+                python3 tests/omarchy-compat-session-test.py
               mkdir -m 700 build/queue-headless-scratch
               SCOTTLAND_TEST_SCRATCH="$PWD/build/queue-headless-scratch" \
                 SCOTTLAND_HEADLESS_DIR="$PWD/build/queue-headless-scratch/session" \

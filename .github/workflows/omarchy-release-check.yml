@@ -1,0 +1,40 @@
+name: Omarchy release adapter audit
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: omarchy-release-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: '0.4'
+          persist-credentials: false
+      - name: Prepare disposable audit container
+        run: |
+          docker build --tag scottland-omarchy-audit - <<'DOCKERFILE'
+          FROM archlinux:base-devel
+          RUN pacman -Syu --noconfirm --needed git lua python
+          DOCKERFILE
+      - name: Audit each new release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tests/omarchy-release-check.sh
+      - name: Preserve per-binding audits
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omarchy-release-audit-${{ github.run_id }}
+          path: build/omarchy-release-check/*.tsv
+          if-no-files-found: ignore

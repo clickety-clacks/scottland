@@ -1,0 +1,41 @@
+#!/bin/bash
+# Check the installed Omarchy series before handing a session to Scottland.
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+series_file=$script_dir/../supported-series
+[[ -r $series_file ]] || series_file=/usr/lib/scottland/supported-series
+mapfile -t supported_series <"$series_file"
+version=$(omarchy-version 2>/dev/null || true)
+if [[ $version =~ ^([0-9]+)\.([0-9]+)\.[0-9]+(-[0-9]+)?$ ]]; then
+  installed_series=${BASH_REMATCH[1]}.${BASH_REMATCH[2]}
+else
+  installed_series=unknown
+fi
+
+message="Scottland cannot start with Omarchy ${version:-unknown}. Omarchy is running."
+
+case ${1:---check} in
+  --check)
+    for series in "${supported_series[@]}"; do
+      [[ $installed_series == "$series" ]] && exit 0
+    done
+    printf '%s\n' "$message" >&2
+    exit 1 ;;
+  --notify)
+    printf '%s\n' "$message" >&2
+    if command -v notify-send >/dev/null && notify-send -u critical -t 15000 'Scottland compatibility' "$message"; then
+      :
+    elif command -v omarchy-osd >/dev/null; then
+      omarchy-osd -m "$message" -d 15000 || true
+    fi ;;
+  --prepare-fallback)
+    hook_dir=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/hooks/post-boot.d
+    mkdir -p "$hook_dir"
+    hook=$hook_dir/scottland-compatibility
+    # Omarchy runs this after Hyprland and its shell start. Remove it before
+    # showing the notice, so another Omarchy login does not repeat the message.
+    printf '#!/bin/bash\nrm -f -- %q\nexec %q --notify\n' "$hook" "$0" >"$hook.tmp"
+    mv -f "$hook.tmp" "$hook" ;;
+  *) printf 'usage: %s --check|--notify|--prepare-fallback\n' "$0" >&2; exit 2 ;;
+esac
