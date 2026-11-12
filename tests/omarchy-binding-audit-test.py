@@ -184,6 +184,22 @@ def command_result(row, expected, base_assignments, generated_assignments, impor
                 return f"[scottland] shortcut_keys_omarchy_{index}={keys} -> {command}"
         return None
 
+    if row["repeat"] == "1" and row["locked"] == "1":
+        for (section, name), keys in generated_assignments.items():
+            match = re.fullmatch(r"shortcut_keys_omarchy_(\d+)", name) if section == "scottland" else None
+            if not match or importer.normalized_combo(keys) != identity:
+                continue
+            index = match.group(1)
+            if generated_assignments.get(("scottland", f"shortcut_repeat_omarchy_{index}")) != "true":
+                continue
+            if generated_assignments.get(("scottland", f"shortcut_locked_omarchy_{index}")) != "true":
+                continue
+            command = generated_assignments.get(("scottland", f"shortcut_command_omarchy_{index}"))
+            if command == expected:
+                return f"[scottland] shortcut_keys_omarchy_{index}={keys} (repeat, locked) -> " \
+                       f"shortcut_command_omarchy_{index}={command}"
+        return None
+
     for (section, name), keys in effective.items():
         if section != "command" or not name.startswith(("binding_", "repeatable_binding_", "always_binding_")):
             continue
@@ -247,8 +263,15 @@ def find_report_headings(row, importer, headings):
     exact = headings.get((identity, normalize_text(row["description"])), [])
     if exact:
         return exact
-    # Some bindings have no description; use their key, but retain all headings so an
-    # unsupported entry at the same key cannot be hidden by a different report row.
+    # O20 prints a few punctuation keys (for example, comma) as glyphs. Recover only when a
+    # description identifies one reported key, so a duplicate description cannot hide a mismatch.
+    description_matches = [(key_identity, heading) for (key_identity, was), values in headings.items()
+                            if normalize_text(was) == normalize_text(row["description"])
+                            for heading in values]
+    if description_matches and len({identity for identity, _heading in description_matches}) == 1:
+        return [heading for _identity, heading in description_matches]
+    # For entries without a usable description, retain every heading at that key so an unsupported
+    # entry cannot be hidden by a different report row.
     return [heading for (key_identity, _was), values in headings.items()
             if key_identity == identity for heading in values]
 
@@ -279,10 +302,15 @@ def classify_rows(rows, importer, base_assignments, generated_assignments, outpu
 
         report_groups = find_report_headings(row, importer, headings)
         allowed = [heading for heading in report_groups if heading in ALLOWED_DISPLACEMENT_HEADINGS]
-        unsupported = [heading for heading in report_groups if heading == "Unsupported in Scottland"]
-        if allowed and not unsupported:
+        unsupported = "Unsupported in Scottland" in report_groups
+        displaced = skip["reason"].startswith("displaced:")
+        # O20 can account for source actions with no Scottland equivalent. It cannot excuse losing
+        # a command/dispatcher that the audit expects to import; those need a real feature collision.
+        intentional_unsupported = route[0] == "unsupported" and (allowed or unsupported)
+        if (route[0] != "unsupported" and displaced and allowed) or intentional_unsupported:
             audit.append({**row, "status": "deliberately displaced", "result": "",
-                          "reason": f"{skip['reason']}; O20: {', '.join(sorted(set(allowed)))}."})
+                          "reason": f"{skip['reason']}; O20: "
+                                    f"{', '.join(sorted(set(allowed or ['Unsupported in Scottland'])))}."})
         else:
             explanation = (f"{skip['reason']}; O20: {', '.join(sorted(set(report_groups)))}"
                            if report_groups else f"{skip['reason']}; no matching O20 entry")
