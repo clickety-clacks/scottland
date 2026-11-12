@@ -159,17 +159,22 @@ def three_finger_swipe_moves():
     check(abs(g[B][0] - (f0[B][0] + 100)) <= 3 and abs(g[B][1] - f0[B][1]) <= 3, 'moved 100 px with the fingers (Wayfire)', str(g))
 
 @scenario
-def three_finger_click_drag_moves():
-    'a three-finger click-drag moves the window; a still click moves nothing (L24)'
+def three_finger_click_drag_resizes():
+    'a three-finger click-drag resizes around center; a still click moves nothing (L24)'
     setup(LAYOUT, A); x0, y0, w0, h0 = geometry(B)
     x, y = center(B); pointer(x, y); time.sleep(.1)
     pad('button', button='middle', pressed=True)
-    glide(x, y, x + 40, y + 30,
+    glide(x, y, x + 40, y,
           move=lambda px, py: pad('motion', x=px, y=py)); time.sleep(.2)
     pad('button', button='middle', pressed=False)
     gx, gy, w, h = stable(B)[B]
-    check(abs(gx - (x0 + 40)) <= 3 and abs(gy - (y0 + 30)) <= 3 and w == w0 and h == h0,
-          'moved 40x30 without resizing (Wayfire)', str((gx, gy, w, h)))
+    before_center = (x0 + w0 / 2, y0 + h0 / 2)
+    after_center = (gx + w / 2, gy + h / 2)
+    check(w >= w0 + 16 and h == h0,
+          'resized horizontally without changing height (Wayfire)', str((gx, gy, w, h)))
+    check(abs(after_center[0] - before_center[0]) <= 3 and
+          abs(after_center[1] - before_center[1]) <= 3,
+          'kept the window center fixed (Wayfire)', str((before_center, after_center)))
     setup(LAYOUT, A); f0 = frames(B)
     pointer(*center(B)); time.sleep(.1)
     pad('button', button='middle', pressed=True); time.sleep(.1); pad('button', button='middle', pressed=False)
