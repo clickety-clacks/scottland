@@ -15,6 +15,8 @@ def exercise(audit_passes, release):
         (work / "omarchy").mkdir()
         (work / "omarchy/tested-release").write_text("v4.5.0\n")
         (work / "omarchy/supported-series").write_text("4.5\n")
+        (work / "packaging/arch").mkdir(parents=True)
+        (work / "packaging/arch/PKGBUILD").write_text("pkgver=0.4.5\npkgrel=1\n")
         bin_dir = work / "bin"
         bin_dir.mkdir()
         log = work / "calls"
@@ -54,10 +56,12 @@ exit "${AUDIT_STATUS:?}"
             if release.startswith("v4.6."):
                 expected += "4.6\n"
             assert (work / "omarchy/supported-series").read_text() == expected
+            assert "pkgrel=2\n" in (work / "packaging/arch/PKGBUILD").read_text()
             assert "gh pr create" in calls and "gh issue create" not in calls, calls
         else:
             assert result.returncode == 1, result.stderr
             assert (work / "omarchy/tested-release").read_text() == "v4.5.0\n"
+            assert "pkgrel=1\n" in (work / "packaging/arch/PKGBUILD").read_text()
             assert "gh issue create" in calls and "gh pr create" not in calls, calls
 
 

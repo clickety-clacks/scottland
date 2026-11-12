@@ -56,11 +56,14 @@ if ! grep -Fxq "$series" omarchy/supported-series; then
   printf '%s\n' "$series" >>omarchy/supported-series
   sort -Vu -o omarchy/supported-series omarchy/supported-series
 fi
-git add omarchy/tested-release omarchy/supported-series
+pkgrel=$(sed -n 's/^pkgrel=//p' packaging/arch/PKGBUILD)
+[[ $pkgrel =~ ^[0-9]+$ ]] || { echo "invalid package release: $pkgrel" >&2; exit 2; }
+sed -i "s/^pkgrel=$pkgrel$/pkgrel=$((pkgrel + 1))/" packaging/arch/PKGBUILD
+git add omarchy/tested-release omarchy/supported-series packaging/arch/PKGBUILD
 git -c user.name='Scottland release audit' -c user.email='github-actions[bot]@users.noreply.github.com' \
   commit -m "adapter: verify Omarchy through $last"
 git push origin "$branch"
-printf 'Omarchy releases through %s passed the real-config binding audit.\n\nThe newly tested series is %s.x; previously tested series remain supported. Audit artifacts are attached to run %s. Merge through the normal reviewed release branch route before publishing an adapter package.\n' \
+printf 'Omarchy releases through %s passed the real-config binding audit.\n\nThe newly tested series is %s.x; previously tested series remain supported. This PR also increments pkgrel for the adapter package cut. Audit artifacts are attached to run %s. Continue through checks, independent review, the merge queue and exact-cut release review before publication.\n' \
   "$last" "$series" "$GITHUB_SERVER_URL/$repo/actions/runs/$GITHUB_RUN_ID" \
   >build/omarchy-release-check/pr.md
 gh pr create --repo "$repo" --base 0.4 --head "$branch" \
