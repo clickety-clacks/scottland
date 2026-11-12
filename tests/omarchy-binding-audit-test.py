@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter, defaultdict
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 
@@ -329,7 +330,8 @@ def importer_module(home, omarchy_path):
     os.environ["SCOTTLAND_TEST_MODEL"] = "1"
     os.environ["WAYFIRE_PLUGIN_XML_PATH"] = str(METADATA_DIR)
     os.environ.pop("WAYFIRE_SOCKET", None)
-    spec = importlib.util.spec_from_file_location("scottland_omarchy_shortcuts", IMPORTER_PATH)
+    loader = SourceFileLoader("scottland_omarchy_shortcuts", str(IMPORTER_PATH))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"could not load importer from {IMPORTER_PATH}")
     importer = importlib.util.module_from_spec(spec)
@@ -372,7 +374,14 @@ require("default.hypr.helpers")
 o.cmd_present = function() return true end
 require("default.hypr.bindings")
 ''', encoding="utf-8")
-        importer = importer_module(home, omarchy_path)
+        try:
+            importer = importer_module(home, omarchy_path)
+        except Exception as error:
+            diagnostics.append(f"could not load the Scottland importer: {type(error).__name__}: {error}")
+            for diagnostic in diagnostics:
+                print(f"ERROR: {diagnostic}", file=sys.stderr)
+            counts = write_audit(args.audit_output, audit, diagnostics, scottland_revision)
+            return 1, counts
         live = importer.run_lua_scan()
         baseline = importer.run_lua_scan(baseline=True)
         for label, result in (("real Omarchy config scan", live), ("Omarchy default scan", baseline)):
