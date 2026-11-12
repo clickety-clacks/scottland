@@ -326,6 +326,10 @@ jobs:
               SCOTTLAND_TEST_SCRATCH="$PWD/build/omarchy-global-actions-scratch" \
                 timeout --signal=TERM --kill-after=30s 2m \
                 python3 tests/omarchy-global-actions-test.py
+              mkdir -m 700 build/omarchy-compat-session-scratch
+              SCOTTLAND_TEST_SCRATCH="$PWD/build/omarchy-compat-session-scratch" \
+                timeout --signal=TERM --kill-after=30s 2m \
+                python3 tests/omarchy-compat-session-test.py
             '
 
       - name: Upload middle-press events on failure

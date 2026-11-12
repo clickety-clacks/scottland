@@ -92,6 +92,7 @@ link-dev:
 	ln -sf $(CURDIR)/core/session/start-scottland $(HOME)/.local/bin/start-scottland
 	ln -sf $(CURDIR)/omarchy/bin/scottland-omarchy-setup $(HOME)/.local/bin/scottland-omarchy-setup
 	mkdir -p $(DEV)/libexec $(DEV)/session-env.d $(DEV)/autostart.d $(DEV)/early-exit.d $(DEV)/config.d $(DEV)/reload.d $(DEV)/accent.d $(DEV)/focus.d $(DEV)/notify.d $(DEV)/override-report.d $(DEV)/prompts
+	ln -sf $(CURDIR)/omarchy/supported-series $(DEV)/supported-series
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(DEV)/libexec/scottland-hyprshim
 	ln -sf $(CURDIR)/build/scottland-output-power $(DEV)/libexec/scottland-output-power
 	ln -sf $(CURDIR)/build/scottland-output-heads $(DEV)/libexec/scottland-output-heads
@@ -142,6 +143,7 @@ hooks:
 	ln -sf $(CURDIR)/build/libscottland.so $(HOOKS_DIR)/plugins/libscottland.so
 	ln -sf $(CURDIR)/core/plugin/metadata/scottland.xml $(HOOKS_DIR)/metadata/scottland.xml
 	mkdir -p $(HOOKS_DIR)/libexec $(HOOKS_DIR)/session-env.d $(HOOKS_DIR)/autostart.d $(HOOKS_DIR)/early-exit.d $(HOOKS_DIR)/config.d $(HOOKS_DIR)/reload.d $(HOOKS_DIR)/accent.d $(HOOKS_DIR)/focus.d $(HOOKS_DIR)/notify.d $(HOOKS_DIR)/override-report.d $(HOOKS_DIR)/prompts
+	ln -sf $(CURDIR)/omarchy/supported-series $(HOOKS_DIR)/supported-series
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(HOOKS_DIR)/libexec/scottland-hyprshim
 	ln -sf $(CURDIR)/build/scottland-output-power $(HOOKS_DIR)/libexec/scottland-output-power
 	ln -sf $(CURDIR)/build/scottland-output-heads $(HOOKS_DIR)/libexec/scottland-output-heads
