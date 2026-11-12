@@ -516,34 +516,35 @@ try:
     check(not is_fixture_pixel(pixel(after_shot, *old_sample)),
           source + ": the old position no longer shows the moved client")
 
-    # R7: clickfinger BTN_MIDDLE drags the window without resizing it, even when the
-    # three-finger gesture setting is off.
+    # L24: clickfinger BTN_MIDDLE resizes the window around its center.
     setup()
     clear_events()
-    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": False})
+    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": True})
     before = geometry("A")
     x, y = before["x"] + before["width"] / 2, before["y"] + before["height"] / 2
     pointer(x, y)
     pad_button(True)
-    wait(lambda: state()["middle_pending"], what="touchpad middle drag pending")
+    wait(lambda: state()["middle_pending"], what="touchpad resize pending")
     for step in range(1, 11):
         pad_motion(x + 20 * step, y)
         if step == 1:
-            wait(lambda: state()["middle_dragging"], what="touchpad live middle drag")
+            wait(lambda: state()["middle_resizing"], what="touchpad center resize start")
         time.sleep(.02)
-    check(not all_events(), "touchpad middle drag: no client event is delivered")
-    time.sleep(.25)  # Stop at the final position so release-coast does not change the oracle.
+    check(not all_events(), "touchpad click-drag: withheld middle button is not delivered")
     pad_button(False)
-    wait(lambda: not state()["dragging"], what="touchpad middle drag end")
+    wait(lambda: not state()["middle_resizing"], what="touchpad resize end")
     settle("A", "B")
     after = geometry("A")
-    movement_deltas["touchpad"] = after["x"] - before["x"]
-    check(after["x"] >= before["x"] + 150 and
-          (after["width"], after["height"]) == (before["width"], before["height"]),
-          "touchpad R7: 200 px middle drag moves A and preserves its size",
+    before_center = (before["x"] + before["width"] / 2, before["y"] + before["height"] / 2)
+    after_center = (after["x"] + after["width"] / 2, after["y"] + after["height"] / 2)
+    check(after["width"] >= before["width"] + 80 and after["height"] == before["height"],
+          "touchpad click-drag: motion resizes A horizontally",
           f"{before} -> {after}")
-    check(not all_events(), "touchpad R7: no middle event reaches A")
-    ipc("wayfire/set-config-options", {"scottland/touchpad_gestures": True})
+    check(abs(after_center[0] - before_center[0]) <= 3 and
+          abs(after_center[1] - before_center[1]) <= 3,
+          "touchpad click-drag: resize keeps A centered",
+          f"{before_center} -> {after_center}")
+    check(not all_events(), "touchpad click-drag: release does not reach A")
 
     # L23: an unclicked three-finger swipe still moves the window and preserves its size.
     setup()

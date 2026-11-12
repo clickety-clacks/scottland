@@ -336,7 +336,7 @@
 		</option>
 		<option name="touchpad_gestures" type="bool">
 			<_short>Touchpad window gestures</_short>
-			<_long>A three-finger drag without a click moves the window under the pointer. A clickfinger middle-button click is replayed to its original recipient if it remains mapped and under the press point when released; dragging it moves the window, and holding it still offers the same solo or pair as other middle-button holds. Turning this setting off disables three-finger swipe and hold gestures only; clickfinger middle-button behavior and ordinary mouse middle-button actions remain enabled.</_long>
+			<_long>A three-finger drag without a click moves the window under the pointer. A clickfinger middle-button click is replayed to its original recipient if it remains mapped and under the press point when released; dragging it resizes the window around its center, and holding it still offers the same solo or pair as other middle-button holds. Turning this setting off disables three-finger swipe and hold gestures only; clickfinger middle-button behavior and ordinary mouse middle-button actions remain enabled.</_long>
 			<default>true</default>
 		</option>
 		<option name="lift_delay" type="int">
