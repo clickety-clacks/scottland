@@ -22,10 +22,10 @@ case ${1:---check} in
     exit 1 ;;
   --notify)
     printf '%s\n' "$message" >&2
-    if command -v omarchy-osd >/dev/null && omarchy-osd -m "$message" -d 15000; then
+    if command -v notify-send >/dev/null && notify-send -u critical -t 15000 'Scottland compatibility' "$message"; then
       :
-    elif command -v notify-send >/dev/null; then
-      notify-send -u critical 'Scottland compatibility' "$message" || true
+    elif command -v omarchy-osd >/dev/null; then
+      omarchy-osd -m "$message" -d 15000 || true
     fi ;;
   --prepare-fallback)
     hook_dir=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/hooks/post-boot.d

@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix="scottland-compat-") as scratch:
     assert hook.exists(), "fallback notice was not queued for Omarchy post-boot"
     calls.write_text("")
     notice = subprocess.run(["bash", str(hook)], env=env, text=True, capture_output=True, timeout=15)
-    assert notice.returncode == 0 and "osd -m Scottland does not support" in calls.read_text(), notice
+    assert notice.returncode == 0 and "notify -u critical" in calls.read_text(), notice
     assert not hook.exists(), "fallback notice would repeat on every login"
 
     switch = ROOT / "omarchy/bin/scottland-switch"
@@ -65,7 +65,7 @@ with tempfile.TemporaryDirectory(prefix="scottland-compat-") as scratch:
     result = subprocess.run([str(switch), "--to", "scottland"], env={**env,
                             "XDG_CURRENT_DESKTOP": "Hyprland", "SCOTTLAND_HOOKS": str(hooks)},
                             text=True, capture_output=True, timeout=15)
-    assert result.returncode == 1 and "osd -m Scottland does not support" in calls.read_text(), result
+    assert result.returncode == 1 and "notify -u critical" in calls.read_text(), result
     assert "pkexec " not in calls.read_text(), "unsupported switch altered the session"
 
 print("Omarchy 4.5 patch starts Scottland; unsupported login and switch return to working Omarchy")
