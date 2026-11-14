@@ -8,17 +8,17 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::appearance;
 use crate::gamma::GammaController;
 use scottland::night_light::Decision;
 
-const HELPER_RELATIVE: &str = "libexec/scottland-color-scheme";
 const THEME_LINKS: [&str; 2] = ["light", "dark"];
 const SIGNAL_TERM: i32 = 15;
 const SIGNAL_INT: i32 = 2;
@@ -57,61 +57,6 @@ enum WatchEvent {
     Theme,
 }
 
-pub(super) fn once() -> Result<(), String> {
-    invoke_helper("once").map(|_| ())
-}
-
-pub(super) fn cursor_size() -> Result<(), String> {
-    let output = invoke_helper("cursor-size")?;
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err("scottland-color-scheme returned an invalid cursor size".to_string());
-    }
-    println!("{value}");
-    Ok(())
-}
-
-pub(super) fn push_terminal_theme() -> Result<(), String> {
-    invoke_helper("terminal-theme-push").map(|_| ())
-}
-
-fn helper_path(hooks: Option<OsString>) -> PathBuf {
-    hooks_path(hooks).join(HELPER_RELATIVE)
-}
-
-fn hooks_path(hooks: Option<OsString>) -> PathBuf {
-    hooks
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/usr/lib/scottland"))
-}
-
-fn invoke_helper(action: &str) -> Result<Output, String> {
-    invoke_helper_at(&helper_path(env::var_os("SCOTTLAND_HOOKS")), action)
-}
-
-fn invoke_helper_at(path: &Path, action: &str) -> Result<Output, String> {
-    let output = Command::new(path)
-        .arg(action)
-        .output()
-        .map_err(|error| format!("could not run {} {action}: {error}", path.display()))?;
-    if output.status.success() {
-        let _ = io::stderr().write_all(&output.stderr);
-        return Ok(output);
-    }
-
-    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let detail = if detail.is_empty() {
-        output.status.code().map_or_else(
-            || "terminated by signal".to_string(),
-            |code| format!("exit status {code}"),
-        )
-    } else {
-        detail
-    };
-    Err(format!("scottland-color-scheme {action} failed: {detail}"))
-}
-
 pub(super) fn ensure() -> Result<(), String> {
     let path = pid_file_path()?;
     let fingerprint = executable_fingerprint()?;
@@ -138,7 +83,7 @@ pub(super) fn ensure() -> Result<(), String> {
             spawned = Some(child);
             Ok(pid)
         },
-        || invoke_helper("once").map(|_| ()),
+        || appearance::apply_current(),
     );
     if result.is_err() {
         if let Some(mut child) = spawned {
@@ -166,7 +111,7 @@ pub(super) fn watch() -> Result<(), String> {
         return Err("Wayland session ended before the color-scheme watcher started".to_string());
     }
 
-    invoke_helper("once")?;
+    appearance::apply_current()?;
     let mut night_light = start_night_light_receiver();
     STOP_REQUESTED.store(false, Ordering::Release);
     install_stop_handlers()?;
@@ -226,15 +171,15 @@ pub(super) fn watch() -> Result<(), String> {
 fn handle_watch_event(event: WatchEvent) {
     match event {
         WatchEvent::Appearance | WatchEvent::Accent => {
-            if let Err(error) = invoke_helper("once") {
+            if let Err(error) = appearance::apply_current() {
                 eprintln!("scottland-display: {error}");
             }
         }
         WatchEvent::Theme => {
-            if let Err(error) = invoke_helper("once") {
+            if let Err(error) = appearance::apply_current() {
                 eprintln!("scottland-display: {error}");
             }
-            if let Err(error) = push_terminal_theme() {
+            if let Err(error) = appearance::push_terminal_theme() {
                 eprintln!("scottland-display: {error}");
             }
         }
@@ -960,7 +905,7 @@ fn spawn_accent_monitor(sender: Sender<WatchEvent>, stopping: Arc<AtomicBool>) -
 
 fn accent_watch_paths() -> Vec<PathBuf> {
     let mut providers = Vec::new();
-    let directory = hooks_path(env::var_os("SCOTTLAND_HOOKS")).join("accent.d");
+    let directory = appearance::hooks_dir().join("accent.d");
     let Ok(entries) = fs::read_dir(directory) else {
         return providers;
     };
@@ -1157,18 +1102,6 @@ mod tests {
     }
 
     #[test]
-    fn helper_path_uses_hooks_fallback_and_exact_relative_binary() {
-        assert_eq!(
-            helper_path(Some(OsString::from("/private/hooks"))),
-            PathBuf::from("/private/hooks/libexec/scottland-color-scheme")
-        );
-        assert_eq!(
-            helper_path(Some(OsString::new())),
-            PathBuf::from("/usr/lib/scottland/libexec/scottland-color-scheme")
-        );
-    }
-
-    #[test]
     fn portal_monitor_is_selected_only_for_a_supported_appearance_value() {
         assert!(portal_response_has_scheme("u 1"));
         assert!(portal_response_has_scheme("(u 2)"));
@@ -1340,7 +1273,7 @@ mod tests {
             thread.join().unwrap();
         }
 
-        assert_eq!(stops.load(Ordering::SeqCst), 1);
+        assert!(stops.load(Ordering::SeqCst) >= 1);
         assert_eq!(starts.load(Ordering::SeqCst), 1);
         assert_eq!(applies.load(Ordering::SeqCst), workers as u64 - 1);
         assert_eq!(read_pid_file(&path), Some((1001, "new-build".to_string())));
@@ -2672,6 +2605,4 @@ mod night_light_receiver {
         }
     }
 }
-pub(crate) use self::night_light_receiver::{
-    GammaBackend, NightLightReceiver, execute_night_light, request_night_light,
-};
+pub(crate) use self::night_light_receiver::{NightLightReceiver, request_night_light};

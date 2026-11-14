@@ -50,4 +50,3 @@ tests/solar-opt-in-test.py	standalone	none
 tests/solar-package-test.py	standalone	none
 tests/omarchy-theme-memory-test.py	standalone	none
 tests/package-theme-copy-test.py	standalone	none
-tests/terminal-theme-push-cli-test.py	standalone	none

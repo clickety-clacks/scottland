@@ -619,6 +619,7 @@ name = "scottland-display"
 version = "0.2.0"
 dependencies = [
  "scottland-lib",
+ "serde_json",
  "wayland-client",
  "wayland-protocols-wlr",
 ]
