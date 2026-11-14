@@ -1,13 +1,14 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 
-const USAGE: &str = "usage: scottland-display output focused|internal|external-active|scale [up|down|SCALE]";
+const USAGE: &str =
+    "usage: scottland-display output focused|internal|external-active|scale [up|down|SCALE]";
 const SCALE_PRESETS: [f64; 6] = [1.0, 1.25, 1.6, 2.0, 3.0, 4.0];
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -54,7 +55,10 @@ pub(super) fn focused_output() -> Result<String, String> {
         .output()
         .map_err(|error| format!("could not ask Scottland for the focused output: {error}"))?;
     if !output.status.success() {
-        return Err(command_error(output, "could not determine the focused output"));
+        return Err(command_error(
+            output,
+            "could not determine the focused output",
+        ));
     }
     let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if !valid_name(&name) {
@@ -90,7 +94,10 @@ pub(super) fn power_on() -> Result<(), String> {
         }
         let output = output_power(&["--output", *name], "on")?;
         if !output.status.success() {
-            return Err(command_error(output, &format!("could not turn on output {name}")));
+            return Err(command_error(
+                output,
+                &format!("could not turn on output {name}"),
+            ));
         }
         states.extend(parse_power_states(&output.stdout)?);
     }
@@ -122,14 +129,19 @@ fn power_states(args: &[&str]) -> Result<std::collections::HashMap<String, Strin
 
 fn parse_power_states(bytes: &[u8]) -> Result<std::collections::HashMap<String, String>, String> {
     let mut states = std::collections::HashMap::new();
-    for line in bytes.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()) {
+    for line in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
         let value: Value = serde_json::from_slice(line)
             .map_err(|error| format!("scottland-output-power returned invalid JSON: {error}"))?;
         let name = value
             .get("name")
             .and_then(Value::as_str)
             .filter(|name| valid_name(name))
-            .ok_or_else(|| "scottland-output-power returned an output without a valid name".to_owned())?;
+            .ok_or_else(|| {
+                "scottland-output-power returned an output without a valid name".to_owned()
+            })?;
         let power = value
             .get("power")
             .and_then(Value::as_str)
@@ -199,7 +211,10 @@ fn apply_scale(name: &str, target: f64, session_only: bool) -> Result<f64, Strin
         if let Some(applied) = reported {
             println!("{}", scale_text(applied));
         }
-        return Err(command_error(output, "the compositor did not apply the requested scale"));
+        return Err(command_error(
+            output,
+            "the compositor did not apply the requested scale",
+        ));
     }
     reported.ok_or_else(|| "scottland-output did not report the applied scale".to_owned())
 }
@@ -231,7 +246,9 @@ fn list_outputs() -> Result<Vec<OutputInfo>, String> {
                 .get("name")
                 .and_then(Value::as_str)
                 .filter(|name| valid_name(name))
-                .ok_or_else(|| "scottland-output list returned an invalid output name".to_owned())?;
+                .ok_or_else(|| {
+                    "scottland-output list returned an invalid output name".to_owned()
+                })?;
             let enabled = value
                 .get("enabled")
                 .and_then(Value::as_bool)
@@ -240,7 +257,9 @@ fn list_outputs() -> Result<Vec<OutputInfo>, String> {
                 .get("scale")
                 .and_then(Value::as_f64)
                 .filter(|scale| scale.is_finite() && *scale > 0.0)
-                .ok_or_else(|| format!("scottland-output list returned an invalid scale for {name}"))?;
+                .ok_or_else(|| {
+                    format!("scottland-output list returned an invalid scale for {name}")
+                })?;
             Ok(OutputInfo {
                 name: name.to_owned(),
                 enabled,
@@ -268,7 +287,14 @@ fn pinned_scale(name: &str) -> Result<Option<String>, String> {
         } else if section && !trimmed.starts_with('#') && !trimmed.starts_with(';') {
             if let Some((key, value)) = trimmed.split_once('=') {
                 if key.trim() == "scale" {
-                    return Ok(Some(value.split(['#', ';']).next().unwrap_or("").trim().to_owned()));
+                    return Ok(Some(
+                        value
+                            .split(['#', ';'])
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .to_owned(),
+                    ));
                 }
             }
         }
@@ -342,7 +368,9 @@ fn write_layout_scale(path: &Path, output: &str, scale: &str) -> io::Result<()> 
         result.push_str(scale);
         result.push('\n');
     }
-    let permissions = fs::metadata(path).map(|metadata| metadata.permissions().mode()).unwrap_or(0o600);
+    let permissions = fs::metadata(path)
+        .map(|metadata| metadata.permissions().mode())
+        .unwrap_or(0o600);
     write_atomic(path, result.as_bytes(), permissions)
 }
 
@@ -406,7 +434,9 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     fs::create_dir_all(parent)?;
     let temporary = path.with_file_name(format!(
         ".{}.{}.{}.tmp",
-        path.file_name().and_then(|name| name.to_str()).unwrap_or("layout"),
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("layout"),
         std::process::id(),
         NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
     ));

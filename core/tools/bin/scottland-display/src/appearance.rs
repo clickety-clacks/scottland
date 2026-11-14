@@ -16,7 +16,14 @@ const APPEARANCE_SCHEMA: &str = "org.gnome.desktop.interface";
 const PORTAL_NAME: &str = "org.freedesktop.portal.Desktop";
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
 const PORTAL_INTERFACE: &str = "org.freedesktop.portal.Settings";
-const PALETTE_KEYS: [&str; 6] = ["background", "foreground", "muted", "accent", "alert", "attention"];
+const PALETTE_KEYS: [&str; 6] = [
+    "background",
+    "foreground",
+    "muted",
+    "accent",
+    "alert",
+    "attention",
+];
 const MAX_WAYFIRE_REPLY: usize = 4 * 1024 * 1024;
 const SIGUSR2: i32 = 12;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -78,10 +85,16 @@ fn push_terminal_theme_at(
         return Ok(());
     };
     let display_entry = environment_entry("WAYLAND_DISPLAY", &display);
-    let runtime_entry = runtime.as_ref().map(|value| environment_entry("XDG_RUNTIME_DIR", value));
+    let runtime_entry = runtime
+        .as_ref()
+        .map(|value| environment_entry("XDG_RUNTIME_DIR", value));
     let mut failures = Vec::new();
     for process in processes.flatten() {
-        let Some(pid) = process.file_name().to_str().and_then(|value| value.parse::<i32>().ok()) else {
+        let Some(pid) = process
+            .file_name()
+            .to_str()
+            .and_then(|value| value.parse::<i32>().ok())
+        else {
             continue;
         };
         if fs::read_to_string(process_root.join(pid.to_string()).join("comm"))
@@ -130,14 +143,22 @@ pub(super) fn palette(args: &[&str]) -> Result<(), String> {
                 return Ok(());
             }
             Err(error) => {
-                return Err(format!("could not read session palette {}: {error}", path.display()));
+                return Err(format!(
+                    "could not read session palette {}: {error}",
+                    path.display()
+                ));
             }
         }
     }
     let path = palette_path();
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
-        Err(error) => return Err(format!("could not read session palette {}: {error}", path.display())),
+        Err(error) => {
+            return Err(format!(
+                "could not read session palette {}: {error}",
+                path.display()
+            ));
+        }
     };
     palette_from_bytes(args, &bytes)
 }
@@ -184,7 +205,10 @@ fn palette_lines(args: &[&str], bytes: &[u8]) -> Result<Vec<String>, String> {
 }
 
 fn display_value(value: &Value) -> String {
-    value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string())
+    value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn current_scheme() -> String {
@@ -210,8 +234,15 @@ fn portal_setting(key: &str) -> Option<u32> {
     let output = command_output(
         "busctl",
         &[
-            "--user", "call", PORTAL_NAME, PORTAL_PATH, PORTAL_INTERFACE, "ReadOne", "ss",
-            "org.freedesktop.appearance", key,
+            "--user",
+            "call",
+            PORTAL_NAME,
+            PORTAL_PATH,
+            PORTAL_INTERFACE,
+            "ReadOne",
+            "ss",
+            "org.freedesktop.appearance",
+            key,
         ],
     )
     .ok()?;
@@ -227,7 +258,9 @@ fn parse_portal_uint(response: &str) -> Option<u32> {
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>();
     words.windows(2).find_map(|pair| {
-        (pair[0] == "u").then(|| pair[1].parse::<u32>().ok()).flatten()
+        (pair[0] == "u")
+            .then(|| pair[1].parse::<u32>().ok())
+            .flatten()
     })
 }
 
@@ -240,7 +273,9 @@ fn current_accent() -> Option<String> {
         .collect::<Vec<_>>();
     providers.sort();
     for provider in providers {
-        let Ok(metadata) = fs::metadata(&provider) else { continue };
+        let Ok(metadata) = fs::metadata(&provider) else {
+            continue;
+        };
         if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
             continue;
         }
@@ -254,12 +289,23 @@ fn current_accent() -> Option<String> {
     let output = command_output(
         "busctl",
         &[
-            "--user", "call", PORTAL_NAME, PORTAL_PATH, PORTAL_INTERFACE, "ReadOne", "ss",
-            "org.freedesktop.appearance", "accent-color",
+            "--user",
+            "call",
+            PORTAL_NAME,
+            PORTAL_PATH,
+            PORTAL_INTERFACE,
+            "ReadOne",
+            "ss",
+            "org.freedesktop.appearance",
+            "accent-color",
         ],
     )
     .ok()?;
-    output.status.success().then(|| parse_portal_accent(&String::from_utf8_lossy(&output.stdout))).flatten()
+    output
+        .status
+        .success()
+        .then(|| parse_portal_accent(&String::from_utf8_lossy(&output.stdout)))
+        .flatten()
 }
 
 fn parse_portal_accent(response: &str) -> Option<String> {
@@ -269,26 +315,44 @@ fn parse_portal_accent(response: &str) -> Option<String> {
         .take(3)
         .map(|part| part.trim_matches(['(', ')']).parse::<f64>().ok())
         .collect::<Option<Vec<_>>>()?;
-    let [red, green, blue] = values.as_slice() else { return None };
+    let [red, green, blue] = values.as_slice() else {
+        return None;
+    };
     let channel = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round_ties_even() as u8;
-    Some(format!("#{:02x}{:02x}{:02x}", channel(*red), channel(*green), channel(*blue)))
+    Some(format!(
+        "#{:02x}{:02x}{:02x}",
+        channel(*red),
+        channel(*green),
+        channel(*blue)
+    ))
 }
 
 fn provider_palette() -> Map<String, Value> {
     let folder = hooks_dir().join("accent.d");
-    let Ok(entries) = fs::read_dir(folder) else { return Map::new() };
-    let mut providers = entries.flatten().map(|entry| entry.path()).collect::<Vec<_>>();
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Map::new();
+    };
+    let mut providers = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
     providers.sort();
     for provider in providers {
-        let Ok(metadata) = fs::metadata(&provider) else { continue };
+        let Ok(metadata) = fs::metadata(&provider) else {
+            continue;
+        };
         if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
             continue;
         }
-        let Ok(output) = command_at(&provider, &["--palette"]) else { continue };
+        let Ok(output) = command_at(&provider, &["--palette"]) else {
+            continue;
+        };
         if !output.status.success() {
             continue;
         }
-        let Ok(Value::Object(source)) = serde_json::from_slice::<Value>(&output.stdout) else { continue };
+        let Ok(Value::Object(source)) = serde_json::from_slice::<Value>(&output.stdout) else {
+            continue;
+        };
         return source
             .into_iter()
             .filter(|(key, value)| {
@@ -308,16 +372,24 @@ fn text_settings() -> (f64, String, bool) {
     let font = gsetting("font-name").unwrap_or_default();
     let font = font.trim_matches('\'').trim_matches('"');
     let family = strip_font_size(font).trim().to_owned();
-    let family = if family.is_empty() { "sans-serif".to_owned() } else { family };
+    let family = if family.is_empty() {
+        "sans-serif".to_owned()
+    } else {
+        family
+    };
     let reduced_motion = gsetting("enable-animations").is_some_and(|value| value == "false");
     (scale, family, reduced_motion)
 }
 
 fn strip_font_size(font: &str) -> &str {
-    let Some(start) = font.rfind(char::is_whitespace) else { return font };
+    let Some(start) = font.rfind(char::is_whitespace) else {
+        return font;
+    };
     let suffix = font[start..].trim();
     if !suffix.is_empty()
-        && suffix.bytes().all(|byte| byte.is_ascii_digit() || byte == b'.')
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
         && suffix.bytes().filter(|byte| *byte == b'.').count() <= 1
     {
         &font[..start]
@@ -328,7 +400,10 @@ fn strip_font_size(font: &str) -> &str {
 
 fn gsetting(key: &str) -> Option<String> {
     let output = command_output("gsettings", &["get", APPEARANCE_SCHEMA, key]).ok()?;
-    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 fn desktop_cursor_theme() -> String {
@@ -336,7 +411,9 @@ fn desktop_cursor_theme() -> String {
         .ok()
         .map(|theme| theme.trim().to_owned())
         .filter(|theme| !theme.is_empty())
-        .or_else(|| gsetting("cursor-theme").map(|theme| theme.trim_matches(['\'', '"']).to_owned()))
+        .or_else(|| {
+            gsetting("cursor-theme").map(|theme| theme.trim_matches(['\'', '"']).to_owned())
+        })
         .filter(|theme| !theme.is_empty())
         .unwrap_or_else(|| "default".to_owned())
 }
@@ -370,38 +447,69 @@ fn cursor_theme_from_config(contents: &str) -> Option<String> {
 
 fn cursor_search_paths() -> Vec<PathBuf> {
     if let Some(path) = env::var_os("XCURSOR_PATH") {
-        return env::split_paths(&path).filter(|path| !path.as_os_str().is_empty()).map(expand_home).collect();
+        return env::split_paths(&path)
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(expand_home)
+            .collect();
     }
-    let home = env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"));
     let data_home = env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".local/share"));
     let data_dirs = env::var_os("XDG_DATA_DIRS")
         .map(|value| env::split_paths(&value).collect::<Vec<_>>())
-        .unwrap_or_else(|| vec![PathBuf::from("/usr/local/share"), PathBuf::from("/usr/share")]);
+        .unwrap_or_else(|| {
+            vec![
+                PathBuf::from("/usr/local/share"),
+                PathBuf::from("/usr/share"),
+            ]
+        });
     let mut paths = vec![data_home.join("icons"), home.join(".icons")];
-    paths.extend(data_dirs.into_iter().filter(|path| !path.as_os_str().is_empty()).map(|path| path.join("icons")));
+    paths.extend(
+        data_dirs
+            .into_iter()
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(|path| path.join("icons")),
+    );
     paths.push(PathBuf::from("/usr/share/pixmaps"));
     paths
 }
 
 fn expand_home(path: PathBuf) -> PathBuf {
-    let Some(value) = path.to_str() else { return path };
+    let Some(value) = path.to_str() else {
+        return path;
+    };
     if value == "~" {
         return env::var_os("HOME").map(PathBuf::from).unwrap_or(path);
     }
     if let Some(suffix) = value.strip_prefix("~/") {
-        return env::var_os("HOME").map(|home| PathBuf::from(home).join(suffix)).unwrap_or(path);
+        return env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join(suffix))
+            .unwrap_or(path);
     }
     path
 }
 
-fn cursor_theme_sizes(theme: &str, paths: &[PathBuf], visited: &mut HashSet<String>) -> HashSet<u32> {
+fn cursor_theme_sizes(
+    theme: &str,
+    paths: &[PathBuf],
+    visited: &mut HashSet<String>,
+) -> HashSet<u32> {
     if theme.is_empty() || !visited.insert(theme.to_owned()) {
         return HashSet::new();
     }
-    let Some(directory) = paths.iter().map(|root| root.join(theme)).find(|path| path.is_dir()) else {
-        return if theme != "default" { cursor_theme_sizes("default", paths, visited) } else { HashSet::new() };
+    let Some(directory) = paths
+        .iter()
+        .map(|root| root.join(theme))
+        .find(|path| path.is_dir())
+    else {
+        return if theme != "default" {
+            cursor_theme_sizes("default", paths, visited)
+        } else {
+            HashSet::new()
+        };
     };
     let mut sizes = HashSet::new();
     if let Ok(entries) = fs::read_dir(directory.join("cursors")) {
@@ -419,16 +527,28 @@ fn cursor_theme_sizes(theme: &str, paths: &[PathBuf], visited: &mut HashSet<Stri
 }
 
 fn inherited_themes(path: &Path) -> Vec<String> {
-    let Ok(contents) = fs::read_to_string(path) else { return Vec::new() };
+    let Ok(contents) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
     let mut icon_theme = false;
     for line in contents.lines() {
         let line = line.trim();
         if line.starts_with('[') && line.ends_with(']') {
-            icon_theme = line[1..line.len() - 1].trim().eq_ignore_ascii_case("Icon Theme");
+            icon_theme = line[1..line.len() - 1]
+                .trim()
+                .eq_ignore_ascii_case("Icon Theme");
         } else if icon_theme && line.to_ascii_lowercase().starts_with("inherits=") {
             return line
                 .split_once('=')
-                .map(|(_, value)| value.replace(';', ",").split(',').map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned).collect())
+                .map(|(_, value)| {
+                    value
+                        .replace(';', ",")
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
                 .unwrap_or_default();
         }
     }
@@ -436,13 +556,21 @@ fn inherited_themes(path: &Path) -> Vec<String> {
 }
 
 fn xcursor_file_sizes(path: &Path) -> HashSet<u32> {
-    let Ok(bytes) = fs::read(path) else { return HashSet::new() };
+    let Ok(bytes) = fs::read(path) else {
+        return HashSet::new();
+    };
     if bytes.len() < 16 {
         return HashSet::new();
     }
-    let Some(magic) = read_u32(&bytes, 0) else { return HashSet::new() };
-    let Some(header_len) = read_u32(&bytes, 4) else { return HashSet::new() };
-    let Some(count) = read_u32(&bytes, 12) else { return HashSet::new() };
+    let Some(magic) = read_u32(&bytes, 0) else {
+        return HashSet::new();
+    };
+    let Some(header_len) = read_u32(&bytes, 4) else {
+        return HashSet::new();
+    };
+    let Some(count) = read_u32(&bytes, 12) else {
+        return HashSet::new();
+    };
     if magic != 0x7275_6358 || header_len < 16 || count > 4096 {
         return HashSet::new();
     }
@@ -453,17 +581,35 @@ fn xcursor_file_sizes(path: &Path) -> HashSet<u32> {
     let mut sizes = HashSet::new();
     for index in 0..count as usize {
         let offset = header_len as usize + index * 12;
-        let Some(kind) = read_u32(&bytes, offset) else { continue };
-        let Some(size) = read_u32(&bytes, offset + 4) else { continue };
-        let Some(position) = read_u32(&bytes, offset + 8) else { continue };
+        let Some(kind) = read_u32(&bytes, offset) else {
+            continue;
+        };
+        let Some(size) = read_u32(&bytes, offset + 4) else {
+            continue;
+        };
+        let Some(position) = read_u32(&bytes, offset + 8) else {
+            continue;
+        };
         let start = position as usize;
-        if kind != 0xfffd_0002 || size == 0 || start < toc_end || start.saturating_add(36) > bytes.len() {
+        if kind != 0xfffd_0002
+            || size == 0
+            || start < toc_end
+            || start.saturating_add(36) > bytes.len()
+        {
             continue;
         }
         let (Some(chunk_len), Some(chunk_type), Some(chunk_size)) = (
-            read_u32(&bytes, start), read_u32(&bytes, start + 4), read_u32(&bytes, start + 8),
-        ) else { continue };
-        if chunk_type == kind && chunk_size == size && chunk_len >= 36 && start.saturating_add(chunk_len as usize) <= bytes.len() {
+            read_u32(&bytes, start),
+            read_u32(&bytes, start + 4),
+            read_u32(&bytes, start + 8),
+        ) else {
+            continue;
+        };
+        if chunk_type == kind
+            && chunk_size == size
+            && chunk_len >= 36
+            && start.saturating_add(chunk_len as usize) <= bytes.len()
+        {
             sizes.insert(size);
         }
     }
@@ -471,14 +617,25 @@ fn xcursor_file_sizes(path: &Path) -> HashSet<u32> {
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        bytes.get(offset..offset + 4)?.try_into().ok()?,
+    ))
 }
 
 fn cursor_size_for_scale(scale: f64, sizes: &HashSet<u32>) -> u32 {
     let wanted = (24.0 * scale.clamp(0.5, 3.0)).ceil() as u32;
-    let mut sizes = sizes.iter().copied().filter(|size| *size > 0).collect::<Vec<_>>();
+    let mut sizes = sizes
+        .iter()
+        .copied()
+        .filter(|size| *size > 0)
+        .collect::<Vec<_>>();
     sizes.sort_unstable();
-    sizes.iter().copied().find(|size| *size >= wanted).or_else(|| sizes.last().copied()).unwrap_or(wanted)
+    sizes
+        .iter()
+        .copied()
+        .find(|size| *size >= wanted)
+        .or_else(|| sizes.last().copied())
+        .unwrap_or(wanted)
 }
 
 fn current_cursor_size() -> u32 {
@@ -491,8 +648,14 @@ fn current_cursor_size() -> u32 {
 fn set_cursor_size() -> Result<(), String> {
     let scale = text_settings().0;
     let paths = cursor_search_paths();
-    let compositor_size = cursor_size_for_scale(scale, &cursor_theme_sizes(&current_cursor_theme(), &paths, &mut HashSet::new()));
-    let app_size = cursor_size_for_scale(scale, &cursor_theme_sizes(&desktop_cursor_theme(), &paths, &mut HashSet::new()));
+    let compositor_size = cursor_size_for_scale(
+        scale,
+        &cursor_theme_sizes(&current_cursor_theme(), &paths, &mut HashSet::new()),
+    );
+    let app_size = cursor_size_for_scale(
+        scale,
+        &cursor_theme_sizes(&desktop_cursor_theme(), &paths, &mut HashSet::new()),
+    );
     set_wayfire_options(json!({"input/cursor_size": compositor_size}))?;
     let current = gsetting("cursor-size").and_then(|value| value.parse::<u32>().ok());
     if current != Some(app_size) {
@@ -507,7 +670,9 @@ fn set_cursor_size() -> Result<(), String> {
 }
 
 fn update_recorded_environment(size: u32) {
-    let Some(display) = env::var_os("WAYLAND_DISPLAY").filter(|value| !value.is_empty()) else { return };
+    let Some(display) = env::var_os("WAYLAND_DISPLAY").filter(|value| !value.is_empty()) else {
+        return;
+    };
     let display = display.to_string_lossy();
     let path = session_dir().join(format!("{display}.env"));
     for _ in 0..20 {
@@ -525,13 +690,21 @@ fn update_recorded_environment(size: u32) {
                     data.push(0);
                 }
                 if let Err(error) = write_atomic(&path, &data) {
-                    eprintln!("scottland-display: could not update {}: {error}", path.display());
+                    eprintln!(
+                        "scottland-display: could not update {}: {error}",
+                        path.display()
+                    );
                 }
                 return;
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                std::thread::sleep(Duration::from_millis(50))
+            }
             Err(error) => {
-                eprintln!("scottland-display: could not read {}: {error}", path.display());
+                eprintln!(
+                    "scottland-display: could not read {}: {error}",
+                    path.display()
+                );
                 return;
             }
         }
@@ -549,17 +722,25 @@ fn update_activation_environment(size: u32) {
                 eprintln!("scottland-display: {error}");
             }
         }
-        Err(error) => eprintln!("scottland-display: could not run dbus-update-activation-environment: {error}"),
+        Err(error) => eprintln!(
+            "scottland-display: could not run dbus-update-activation-environment: {error}"
+        ),
     }
 }
 
 fn only_graphical_session() -> bool {
-    let Some(session) = env::var_os("XDG_SESSION_ID") else { return false };
-    let Ok(list) = command_output("loginctl", &["list-sessions", "--no-legend"]) else { return false };
+    let Some(session) = env::var_os("XDG_SESSION_ID") else {
+        return false;
+    };
+    let Ok(list) = command_output("loginctl", &["list-sessions", "--no-legend"]) else {
+        return false;
+    };
     if !list.status.success() {
         return false;
     }
-    let Ok(user) = command_output("id", &["-un"]) else { return false };
+    let Ok(user) = command_output("id", &["-un"]) else {
+        return false;
+    };
     if !user.status.success() {
         return false;
     }
@@ -570,12 +751,27 @@ fn only_graphical_session() -> bool {
         if fields.len() < 3 || fields[2] != user || fields[0] == session {
             continue;
         }
-        let Ok(details) = command_output("loginctl", &["show-session", fields[0], "-p", "Type", "-p", "State", "--value"]) else { return false };
+        let Ok(details) = command_output(
+            "loginctl",
+            &[
+                "show-session",
+                fields[0],
+                "-p",
+                "Type",
+                "-p",
+                "State",
+                "--value",
+            ],
+        ) else {
+            return false;
+        };
         if !details.status.success() {
             return false;
         }
-        let details = String::from_utf8_lossy(&details.stdout).lines().map(str::trim).collect::<Vec<_>>();
-        if details.len() >= 2 && matches!(details[0], "wayland" | "x11") && details[1] != "closing" {
+        let details_text = String::from_utf8_lossy(&details.stdout);
+        let details = details_text.lines().map(str::trim).collect::<Vec<_>>();
+        if details.len() >= 2 && matches!(details[0], "wayland" | "x11") && details[1] != "closing"
+        {
             return false;
         }
     }
@@ -584,8 +780,12 @@ fn only_graphical_session() -> bool {
 
 fn write_palette(scheme: &str, accent: Option<&str>) -> Result<(), String> {
     let (background, foreground, muted, default_accent, alert, attention) = match scheme {
-        "light" => ("#f4f5f7", "#2e3440", "#5e6878", "#3b6ea8", "#c0392b", "#b7791f"),
-        _ => ("#2e3440", "#d8dee9", "#97a3ab", "#81a1c1", "#bf616a", "#ebcb8b"),
+        "light" => (
+            "#f4f5f7", "#2e3440", "#5e6878", "#3b6ea8", "#c0392b", "#b7791f",
+        ),
+        _ => (
+            "#2e3440", "#d8dee9", "#97a3ab", "#81a1c1", "#bf616a", "#ebcb8b",
+        ),
     };
     let mut palette = Map::from_iter([
         ("scheme".to_owned(), json!(scheme)),
@@ -612,9 +812,11 @@ fn write_palette(scheme: &str, accent: Option<&str>) -> Result<(), String> {
         .and_then(Value::as_str)
         .unwrap_or("#ebcb8b");
     set_option("attention_color", Value::String(format!("{attention}ff")))?;
-    let data = serde_json::to_vec(&palette).map_err(|error| format!("could not encode session palette: {error}"))?;
+    let data = serde_json::to_vec(&palette)
+        .map_err(|error| format!("could not encode session palette: {error}"))?;
     let path = palette_path();
-    write_atomic(&path, &data).map_err(|error| format!("could not write {}: {error}", path.display()))
+    write_atomic(&path, &data)
+        .map_err(|error| format!("could not write {}: {error}", path.display()))
 }
 
 fn set_option(name: &str, value: Value) -> Result<(), String> {
@@ -632,31 +834,45 @@ fn set_wayfire_options(data: Value) -> Result<(), String> {
 }
 
 fn wayfire_call(method: &str, data: Value) -> Result<Value, String> {
-    let socket_path = env::var_os("WAYFIRE_SOCKET").filter(|value| !value.is_empty())
+    let socket_path = env::var_os("WAYFIRE_SOCKET")
+        .filter(|value| !value.is_empty())
         .ok_or_else(|| "WAYFIRE_SOCKET is missing".to_owned())?;
     let mut socket = UnixStream::connect(&socket_path)
         .map_err(|error| format!("could not connect to Wayfire: {error}"))?;
     let request = serde_json::to_vec(&json!({"method": method, "data": data}))
         .map_err(|error| format!("could not encode Wayfire request: {error}"))?;
-    let length = u32::try_from(request.len()).map_err(|_| "Wayfire request is too large".to_owned())?;
-    socket.write_all(&length.to_le_bytes()).and_then(|()| socket.write_all(&request))
+    let length =
+        u32::try_from(request.len()).map_err(|_| "Wayfire request is too large".to_owned())?;
+    socket
+        .write_all(&length.to_le_bytes())
+        .and_then(|()| socket.write_all(&request))
         .map_err(|error| format!("could not send Wayfire request: {error}"))?;
     let mut header = [0; 4];
-    socket.read_exact(&mut header).map_err(|error| format!("could not read Wayfire reply: {error}"))?;
+    socket
+        .read_exact(&mut header)
+        .map_err(|error| format!("could not read Wayfire reply: {error}"))?;
     let length = u32::from_le_bytes(header) as usize;
     if length > MAX_WAYFIRE_REPLY {
         return Err("Wayfire reply is too large".to_owned());
     }
     let mut bytes = vec![0; length];
-    socket.read_exact(&mut bytes).map_err(|error| format!("could not read Wayfire reply: {error}"))?;
-    serde_json::from_slice(&bytes).map_err(|error| format!("Wayfire returned invalid JSON: {error}"))
+    socket
+        .read_exact(&mut bytes)
+        .map_err(|error| format!("could not read Wayfire reply: {error}"))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Wayfire returned invalid JSON: {error}"))
 }
 
 fn current_theme_location() -> PathBuf {
     let config_home = env::var_os("XDG_CONFIG_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/" )).join(".config"));
+        .unwrap_or_else(|| {
+            env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/"))
+                .join(".config")
+        });
     config_home.join("gooarchy/current-theme")
 }
 
@@ -674,7 +890,7 @@ fn environment_entry(name: &str, value: &std::ffi::OsStr) -> Vec<u8> {
     entry
 }
 
-fn hooks_dir() -> PathBuf {
+pub(super) fn hooks_dir() -> PathBuf {
     env::var_os("SCOTTLAND_HOOKS")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -685,17 +901,25 @@ fn session_dir() -> PathBuf {
     env::var_os("SCOTTLAND_SESSION_DIR")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| env::var_os("XDG_RUNTIME_DIR").filter(|value| !value.is_empty()).map(|path| PathBuf::from(path).join("scottland")))
+        .or_else(|| {
+            env::var_os("XDG_RUNTIME_DIR")
+                .filter(|value| !value.is_empty())
+                .map(|path| PathBuf::from(path).join("scottland"))
+        })
         .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}/scottland", scottland::dirs::uid())))
 }
 
 fn palette_path() -> PathBuf {
-    let display = env::var_os("WAYLAND_DISPLAY").filter(|value| !value.is_empty()).unwrap_or_else(|| "wayland".into());
+    let display = env::var_os("WAYLAND_DISPLAY")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "wayland".into());
     session_dir().join(format!("{}.palette.json", display.to_string_lossy()))
 }
 
 fn valid_color(value: &str) -> bool {
-    value.len() == 7 && value.starts_with('#') && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    value.len() == 7
+        && value.starts_with('#')
+        && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn command_output(program: &str, args: &[&str]) -> io::Result<Output> {
@@ -707,7 +931,8 @@ fn command_at(program: &Path, args: &[&str]) -> io::Result<Output> {
 }
 
 fn gsettings_command(args: &[&str]) -> Result<(), String> {
-    let output = command_output("gsettings", args).map_err(|error| format!("could not run gsettings: {error}"))?;
+    let output = command_output("gsettings", args)
+        .map_err(|error| format!("could not run gsettings: {error}"))?;
     output_result(output, "gsettings failed")
 }
 
@@ -717,7 +942,10 @@ fn output_result(output: Output, action: &str) -> Result<(), String> {
     } else {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         if detail.is_empty() {
-            Err(format!("{action}: exit status {}", output.status.code().unwrap_or(1)))
+            Err(format!(
+                "{action}: exit status {}",
+                output.status.code().unwrap_or(1)
+            ))
         } else {
             Err(format!("{action}: {detail}"))
         }
@@ -725,10 +953,21 @@ fn output_result(output: Output, action: &str) -> Result<(), String> {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let parent = path.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file has no parent"))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file has no parent"))?;
     fs::create_dir_all(parent)?;
-    let temporary = path.with_file_name(format!(".{}.{}.{}.tmp", path.file_name().unwrap_or_default().to_string_lossy(), std::process::id(), NEXT_TEMP.fetch_add(1, Ordering::Relaxed)));
-    let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary)?;
+    let temporary = path.with_file_name(format!(
+        ".{}.{}.{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
     let result = file.write_all(bytes).and_then(|()| file.sync_all());
     drop(file);
     if let Err(error) = result {
@@ -785,7 +1024,10 @@ mod tests {
         assert_eq!(parse_portal_uint("u 1"), Some(1));
         assert_eq!(parse_portal_uint("(u 2)"), Some(2));
         assert_eq!(parse_portal_uint("error"), None);
-        assert_eq!(parse_portal_accent("(ddd) 1.0 0.5 0"), Some("#ff8000".to_owned()));
+        assert_eq!(
+            parse_portal_accent("(ddd) 1.0 0.5 0"),
+            Some("#ff8000".to_owned())
+        );
         assert_eq!(portal_scheme(2), "light");
         assert_eq!(portal_scheme(1), "dark");
         assert_eq!(portal_scheme(0), "dark");
@@ -818,8 +1060,14 @@ mod tests {
 
     #[test]
     fn computes_cursor_theme_and_font_preferences() {
-        assert_eq!(cursor_theme_from_config("[input]\ncursor_theme = Adwaita\n"), Some("Adwaita".to_owned()));
-        assert_eq!(cursor_theme_from_config("[other]\ncursor_theme=wrong\n"), None);
+        assert_eq!(
+            cursor_theme_from_config("[input]\ncursor_theme = Adwaita\n"),
+            Some("Adwaita".to_owned())
+        );
+        assert_eq!(
+            cursor_theme_from_config("[other]\ncursor_theme=wrong\n"),
+            None
+        );
         assert_eq!(strip_font_size("Cantarell 11"), "Cantarell");
         assert_eq!(strip_font_size("sans-serif"), "sans-serif");
         let sizes = HashSet::from([24, 32, 48, 64]);
@@ -836,32 +1084,41 @@ mod tests {
         let location = scratch.path("config/gooarchy/current-theme");
         let mut signals = Vec::new();
 
-        assert!(push_terminal_theme_at(
-            &location,
-            Some(std::ffi::OsStr::new("wayland-0")),
-            None,
-            &process_root,
-            |pid| { signals.push(pid); Ok(()) },
-        )
-        .is_ok());
+        assert!(
+            push_terminal_theme_at(
+                &location,
+                Some(std::ffi::OsStr::new("wayland-0")),
+                None,
+                &process_root,
+                |pid| {
+                    signals.push(pid);
+                    Ok(())
+                },
+            )
+            .is_ok()
+        );
         fs::create_dir_all(&location).unwrap();
-        assert!(push_terminal_theme_at(
-            &location,
-            Some(std::ffi::OsStr::new("wayland-0")),
-            None,
-            &process_root,
-            |pid| { signals.push(pid); Ok(()) },
-        )
-        .is_ok());
+        assert!(
+            push_terminal_theme_at(
+                &location,
+                Some(std::ffi::OsStr::new("wayland-0")),
+                None,
+                &process_root,
+                |pid| {
+                    signals.push(pid);
+                    Ok(())
+                },
+            )
+            .is_ok()
+        );
         symlink("light-theme", location.join("light")).unwrap();
-        assert!(push_terminal_theme_at(
-            &location,
-            None,
-            None,
-            &process_root,
-            |pid| { signals.push(pid); Ok(()) },
-        )
-        .is_ok());
+        assert!(
+            push_terminal_theme_at(&location, None, None, &process_root, |pid| {
+                signals.push(pid);
+                Ok(())
+            },)
+            .is_ok()
+        );
         assert!(signals.is_empty());
     }
 

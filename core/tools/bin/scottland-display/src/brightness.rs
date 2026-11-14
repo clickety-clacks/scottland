@@ -98,11 +98,7 @@ fn set_display_brightness(
         _ => set_backlight_brightness(step)?,
     };
     if !no_osd {
-        show_osd(
-            "display-brightness",
-            "Brightness",
-            resulting,
-        );
+        show_osd("display-brightness", "Brightness", resulting);
     }
     Ok(())
 }
@@ -181,8 +177,14 @@ fn select_backlight() -> Result<String, String> {
         .or_else(|| names.iter().find(|name| name.starts_with("amdgpu_bl")))
         .or_else(|| names.iter().find(|name| name.as_str() == "intel_backlight"))
         .or_else(|| names.iter().find(|name| name.starts_with("acpi_video")))
-        .or_else(|| names.iter().find(|name| name.as_str() != "appletb_backlight"));
-    selected.cloned().ok_or_else(|| "No backlight device found".to_owned())
+        .or_else(|| {
+            names
+                .iter()
+                .find(|name| name.as_str() != "appletb_backlight")
+        });
+    selected
+        .cloned()
+        .ok_or_else(|| "No backlight device found".to_owned())
 }
 
 fn run_keyboard(args: &[&str]) -> Result<(), String> {
@@ -281,7 +283,9 @@ fn keyboard_restore(ignore_failure: bool) -> Result<(), String> {
             eprintln!("scottland-display: could not clear saved keyboard brightness: {error}");
             Ok(())
         }
-        Err(error) => Err(format!("could not clear saved keyboard brightness: {error}")),
+        Err(error) => Err(format!(
+            "could not clear saved keyboard brightness: {error}"
+        )),
     }
 }
 
@@ -343,10 +347,10 @@ fn show_osd(icon: &str, message: &str, progress: u32) {
             eprintln!(
                 "scottland-display: could not show brightness display{}",
                 if detail.is_empty() {
-                    output
-                        .status
-                        .code()
-                        .map_or_else(|| " (terminated by signal)".to_owned(), |code| format!(" (exit status {code})"))
+                    output.status.code().map_or_else(
+                        || " (terminated by signal)".to_owned(),
+                        |code| format!(" (exit status {code})"),
+                    )
                 } else {
                     format!(": {detail}")
                 }
@@ -389,8 +393,8 @@ fn raw_level(target_percent: u32, maximum: u32) -> u32 {
 }
 
 fn read_number(path: &Path, label: &str) -> Result<u32, String> {
-    let value = fs::read_to_string(path)
-        .map_err(|error| format!("could not read {label}: {error}"))?;
+    let value =
+        fs::read_to_string(path).map_err(|error| format!("could not read {label}: {error}"))?;
     value
         .trim()
         .parse()
@@ -439,7 +443,15 @@ fn set_ddc_brightness(output: &str, step: &str) -> Result<u32, String> {
     let bus = info.bus.to_string();
     let raw_text = raw.to_string();
     if let Err(error) = run_ddc(
-        &["--bus", &bus, "--skip-ddc-checks", "--noverify", "setvcp", "10", &raw_text],
+        &[
+            "--bus",
+            &bus,
+            "--skip-ddc-checks",
+            "--noverify",
+            "setvcp",
+            "10",
+            &raw_text,
+        ],
         "brightness write",
     ) {
         clear_ddc_cache(output);
@@ -502,7 +514,10 @@ fn cached_ddc(output: &str) -> Result<DdcInfo, String> {
 }
 
 fn detect_ddc(output: &str) -> Result<DdcInfo, String> {
-    let detected = run_ddc(&["--skip-ddc-checks", "detect", "--brief"], "display detection")?;
+    let detected = run_ddc(
+        &["--skip-ddc-checks", "detect", "--brief"],
+        "display detection",
+    )?;
     let text = String::from_utf8_lossy(&detected.stdout);
     let mut display = false;
     let mut bus = None;
@@ -516,7 +531,10 @@ fn detect_ddc(output: &str) -> Result<DdcInfo, String> {
             bus = None;
         }
         if let Some(value) = line.strip_prefix("I2C bus:") {
-            let value = value.trim().strip_prefix("/dev/i2c-").unwrap_or(value.trim());
+            let value = value
+                .trim()
+                .strip_prefix("/dev/i2c-")
+                .unwrap_or(value.trim());
             bus = value.parse::<u32>().ok();
         }
         if let Some(value) = line.strip_prefix("DRM connector:") {
@@ -547,7 +565,14 @@ fn drm_output_name(connector: &str) -> &str {
 fn refresh_ddc_reading(output: &str, bus: u32) -> Result<DdcInfo, String> {
     let bus_text = bus.to_string();
     let result = run_ddc(
-        &["--bus", &bus_text, "--skip-ddc-checks", "getvcp", "10", "--brief"],
+        &[
+            "--bus",
+            &bus_text,
+            "--skip-ddc-checks",
+            "getvcp",
+            "10",
+            "--brief",
+        ],
         "brightness read",
     )?;
     let text = String::from_utf8_lossy(&result.stdout);
@@ -640,12 +665,7 @@ fn session_dir() -> PathBuf {
                 .filter(|value| !value.is_empty())
                 .map(|runtime| PathBuf::from(runtime).join("scottland"))
         })
-        .unwrap_or_else(|| {
-            PathBuf::from(format!(
-                "/run/user/{}/scottland",
-                scottland::dirs::uid()
-            ))
-        })
+        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}/scottland", scottland::dirs::uid())))
 }
 
 fn display_name() -> String {
@@ -669,7 +689,9 @@ fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
     fs::create_dir_all(parent)?;
     let temporary = path.with_file_name(format!(
         ".{}.{}.{}.{}.tmp",
-        path.file_name().and_then(|name| name.to_str()).unwrap_or("state"),
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("state"),
         std::process::id(),
         NEXT_TEMP.fetch_add(1, Ordering::Relaxed),
         cache_now()
@@ -776,7 +798,9 @@ mod tests {
         fs::create_dir_all(leds.join("zz-kbd_backlight")).unwrap();
         fs::create_dir_all(leds.join("aa-kbd_backlight")).unwrap();
         fs::create_dir_all(leds.join("status:blue")).unwrap();
-        assert_eq!(select_keyboard_under(&scratch.0).unwrap(), "aa-kbd_backlight");
+        assert_eq!(
+            select_keyboard_under(&scratch.0).unwrap(),
+            "aa-kbd_backlight"
+        );
     }
 }
-

@@ -1,5 +1,5 @@
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::fd::AsRawFd;
@@ -905,7 +905,7 @@ fn spawn_accent_monitor(sender: Sender<WatchEvent>, stopping: Arc<AtomicBool>) -
 
 fn accent_watch_paths() -> Vec<PathBuf> {
     let mut providers = Vec::new();
-    let directory = hooks_path(env::var_os("SCOTTLAND_HOOKS")).join("accent.d");
+    let directory = appearance::hooks_dir().join("accent.d");
     let Ok(entries) = fs::read_dir(directory) else {
         return providers;
     };
@@ -2605,6 +2605,4 @@ mod night_light_receiver {
         }
     }
 }
-pub(crate) use self::night_light_receiver::{
-    GammaBackend, NightLightReceiver, execute_night_light, request_night_light,
-};
+pub(crate) use self::night_light_receiver::{NightLightReceiver, request_night_light};

@@ -2,10 +2,10 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::process::{Command, Output};
 
-pub(crate) mod color_scheme;
-pub(crate) mod brightness_target;
 pub(crate) mod appearance;
 pub(crate) mod brightness;
+pub(crate) mod brightness_target;
+pub(crate) mod color_scheme;
 pub(crate) mod gamma;
 pub(crate) mod night_light;
 pub(crate) mod outputs;

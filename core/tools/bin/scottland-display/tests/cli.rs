@@ -344,10 +344,12 @@ fn cursor_size_command_reads_native_text_scale_and_has_no_helper_dependency() {
     let output = cursor.run(&["color-scheme", "cursor-size"]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(stdout(&output), "24\n");
-    assert!(cursor
-        .calls()
-        .iter()
-        .any(|call| call == &format!("get {SCHEMA} {KEY}")));
+    assert!(
+        cursor
+            .calls()
+            .iter()
+            .any(|call| call == &format!("get {SCHEMA} {KEY}"))
+    );
     assert!(!cursor.hooks.join("libexec/scottland-color-scheme").exists());
 }
 
@@ -437,7 +439,12 @@ fn terminal_theme_push_without_a_theme_location_is_a_successful_noop() {
     let output = scratch.run(&["terminal-theme", "push"]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(scratch.calls().is_empty());
-    assert!(!scratch.hooks.join("libexec/scottland-color-scheme").exists());
+    assert!(
+        !scratch
+            .hooks
+            .join("libexec/scottland-color-scheme")
+            .exists()
+    );
 }
 
 #[test]
