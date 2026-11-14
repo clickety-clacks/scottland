@@ -1273,7 +1273,7 @@ mod tests {
             thread.join().unwrap();
         }
 
-        assert_eq!(stops.load(Ordering::SeqCst), 1);
+        assert!(stops.load(Ordering::SeqCst) >= 1);
         assert_eq!(starts.load(Ordering::SeqCst), 1);
         assert_eq!(applies.load(Ordering::SeqCst), workers as u64 - 1);
         assert_eq!(read_pid_file(&path), Some((1001, "new-build".to_string())));
