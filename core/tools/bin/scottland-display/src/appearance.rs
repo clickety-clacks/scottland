@@ -266,11 +266,18 @@ fn parse_portal_uint(response: &str) -> Option<u32> {
 
 fn current_accent() -> Option<String> {
     let folder = hooks_dir().join("accent.d");
-    let mut providers = fs::read_dir(folder)
-        .ok()?
-        .flatten()
-        .map(|entry| entry.path())
-        .collect::<Vec<_>>();
+    current_accent_from(&folder, || portal_accent())
+}
+
+fn current_accent_from(folder: &Path, portal: impl FnOnce() -> Option<String>) -> Option<String> {
+    let mut providers = match fs::read_dir(folder) {
+        Ok(entries) => entries
+            .flatten()
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(_) => return None,
+    };
     providers.sort();
     for provider in providers {
         let Ok(metadata) = fs::metadata(&provider) else {
@@ -286,6 +293,10 @@ fn current_accent() -> Option<String> {
             }
         }
     }
+    portal()
+}
+
+fn portal_accent() -> Option<String> {
     let output = command_output(
         "busctl",
         &[
@@ -678,17 +689,7 @@ fn update_recorded_environment(size: u32) {
     for _ in 0..20 {
         match fs::read(&path) {
             Ok(bytes) => {
-                let mut entries = bytes
-                    .split(|byte| *byte == 0)
-                    .filter(|entry| !entry.is_empty() && !entry.starts_with(b"XCURSOR_SIZE="))
-                    .map(<[u8]>::to_vec)
-                    .collect::<Vec<_>>();
-                entries.push(format!("XCURSOR_SIZE={size}").into_bytes());
-                let mut data = Vec::new();
-                for entry in entries {
-                    data.extend_from_slice(&entry);
-                    data.push(0);
-                }
+                let data = updated_recorded_environment(&bytes, size);
                 if let Err(error) = write_atomic(&path, &data) {
                     eprintln!(
                         "scottland-display: could not update {}: {error}",
@@ -709,6 +710,16 @@ fn update_recorded_environment(size: u32) {
             }
         }
     }
+}
+
+fn updated_recorded_environment(bytes: &[u8], size: u32) -> Vec<u8> {
+    let mut data = bytes
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty() && !entry.starts_with(b"XCURSOR_SIZE="))
+        .flat_map(|entry| entry.iter().copied().chain(std::iter::once(0)))
+        .collect::<Vec<_>>();
+    data.extend_from_slice(format!("XCURSOR_SIZE={size}\0").as_bytes());
+    data
 }
 
 fn update_activation_environment(size: u32) {
@@ -746,32 +757,44 @@ fn only_graphical_session() -> bool {
     }
     let user = String::from_utf8_lossy(&user.stdout).trim().to_owned();
     let session = session.to_string_lossy();
-    for line in String::from_utf8_lossy(&list.stdout).lines() {
+    only_graphical_session_for(
+        &session,
+        &String::from_utf8_lossy(&list.stdout),
+        &user,
+        |id| {
+            let details = command_output(
+                "loginctl",
+                &["show-session", id, "-p", "Type", "-p", "State", "--value"],
+            )
+            .ok()?;
+            if !details.status.success() {
+                return None;
+            }
+            let values = String::from_utf8_lossy(&details.stdout)
+                .lines()
+                .map(str::trim)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            Some((values.first()?.clone(), values.get(1)?.clone()))
+        },
+    )
+}
+
+fn only_graphical_session_for(
+    session: &str,
+    listed_sessions: &str,
+    user: &str,
+    mut details: impl FnMut(&str) -> Option<(String, String)>,
+) -> bool {
+    for line in listed_sessions.lines() {
         let fields = line.split_whitespace().collect::<Vec<_>>();
         if fields.len() < 3 || fields[2] != user || fields[0] == session {
             continue;
         }
-        let Ok(details) = command_output(
-            "loginctl",
-            &[
-                "show-session",
-                fields[0],
-                "-p",
-                "Type",
-                "-p",
-                "State",
-                "--value",
-            ],
-        ) else {
+        let Some((kind, state)) = details(fields[0]) else {
             return false;
         };
-        if !details.status.success() {
-            return false;
-        }
-        let details_text = String::from_utf8_lossy(&details.stdout);
-        let details = details_text.lines().map(str::trim).collect::<Vec<_>>();
-        if details.len() >= 2 && matches!(details[0], "wayland" | "x11") && details[1] != "closing"
-        {
+        if matches!(kind.as_str(), "wayland" | "x11") && state != "closing" {
             return false;
         }
     }
@@ -984,13 +1007,15 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cursor_size_for_scale, cursor_theme_from_config, palette_lines, parse_portal_accent,
-        parse_portal_uint, portal_scheme, push_terminal_theme_at, strip_font_size, valid_color,
+        current_accent_from, cursor_size_for_scale, cursor_theme_from_config, cursor_theme_sizes,
+        only_graphical_session_for, palette_lines, parse_portal_accent, parse_portal_uint,
+        portal_scheme, push_terminal_theme_at, strip_font_size, updated_recorded_environment,
+        valid_color,
     };
     use std::collections::HashSet;
     use std::fs;
     use std::os::unix::fs::symlink;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -1074,6 +1099,107 @@ mod tests {
         assert_eq!(cursor_size_for_scale(1.0, &sizes), 24);
         assert_eq!(cursor_size_for_scale(1.1, &sizes), 32);
         assert_eq!(cursor_size_for_scale(3.0, &sizes), 64);
+    }
+
+    fn write_cursor_sizes(path: &Path, sizes: &[u32]) {
+        let count = sizes.len() as u32;
+        let header_len = 16_u32;
+        let toc_len = count * 12;
+        let chunks_start = header_len + toc_len;
+        let mut bytes = Vec::new();
+        for value in [0x7275_6358_u32, header_len, 0, count] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        for (index, size) in sizes.iter().enumerate() {
+            let position = chunks_start + index as u32 * 36;
+            for value in [0xfffd_0002_u32, *size, position] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for size in sizes {
+            for value in [36_u32, 0xfffd_0002_u32, *size, 1, 0, 0, 0, 0, 0] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn cursor_metadata_inheritance_missing_theme_and_default_size_fallback() {
+        let scratch = Scratch::new();
+        let icons = scratch.path("icons");
+        let custom = icons.join("Custom");
+        let base = icons.join("Base");
+        let default = icons.join("default");
+        fs::create_dir_all(custom.join("cursors")).unwrap();
+        fs::create_dir_all(base.join("cursors")).unwrap();
+        fs::create_dir_all(default.join("cursors")).unwrap();
+        fs::write(custom.join("index.theme"), "[Icon Theme]\nInherits=Base\n").unwrap();
+        write_cursor_sizes(&base.join("cursors/left_ptr"), &[32]);
+        write_cursor_sizes(&default.join("cursors/left_ptr"), &[40]);
+
+        let sizes = cursor_theme_sizes("Custom", std::slice::from_ref(&icons), &mut HashSet::new());
+        assert_eq!(sizes, HashSet::from([32, 40]));
+        let fallback =
+            cursor_theme_sizes("Missing", std::slice::from_ref(&icons), &mut HashSet::new());
+        assert_eq!(fallback, HashSet::from([40]));
+        assert_eq!(
+            cursor_size_for_scale(5.0 / 3.0, &HashSet::new()),
+            40,
+            "no usable cursor metadata falls back to the scaled 24-pixel default"
+        );
+    }
+
+    #[test]
+    fn recorded_cursor_environment_replaces_only_cursor_size() {
+        let original = b"WAYLAND_DISPLAY=wayland-2\0XCURSOR_SIZE=24\0LANG=C.UTF-8\0";
+        let updated = updated_recorded_environment(original, 40);
+        assert_eq!(
+            updated,
+            b"WAYLAND_DISPLAY=wayland-2\0LANG=C.UTF-8\0XCURSOR_SIZE=40\0"
+        );
+    }
+
+    #[test]
+    fn activation_environment_is_updated_only_for_the_sole_graphical_session() {
+        let user = "fixture-user";
+        assert!(only_graphical_session_for(
+            "1",
+            "1 1000 fixture-user seat0\n",
+            user,
+            |_| { panic!("the active session is not queried as an additional session") }
+        ));
+        assert!(!only_graphical_session_for(
+            "1",
+            "1 1000 fixture-user seat0\n2 1000 fixture-user seat0\n",
+            user,
+            |_| Some(("wayland".to_owned(), "active".to_owned()))
+        ));
+        assert!(only_graphical_session_for(
+            "1",
+            "1 1000 fixture-user seat0\n2 1000 another-user seat0\n",
+            user,
+            |_| panic!("another user's graphical session is irrelevant")
+        ));
+        assert!(only_graphical_session_for(
+            "1",
+            "1 1000 fixture-user seat0\n2 1000 fixture-user seat0\n",
+            user,
+            |_| Some(("wayland".to_owned(), "closing".to_owned()))
+        ));
+    }
+
+    #[test]
+    fn missing_accent_provider_directory_still_reads_the_portal() {
+        let scratch = Scratch::new();
+        let missing = scratch.path("hooks/accent.d");
+        let mut called = false;
+        let accent = current_accent_from(&missing, || {
+            called = true;
+            Some("#123456".to_owned())
+        });
+        assert_eq!(accent.as_deref(), Some("#123456"));
+        assert!(called);
     }
 
     #[test]

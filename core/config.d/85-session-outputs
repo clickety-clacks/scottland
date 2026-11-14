@@ -3,8 +3,8 @@
 
 After the integrations' generators, so a change made during the session wins over their display
 config; before the user's overrides.ini. Session-only scale changes over a pinned scale are added
-by 95-session-output-scales after overrides.ini. An output turned off is
-"mode = off"; its other settings stay, so it comes back as it was. Scale auto is written as
+by 95-session-output-scales for the one rebuild requested by scottland-output. An output turned off
+is "mode = off"; its other settings stay, so it comes back as it was. Scale auto is written as
 "scale = auto", which scottland-build-config makes a number (libexec/scottland_output_scale.py).
 """
 import json

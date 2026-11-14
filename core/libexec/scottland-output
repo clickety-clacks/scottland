@@ -22,7 +22,8 @@ output reconnecting, and end with the session. Turning an output off keeps its o
 turning it on again brings it back at the same mode, position and scale. Changes made at the same
 time (several integrations) are made one after another, each kept. Persistent display
 settings belong in the config itself ([output:NAME] sections, e.g. in overrides.ini). A
-session-only scale is emitted after overrides.ini and is discarded when the session ends.
+session-only scale temporarily wins over overrides.ini for the config build requested by that
+command; a later config rebuild restores the pinned value.
 
 Scale auto is the output's natural scale, from the physical size and mode the compositor reports
 for it: pixel density along the diagonal of 200 per inch or more gives 2, 140 or more 1.5, anything
@@ -166,12 +167,16 @@ def heads():
     return json.loads(result.stdout)
 
 
-def apply_config():
+def apply_config(include_session_scale_overlay=False):
     """Rebuild the session's config and wait until Wayfire has loaded it (its outputs applied)."""
     wayfire = Wayfire()
     before = wayfire.reloads()
+    environment = os.environ.copy()
+    if include_session_scale_overlay:
+        environment["SCOTTLAND_APPLY_SESSION_SCALE_OVERLAY"] = "1"
     build = subprocess.run([os.path.join(HOOKS, "libexec/scottland-build-config")],
-                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
+                           env=environment)
     if build.returncode != 0:
         lines = [line for line in build.stderr.splitlines() if line.strip()]
         raise RuntimeError("config rebuild failed: " + " | ".join(lines[-2:]))
@@ -259,7 +264,7 @@ def change(name, update, session_scale=None, clear_session_scale=None, clear_all
             # Auto scale is worked out for the mode in the config, or else the output's current
             # one; a second build catches a mode this change moved the output to (e.g. highres).
             for _ in range(2 if auto else 1):
-                apply_config()
+                apply_config(include_session_scale_overlay=session_scale is not None)
                 # Another config build can land just before this one; give its reload a moment.
                 deadline = time.monotonic() + 2
                 while name:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Append explicit scale changes made over an overrides.ini pin in this session only."""
+"""Apply a pinned-scale override only for the output command's own rebuild."""
 import json
 import os
 import re
@@ -16,7 +16,19 @@ def session_dir():
 
 path = os.path.join(session_dir(), "session-output-scales.json")
 if len(sys.argv) > 1 and sys.argv[1] == "--watch-paths":
-    print(path)
+    # The command rebuilds the config after writing this transient input. Watching this file
+    # would start a second, ordinary rebuild that immediately undoes the command.
+    raise SystemExit(0)
+
+if os.environ.get("SCOTTLAND_APPLY_SESSION_SCALE_OVERLAY") != "1":
+    # Any later config rebuild restores the user's pinned scale. The command that creates the
+    # overlay opts in for its own build only.
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        print(f"95-session-output-scales: could not clear {path}: {error}", file=sys.stderr)
     raise SystemExit(0)
 
 try:
