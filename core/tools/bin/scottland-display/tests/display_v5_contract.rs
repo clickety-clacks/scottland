@@ -83,7 +83,7 @@ if [ "${2:-}" = detect ]; then
 elif [ "${4:-}" = getvcp ]; then
   if [ "${DDC_FAIL_READ:-0}" = 1 ]; then echo 'fixture read failed' >&2; exit 7; fi
   printf 'VCP 10 C %s %s\n' "${DDC_CURRENT:-40}" "${DDC_MAX:-80}"
-elif [ "${4:-}" = setvcp ]; then
+elif [ "${5:-}" = setvcp ]; then
   :
 else
   exit 64
@@ -96,7 +96,7 @@ fi
 set -eu
 printf '%s\n' "$*" >>"$BUS_CALLS"
 if [ "${1:-}" = --system ] && [ "${6:-}" = SetBrightness ]; then
-  printf '%s\n' "${10}" >"$SYSFS_ROOT/class/$8/$9/brightness"
+  printf '%s\n' "${10}" >"$SCOTTLAND_SYSFS_ROOT/class/$8/$9/brightness"
 fi
 "##,
         );
