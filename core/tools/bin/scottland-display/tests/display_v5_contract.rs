@@ -309,8 +309,8 @@ fn write_executable(path: &Path, contents: &str) {
     fs::set_permissions(path, permissions).unwrap();
 }
 
-fn symlink(source: impl AsRef<Path>, destination: impl AsRef<Path>) {
-    std::os::unix::fs::symlink(source, destination).unwrap();
+fn symlink(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, destination)
 }
 
 struct SocketFile(PathBuf);
