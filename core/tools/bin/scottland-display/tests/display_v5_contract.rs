@@ -445,7 +445,8 @@ fn focused_internal_output_uses_backlight_and_only_steps_emit_the_display_osd() 
                 .sysfs
                 .join("class/backlight/intel_backlight/brightness")
         )
-        .unwrap(),
+        .unwrap()
+        .trim(),
         "450"
     );
     assert!(
@@ -479,7 +480,8 @@ fn keyboard_brightness_uses_the_exact_keyboard_osd_arguments() {
                 .sysfs
                 .join("class/leds/platform-kbd_backlight/brightness")
         )
-        .unwrap(),
+        .unwrap()
+        .trim(),
         "60"
     );
     assert!(
