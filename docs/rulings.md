@@ -193,7 +193,7 @@ Specified in windowing-keys.md WK36 and WP1.
 
 | Date | Ruling | Where |
 |---|---|---|
-| 11-15 | If the temporary primary-selection paste cannot be used, send the focused app's regular paste binding without changing primary selection: Ctrl+V for GTK and other non-terminal apps, Ctrl+Shift+V for known terminals including Foot, Kitty, GNOME Terminal, Konsole, Ghostty, Xterm and Rxvt. Do not use Shift+Insert for this fallback because it pastes the primary selection; the existing successful primary-selection paste and restoration path stays unchanged. | docs/clipboard.md CH15; `scottland-clipboardd` |
+| 11-15 | If the temporary primary-selection paste cannot be used, send Ctrl+V for GTK and other non-terminal apps; keep the existing Ctrl+Shift+V fallback for terminals. This change does not alter terminal or primary-selection behavior. | docs/clipboard.md CH15; `scottland-clipboardd` |
 
 ## Session environment
 
