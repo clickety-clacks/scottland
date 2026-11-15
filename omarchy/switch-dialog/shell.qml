@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
+import qs.Commons as Commons
 
 // "Switch to …" dialog for scottland-switch. Runs standalone (qs -p) so it works in
 // Hyprland and in Scottland, with or without the Omarchy shell running.
@@ -29,7 +30,7 @@ ShellRoot {
 
   PanelWindow {
     anchors { top: true; bottom: true; left: true; right: true }
-    color: Color.menu.scrim
+    color: Commons.Color.menu.scrim
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
@@ -45,8 +46,8 @@ ShellRoot {
       anchors.centerIn: parent
       width: 440 * Style.fontScale
       height: body.implicitHeight + 48 * Style.fontScale
-      color: Color.menu.background
-      border.color: Color.menu.border
+      color: Commons.Color.menu.background
+      border.color: Commons.Color.menu.border
       border.width: 1
       radius: Style.cornerRadius
       focus: true
@@ -64,7 +65,7 @@ ShellRoot {
 
         Text {
           text: "Switch to " + root.targetName
-          color: Color.menu.text
+          color: Commons.Color.menu.text
           font.family: Style.font.family
           font.pixelSize: Style.font.title
           font.bold: true
@@ -74,7 +75,7 @@ ShellRoot {
           width: parent.width
           wrapMode: Text.WordWrap
           text: "Switching will close all windows in " + root.currentName + "."
-          color: Color.urgent
+          color: Commons.Color.urgent
           font.family: Style.font.family
           font.pixelSize: Style.font.body
           font.bold: true
@@ -100,14 +101,14 @@ ShellRoot {
     width: caption.implicitWidth + 28 * Style.fontScale
     height: caption.implicitHeight + 14 * Style.fontScale
     radius: Style.cornerRadius
-    color: primary ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.18) : "transparent"
-    border.color: primary ? Color.accent : Color.menu.border
+    color: primary ? Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.18) : "transparent"
+    border.color: primary ? Commons.Color.accent : Commons.Color.menu.border
     border.width: 1
 
     Text {
       id: caption
       anchors.centerIn: parent
-      color: Color.menu.text
+      color: Commons.Color.menu.text
       font.family: Style.font.family
       font.pixelSize: Style.font.body
     }
