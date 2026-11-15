@@ -19,6 +19,7 @@ APP = Path(sys.argv[3]).resolve()
 CLIPBOARD = REPO / "core/libexec/scottland-clipboard"
 EMOJI = REPO / "core/libexec/scottland-emoji"
 FOOT_TARGET = REPO / "tests/clipboard-paste-terminal-target.py"
+SERVICE = REPO / "build/scottland-clipboardd"
 HOOKS = REPO / "build/hooks"
 ENV = os.environ.copy()
 ENV["SCOTTLAND_HOOKS"] = str(HOOKS)
@@ -115,6 +116,38 @@ def wait_for_file(path, label, process=None, identity=None, timeout=8):
     raise TimeoutError(f"{label} did not produce {path.name}")
 
 
+def service_call(operation):
+    socket_path = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / \
+        f"clipboard-{Path(os.environ.get('WAYLAND_DISPLAY', 'wayland-0')).name}" / "service.sock"
+    request = bytes([operation])
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(2)
+        connection.connect(str(socket_path))
+        connection.sendall(struct.pack("!I", len(request)) + request)
+        size = struct.unpack("!I", read_exact(connection, 4))[0]
+        response = read_exact(connection, size)
+    if not response:
+        raise OSError("the private clipboard service returned an empty reply")
+    if response[0]:
+        raise RuntimeError(response[1:].decode("utf-8", "replace"))
+    return response[1:]
+
+
+def wait_for_service(process, identity, timeout=8):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(f"private clipboard service exited with {process.returncode}")
+        if not verify_process(process, identity):
+            raise RuntimeError("private clipboard service process identity changed")
+        try:
+            service_call(1)
+            return
+        except OSError:
+            time.sleep(0.05)
+    raise TimeoutError("private clipboard service socket did not answer ping")
+
+
 def wait_for_focus(app_id, process, identity, timeout=8):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -181,12 +214,9 @@ def foot_case(label, payload):
 def main():
     if MODE not in ("default", "fallback"):
         raise ValueError("mode must be default or fallback")
-    socket_path = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / \
-        f"clipboard-{Path(os.environ.get('WAYLAND_DISPLAY', 'wayland-0')).name}" / "service.sock"
-    deadline = time.monotonic() + 8
-    while time.monotonic() < deadline and not socket_path.exists():
-        time.sleep(0.05)
-    check("clipboard service socket is ready", socket_path.exists(), str(socket_path.name))
+    service = launch("clipboard-service", [str(SERVICE)], str(SERVICE))
+    wait_for_service(service, str(SERVICE))
+    check("private clipboard service responds", True, f"pid={service.pid}")
 
     flag = os.environ.get("SCOTTLAND_TEST_DISABLE_PRIMARY_SELECTION") == "1"
     check("test session selects the requested paste route", flag == (MODE == "fallback"),
