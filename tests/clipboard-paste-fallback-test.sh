@@ -67,7 +67,8 @@ run_mode() {
   }
   mkdir -m 700 -- "$scratch"
   export SCOTTLAND_TEST_SCRATCH=$scratch SCOTTLAND_HEADLESS_DIR=$headless_dir
-  export SCOTTLAND_HEADLESS_OWNER="clipboard-paste-$mode"
+  export SCOTTLAND_HEADLESS_OWNER="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+  export SCOTTLAND_HEADLESS_OWNER_DIR=$headless_dir
   if [[ $mode == fallback ]]; then
     export SCOTTLAND_TEST_DISABLE_PRIMARY_SELECTION=1
   else
