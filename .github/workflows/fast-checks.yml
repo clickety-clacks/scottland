@@ -149,6 +149,7 @@ jobs:
               git rev-parse HEAD
               git rev-parse HEAD^{tree}
               make tools-test
+              make clipboard-paste-test
               tests/inertia-unit.sh
               tests/navigation-unit.sh
               tests/pairing-unit.sh
@@ -271,6 +272,15 @@ jobs:
                 status=$?
                 printf "FAIL\\tmake test-hooks exited %s\\n" "$status" >build/osd-foundation-smoke/hooks-build.outcome
                 exit "$status"
+              fi
+              clipboard_log="$PWD/build/clipboard-paste-fallback-console.log"
+              if timeout --signal=TERM --kill-after=30s 6m \
+                tests/clipboard-paste-fallback-test.sh >"$clipboard_log" 2>&1; then
+                cat "$clipboard_log"
+              else
+                test_status=$?
+                cat "$clipboard_log"
+                exit "$test_status"
               fi
               mkdir -m 700 build/omarchy-compat-session-scratch
               SCOTTLAND_TEST_SCRATCH="$PWD/build/omarchy-compat-session-scratch" \

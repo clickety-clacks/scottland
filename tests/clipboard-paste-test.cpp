@@ -7,6 +7,7 @@
 namespace {
 using scottland::clipboard::PasteKeyEvent;
 using scottland::clipboard::PasteKeySequence;
+using scottland::clipboard::fallback_paste_sequence;
 using scottland::clipboard::regular_clipboard_paste_sequence;
 using scottland::clipboard::shift_insert_paste_sequence;
 
@@ -45,6 +46,50 @@ int main() {
     if (check_sequence(regular_clipboard_paste_sequence(base_modifiers, control_mask, shift_mask),
                        no_target_modifiers.data(), no_target_modifiers.size(),
                        "clipboard paste sends Ctrl+Shift+V and restores prior modifiers")) {
+        return 1;
+    }
+
+    constexpr std::array<PasteKeyEvent, 4> control_v{{
+        {KEY_LEFTCTRL, true, base_modifiers | control_mask},
+        {KEY_V, true, base_modifiers | control_mask},
+        {KEY_V, false, base_modifiers | control_mask},
+        {KEY_LEFTCTRL, false, base_modifiers},
+    }};
+    if (check_sequence(fallback_paste_sequence("org.scottland.test.PasteTarget", base_modifiers,
+                                               control_mask, shift_mask),
+                       control_v.data(), control_v.size(),
+                       "non-terminal fallback sends Ctrl+V and restores prior modifiers")) {
+        return 1;
+    }
+    if (check_sequence(fallback_paste_sequence("foot", base_modifiers, control_mask, shift_mask),
+                       no_target_modifiers.data(), no_target_modifiers.size(),
+                       "Foot fallback keeps Ctrl+Shift+V")) {
+        return 1;
+    }
+    if (check_sequence(fallback_paste_sequence("org.gnome.Terminal", base_modifiers,
+                                               control_mask, shift_mask),
+                       no_target_modifiers.data(), no_target_modifiers.size(),
+                       "GNOME Terminal fallback keeps Ctrl+Shift+V")) {
+        return 1;
+    }
+    if (check_sequence(fallback_paste_sequence("xterm", base_modifiers, control_mask, shift_mask),
+                       no_target_modifiers.data(), no_target_modifiers.size(),
+                       "Xterm fallback uses Ctrl+Shift+V instead of primary paste")) {
+        return 1;
+    }
+    if (check_sequence(fallback_paste_sequence("urxvt", base_modifiers, control_mask, shift_mask),
+                       no_target_modifiers.data(), no_target_modifiers.size(),
+                       "Rxvt fallback uses Ctrl+Shift+V instead of primary paste")) {
+        return 1;
+    }
+    constexpr std::array<PasteKeyEvent, 2> control_v_already_held{{
+        {KEY_V, true, base_modifiers | control_mask},
+        {KEY_V, false, base_modifiers | control_mask},
+    }};
+    if (check_sequence(fallback_paste_sequence("org.scottland.test.PasteTarget", base_modifiers |
+                                                control_mask, control_mask, shift_mask),
+                       control_v_already_held.data(), control_v_already_held.size(),
+                       "Ctrl+V fallback preserves a held Control modifier")) {
         return 1;
     }
 
@@ -96,7 +141,6 @@ int main() {
                        "Shift+Insert adds and restores Shift")) {
         return 1;
     }
-
     constexpr std::array<PasteKeyEvent, 2> shift_already_held_for_insert{ {
         {KEY_INSERT, true, base_modifiers | shift_mask},
         {KEY_INSERT, false, base_modifiers | shift_mask},

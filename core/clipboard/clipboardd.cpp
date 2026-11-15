@@ -66,6 +66,72 @@ struct Offer {
     std::vector<std::string> mimes;
 };
 
+struct FocusedWindow {
+    uint64_t id;
+    std::string app_id;
+};
+
+std::optional<std::string> json_string_field(std::string_view object, std::string_view name) {
+    const std::string key = "\"" + std::string(name) + "\"";
+    const auto key_position = object.find(key);
+    if (key_position == std::string_view::npos) return std::nullopt;
+    auto position = key_position + key.size();
+    while (position < object.size() && std::isspace(static_cast<unsigned char>(object[position]))) ++position;
+    if (position == object.size() || object[position++] != ':') return std::nullopt;
+    while (position < object.size() && std::isspace(static_cast<unsigned char>(object[position]))) ++position;
+    if (position == object.size() || object[position++] != '"') return std::nullopt;
+
+    std::string value;
+    while (position < object.size()) {
+        const char character = object[position++];
+        if (character == '"') return value;
+        if (character != '\\') {
+            if (static_cast<unsigned char>(character) < 0x20) return std::nullopt;
+            value.push_back(character);
+            continue;
+        }
+
+        if (position == object.size()) return std::nullopt;
+        const char escaped = object[position++];
+        switch (escaped) {
+            case '"': value.push_back('"'); break;
+            case '\\': value.push_back('\\'); break;
+            case '/': value.push_back('/'); break;
+            case 'b': value.push_back('\b'); break;
+            case 'f': value.push_back('\f'); break;
+            case 'n': value.push_back('\n'); break;
+            case 'r': value.push_back('\r'); break;
+            case 't': value.push_back('\t'); break;
+            case 'u': {
+                if (position + 4 > object.size()) return std::nullopt;
+                uint32_t codepoint = 0;
+                for (int digit = 0; digit < 4; ++digit) {
+                    const char hex = object[position++];
+                    codepoint <<= 4;
+                    if (hex >= '0' && hex <= '9') codepoint |= static_cast<uint32_t>(hex - '0');
+                    else if (hex >= 'a' && hex <= 'f') codepoint |= static_cast<uint32_t>(hex - 'a' + 10);
+                    else if (hex >= 'A' && hex <= 'F') codepoint |= static_cast<uint32_t>(hex - 'A' + 10);
+                    else return std::nullopt;
+                }
+                if (codepoint >= 0xd800 && codepoint <= 0xdfff) return std::nullopt;
+                if (codepoint <= 0x7f) {
+                    value.push_back(static_cast<char>(codepoint));
+                } else if (codepoint <= 0x7ff) {
+                    value.push_back(static_cast<char>(0xc0 | (codepoint >> 6)));
+                    value.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+                } else {
+                    value.push_back(static_cast<char>(0xe0 | (codepoint >> 12)));
+                    value.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+                    value.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+                }
+                break;
+            }
+            default: return std::nullopt;
+        }
+    }
+    return std::nullopt;
+}
+
 class Service;
 
 struct Source {
@@ -254,7 +320,7 @@ class Service {
         return true;
     }
 
-    std::optional<uint64_t> focused_window() {
+    std::optional<FocusedWindow> focused_window() {
         const char *path = std::getenv("WAYFIRE_SOCKET");
         if (!path || !*path) throw std::runtime_error("the Scottland compositor session is unavailable");
         int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -299,7 +365,7 @@ class Service {
         auto windows = response.find("\"windows\":[");
         if (windows == std::string::npos) return std::nullopt;
         const size_t array_start = windows + std::string_view("\"windows\":[").size();
-        std::optional<uint64_t> active;
+        std::optional<FocusedWindow> active;
         size_t object_start = std::string::npos;
         size_t object_depth = 0;
         bool in_string = false;
@@ -327,7 +393,10 @@ class Service {
                         while (digits < object.size() && object[digits] >= '0' && object[digits] <= '9') ++digits;
                         if (digits == id_key + 5) return std::nullopt;
                         if (active) return std::nullopt;
-                        active = std::stoull(std::string(object.substr(id_key + 5, digits - id_key - 5)));
+                        auto app_id = json_string_field(object, "app_id");
+                        active = FocusedWindow{
+                            std::stoull(std::string(object.substr(id_key + 5, digits - id_key - 5))),
+                            app_id.value_or("")};
                     }
                 }
             } else if (ch == ']' && object_depth == 0) {
@@ -339,7 +408,7 @@ class Service {
 
     void require_target(uint64_t expected) {
         auto active = focused_window();
-        if (!active || *active != expected) {
+        if (!active || active->id != expected) {
             throw std::runtime_error("the app focused before the picker is no longer focused");
         }
     }
@@ -737,13 +806,23 @@ class Service {
         return true;
     }
 
-    bool paste_and_wait() {
+    bool paste_and_wait(uint64_t expected_target) {
         if (!keymap_ready_ || !virtual_keyboard_) return false;
+
+        auto active = focused_window();
+        if (!active || active->id != expected_target) {
+            throw std::runtime_error("the app focused before the picker is no longer focused");
+        }
 
         const uint64_t primary_revision_before_snapshot = primary_selection_revision_;
         auto previous_primary = snapshot_primary_selection();
         bool use_shift_insert = false;
-        if (previous_primary && !current_clipboard_.formats.empty() &&
+        const char *headless_isolation = std::getenv("SCOTTLAND_HEADLESS_ISOLATION");
+        const char *disable_primary = std::getenv("SCOTTLAND_TEST_DISABLE_PRIMARY_SELECTION");
+        const bool force_fallback = headless_isolation &&
+            std::string_view(headless_isolation) == "1" && disable_primary &&
+            std::string_view(disable_primary) == "1";
+        if (!force_fallback && previous_primary && !current_clipboard_.formats.empty() &&
             wl_display_roundtrip(display_) >= 0 &&
             primary_selection_revision_ == primary_revision_before_snapshot) {
             use_shift_insert = set_primary_selection(current_clipboard_);
@@ -754,8 +833,8 @@ class Service {
             std::chrono::steady_clock::now().time_since_epoch()).count());
         const auto sequence = use_shift_insert ?
             scottland::clipboard::shift_insert_paste_sequence(depressed_mods_, shift_mask_) :
-            scottland::clipboard::regular_clipboard_paste_sequence(
-                depressed_mods_, control_mask_, shift_mask_);
+            scottland::clipboard::fallback_paste_sequence(active->app_id, depressed_mods_,
+                control_mask_, shift_mask_);
         for (size_t i = 0; i < sequence.size; ++i) {
             const auto &event = sequence.events[i];
             zwp_virtual_keyboard_v1_key(virtual_keyboard_, now + static_cast<uint32_t>(i), event.key,
@@ -908,7 +987,7 @@ class Service {
                 try { require_target(target); }
                 catch (...) { throw std::runtime_error("paste failed: the target window closed; the entry is on the clipboard"); }
             }
-            if (!copy_only && !paste_and_wait()) {
+            if (!copy_only && !paste_and_wait(target)) {
                 throw std::runtime_error("paste failed: the clipboard is set, but the focused window did not accept it");
             }
             return reply;
@@ -928,7 +1007,7 @@ class Service {
                 try { require_target(target); }
                 catch (...) { throw std::runtime_error("paste failed: the target window closed; the entry is on the clipboard"); }
             }
-            if (mode == 1 && !paste_and_wait()) {
+            if (mode == 1 && !paste_and_wait(target)) {
                 throw std::runtime_error("paste failed: the selected entry is on the clipboard, but the focused window did not accept it");
             }
             return reply;
@@ -971,7 +1050,7 @@ class Service {
                 snapshots_.erase(snapshot_id);
                 throw std::runtime_error("emoji insertion failed; the original clipboard was restored");
             }
-            const bool pasted = paste_and_wait();
+            const bool pasted = paste_and_wait(target);
             try {
                 set_selection(previous, false);
             } catch (...) {
