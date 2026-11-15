@@ -60,7 +60,7 @@ trap cleanup EXIT
 run_mode() {
   local mode=$1
   scratch="$repo/build/clipboard-paste-$mode-scratch"
-  headless_dir="$scratch/session"
+  headless_dir="$scratch/headless"
   [[ ! -e $scratch && ! -L $scratch ]] || {
     echo "headless scratch path is occupied: $scratch" >&2
     return 2
