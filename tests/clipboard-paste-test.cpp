@@ -72,15 +72,14 @@ int main() {
                        "GNOME Terminal fallback keeps Ctrl+Shift+V")) {
         return 1;
     }
-    constexpr std::array<PasteKeyEvent, 4> fallback_shift_insert{{
-        {KEY_LEFTSHIFT, true, base_modifiers | shift_mask},
-        {KEY_INSERT, true, base_modifiers | shift_mask},
-        {KEY_INSERT, false, base_modifiers | shift_mask},
-        {KEY_LEFTSHIFT, false, base_modifiers},
-    }};
     if (check_sequence(fallback_paste_sequence("xterm", base_modifiers, control_mask, shift_mask),
-                       fallback_shift_insert.data(), fallback_shift_insert.size(),
-                       "Xterm fallback keeps Shift+Insert")) {
+                       no_target_modifiers.data(), no_target_modifiers.size(),
+                       "Xterm fallback uses Ctrl+Shift+V instead of primary paste")) {
+        return 1;
+    }
+    if (check_sequence(fallback_paste_sequence("urxvt", base_modifiers, control_mask, shift_mask),
+                       no_target_modifiers.data(), no_target_modifiers.size(),
+                       "Rxvt fallback uses Ctrl+Shift+V instead of primary paste")) {
         return 1;
     }
     constexpr std::array<PasteKeyEvent, 2> control_v_already_held{{

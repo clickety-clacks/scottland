@@ -23,8 +23,8 @@ saved primary selection if it was not changed while the paste was in progress. T
 that paste from the primary selection and text widgets that paste from the regular clipboard use the
 same input. If the temporary primary-selection offer cannot be made, the helper sends the focused
 app's regular paste shortcut without changing the primary selection: Ctrl+V for GTK and other
-non-terminal apps; Ctrl+Shift+V for known terminals such as Foot, Kitty, GNOME Terminal, Konsole and
-Ghostty; Shift+Insert for Xterm and Rxvt. It adds no package dependency.
+non-terminal apps; Ctrl+Shift+V for known terminals such as Foot, Kitty, GNOME Terminal, Konsole,
+Ghostty, Xterm and Rxvt. It adds no package dependency.
 The session build must confirm both protocols are available before this feature can be considered
 usable.
 
@@ -72,4 +72,4 @@ reports that history is already cleared and exits unsuccessfully without restori
 | CH10, CH12–CH13 | Copy text/files and preserve the specified failure behavior. | source candidate; focused helper checks pass; build and session evidence pending |
 | CH11 | Clear history immediately and show the empty history list in the shared picker; preserve the current clipboard selection and provide no selectable empty row. | source implements the approved opt-in picker seam; private UI behavior verification pending |
 | CH14 | Use compositor protocols without adding a package dependency or borrowing a clipboard tool. | source candidate; build and session evidence pending |
-| CH15 | Paste through a temporary primary selection when possible and restore the previous selection if unchanged; otherwise send the focused app's regular paste binding (Ctrl+V for GTK/non-terminals, Ctrl+Shift+V for known terminals, Shift+Insert for Xterm/Rxvt) without changing primary selection. | Source implements the contract; verification evidence is tracked with its candidate; desktop acceptance is separate |
+| CH15 | Paste through a temporary primary selection when possible and restore the previous selection if unchanged; otherwise send the focused app's regular paste binding (Ctrl+V for GTK/non-terminals, Ctrl+Shift+V for known terminals including Xterm/Rxvt) without changing primary selection. | Source implements the contract; verification evidence is tracked with its candidate; desktop acceptance is separate |

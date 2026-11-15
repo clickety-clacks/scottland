@@ -94,7 +94,6 @@ inline constexpr PasteKeySequence shift_insert_paste_sequence(
 enum class PasteBinding {
     control_v,
     control_shift_v,
-    shift_insert,
 };
 
 inline constexpr bool ascii_equal_case_insensitive(std::string_view left,
@@ -118,22 +117,16 @@ inline constexpr bool app_id_is(std::string_view app_id, std::string_view candid
 }
 
 inline constexpr PasteBinding paste_binding_for_app(std::string_view app_id) {
-    constexpr std::array<std::string_view, 17> control_shift_v_terminals{{
+    constexpr std::array<std::string_view, 24> control_shift_v_terminals{{
         "foot", "footclient", "kitty", "alacritty", "wezterm", "wezterm-gui",
         "ghostty", "org.wezfurlong.wezterm", "com.mitchellh.ghostty",
         "org.gnome.terminal", "org.gnome.console", "gnome-terminal", "kgx",
-        "konsole", "org.kde.konsole", "tilix", "com.gexperts.tilix",
-    }};
-    constexpr std::array<std::string_view, 7> shift_insert_terminals{{
-        "xterm", "rxvt", "rxvt-unicode", "urxvt", "xfce4-terminal", "mate-terminal",
-        "lxterminal",
+        "konsole", "org.kde.konsole", "tilix", "com.gexperts.tilix", "xterm", "rxvt",
+        "rxvt-unicode", "urxvt", "xfce4-terminal", "mate-terminal", "lxterminal",
     }};
 
     for (const auto terminal : control_shift_v_terminals) {
         if (app_id_is(app_id, terminal)) return PasteBinding::control_shift_v;
-    }
-    for (const auto terminal : shift_insert_terminals) {
-        if (app_id_is(app_id, terminal)) return PasteBinding::shift_insert;
     }
     return PasteBinding::control_v;
 }
@@ -145,8 +138,6 @@ inline constexpr PasteKeySequence fallback_paste_sequence(
         case PasteBinding::control_shift_v:
             return regular_clipboard_paste_sequence(
                 depressed_modifiers, control_mask, shift_mask);
-        case PasteBinding::shift_insert:
-            return shift_insert_paste_sequence(depressed_modifiers, shift_mask);
         case PasteBinding::control_v:
             return control_v_paste_sequence(depressed_modifiers, control_mask);
     }
