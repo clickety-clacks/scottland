@@ -184,8 +184,10 @@ The generic list picker command and its command/IO contract are in
 ## Clipboard history
 
 Clipboard history uses the generic list picker and keeps data in the current session only. The full
-command and behavior contract is in [../docs/clipboard.md](../docs/clipboard.md) (CH1–CH14).
-Source candidate present; focused helper checks and compositor build/session evidence pending.
+command and behavior contract is in [../docs/clipboard.md](../docs/clipboard.md) (CH1–CH15).
+Paste preserves the primary-selection route and uses the focused app's regular paste binding when
+that route is unavailable (CH15). Verification evidence is tracked with the candidate; desktop
+acceptance remains separate.
 Private session-memory clipboard snapshots support the emoji consumer. CH11's approved `--show-empty`
 presentation is implemented as an opt-in to the shared picker; private UI behavior verification is pending.
 

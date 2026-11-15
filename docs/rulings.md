@@ -189,6 +189,12 @@ Specified in windowing-keys.md WK36 and WP1.
 |---|---|---|
 | 10-14 | After `scottland-clipboard clear` acknowledges clearing session history, it opens the existing generic picker with `--show-empty` and prompt `Clipboard history`. Zero rows show a nonselectable `No entries` view; ordinary empty picker input still cancels; nonempty picker behavior is unchanged. Normal dismissal means clear succeeded. Clear failure does not open the view; if presentation fails after clear, report that history is cleared and the view failed, without restoring it. No sentinel, second picker, or new dependency. | docs/clipboard.md CH11; docs/list-picker.md LP6 |
 
+## Clipboard paste fallback
+
+| Date | Ruling | Where |
+|---|---|---|
+| 11-15 | If the temporary primary-selection paste cannot be used, send the focused app's regular paste binding without changing primary selection: Ctrl+V for GTK and other non-terminal apps, Ctrl+Shift+V for known terminals such as Foot, Kitty, GNOME Terminal, Konsole and Ghostty, and Shift+Insert for Xterm and Rxvt. The existing primary-selection paste and restoration path stays unchanged. | docs/clipboard.md CH15; `scottland-clipboardd` |
+
 ## Session environment
 
 | Date | Ruling | Where |
