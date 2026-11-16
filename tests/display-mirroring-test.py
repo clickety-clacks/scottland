@@ -202,7 +202,7 @@ def mirror_window_transfer_diagnostics(panel, target, marker, failure):
           json.dumps(diagnostics, sort_keys=True), flush=True)
 
 
-def mirror_unplug_diagnostics(marker, failure, last_poll, destroy_result, target, fixture_output_id):
+def mirror_unplug_diagnostics(marker, failure, last_poll, fixture_result, target, fixture_output_id):
     diagnostics = {
         "failure": str(failure),
         "last_poll": last_poll,
@@ -210,7 +210,7 @@ def mirror_unplug_diagnostics(marker, failure, last_poll, destroy_result, target
         "simulated_unplug": {
             "target": {"id": target.get("id"), "name": target.get("name")},
             "fixture_output_id": fixture_output_id,
-            "ipc_result": destroy_result,
+            "output_control_result": capture_value(lambda: fixture_result),
         },
         "session_state": capture_value(session_state),
         "watch_config_log": capture_value(WATCH_LOG.read_text),
@@ -476,10 +476,13 @@ def main():
                          for row in session_state().get("mirrors", [])),
              "mirror active before output removal")
     last_unplug_poll = {}
-    destroy_result = ipc("wayfire/destroy-headless-output", {"output": unplug_target["name"]})
-    if isinstance(destroy_result, dict) and destroy_result.get("error"):
-        error = AssertionError(f"simulated unplug failed: {destroy_result['error']}")
-        mirror_unplug_diagnostics(marker, error, last_unplug_poll, destroy_result, unplug_target,
+    # The Wayfire destroy IPC looks up outputs only in the active layout, where the current
+    # mirror target is absent. Use the fixture's output-management control to make that virtual
+    # output disappear from the active layout while retaining the existing DM5 assertions.
+    fixture_result = command(HOOKS / "libexec/scottland-output", "set", unplug_target["name"], "--off")
+    if fixture_result.returncode != 0:
+        error = AssertionError(f"simulated unplug failed: {fixture_result.stderr.strip()}")
+        mirror_unplug_diagnostics(marker, error, last_unplug_poll, fixture_result, unplug_target,
                                   dynamic_output["id"])
         raise error
 
@@ -508,7 +511,7 @@ def main():
     try:
         unplugged = wait_for(unplug_cleared, "unplug clears the mirror request")
     except AssertionError as error:
-        mirror_unplug_diagnostics(marker, error, last_unplug_poll, destroy_result, unplug_target,
+        mirror_unplug_diagnostics(marker, error, last_unplug_poll, fixture_result, unplug_target,
                                   dynamic_output["id"])
         raise
     remaining = wait_for(lambda: rows if len(rows := outputs()) == 2 else None,
@@ -522,7 +525,9 @@ def main():
           {row.get("name") for row in remaining} == {"eDP-1", "HDMI-A-1"},
           {"state": unplugged, "outputs": remaining, "window": unplugged_window})
 
-    ipc("wayfire/create-headless-output", {"width": 1280, "height": 720})
+    replug_result = command(HOOKS / "libexec/scottland-output", "set", unplug_target["name"], "--on")
+    if replug_result.returncode != 0:
+        raise AssertionError(f"simulated replug failed: {replug_result.stderr.strip()}")
     reconnected = wait_for(lambda: output_named("DP-1"), "the external output reconnects")
     reconnected_state = session_state()
     check("reconnected output starts extended at its configured mode",
