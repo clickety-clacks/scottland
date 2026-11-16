@@ -11,11 +11,49 @@ case "$signature" in
 esac
 pause_file=
 [ -n "$signature" ] && pause_file="$session/config-watch/$signature/autoreload-paused"
+monitor_dir=
+monitor_fifo=
+monitor_pid=
+monitor_paths=
 mkdir -p "$(dirname "$log")"
 echo "$(date '+%F %T') watching (pid $$)" >>"$log"
-trap 'echo "$(date "+%F %T") watcher stopped by signal" >>"$log"; exit 0' TERM INT HUP
-previous_missing_paths=
-while :; do
+stop_monitor() {
+  if [ -n "$monitor_pid" ]; then
+    kill "$monitor_pid" 2>/dev/null || true
+    wait "$monitor_pid" 2>/dev/null || true
+    monitor_pid=
+  fi
+  exec 3<&- 2>/dev/null || true
+  if [ -n "$monitor_dir" ]; then
+    rm -rf -- "$monitor_dir"
+  fi
+  monitor_dir=
+  monitor_fifo=
+  monitor_paths=
+}
+start_monitor() {
+  runtime=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}
+  monitor_dir=$(mktemp -d "$runtime/scottland-watch-config.XXXXXX") || return 1
+  monitor_fifo=$monitor_dir/events
+  if ! mkfifo "$monitor_fifo"; then
+    rm -rf -- "$monitor_dir"
+    monitor_dir=
+    monitor_fifo=
+    return 1
+  fi
+  # Keep inotifywait active while the parent rebuilds, so events during that rebuild are queued.
+  # shellcheck disable=SC2086
+  inotifywait -q -r -m -e close_write -e moved_to -e create -e delete -e delete_self -e move_self \
+    --timefmt '%F %T' --format '%T %e %w%f' $watch_paths >"$monitor_fifo" 2>>"$log" &
+  monitor_pid=$!
+  monitor_paths=$watch_paths
+  if ! exec 3<"$monitor_fifo"; then
+    stop_monitor
+    return 1
+  fi
+  return 0
+}
+refresh_watch_paths() {
   paths=$("$build" --watch-paths)
   watch_paths=
   missing_paths=
@@ -28,6 +66,16 @@ while :; do
       missing_paths="$missing_paths $path"
     fi
   done
+}
+trap 'stop_monitor; echo "$(date "+%F %T") watcher stopped by signal" >>"$log"; exit 0' TERM INT HUP
+previous_missing_paths=
+while :; do
+  refresh_watch_paths
+  if [ -n "$monitor_pid" ] && {
+    [ -n "$missing_paths" ] || [ "$monitor_paths" != "$watch_paths" ];
+  }; then
+    stop_monitor
+  fi
   path_appeared=0
   # shellcheck disable=SC2086
   for path in $previous_missing_paths; do
@@ -38,14 +86,39 @@ while :; do
   event_description=
   if [ "$path_appeared" -ne 1 ]; then
     if [ -n "$missing_paths" ]; then
+      stop_monitor
       # Keep watching present inputs while checking for a newly created input path.
       # shellcheck disable=SC2086
       inotifywait -q -r -t 2 -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --timefmt '%F %T' --format '%T %e %w%f' --outfile "$log" $watch_paths 2>>"$log"
       status=$?
     else
-      # shellcheck disable=SC2086
-      inotifywait -q -r -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --timefmt '%F %T' --format '%T %e %w%f' --outfile "$log" $watch_paths 2>>"$log"
-      status=$?
+      if [ -z "$monitor_pid" ] && ! start_monitor; then
+        echo "$(date '+%F %T') could not start the persistent config monitor; will retry after rebuilding" >>"$log"
+      fi
+      if [ -n "$monitor_pid" ]; then
+        if IFS= read -r event <&3; then
+          event_description=$event
+          echo "$event" >>"$log"
+        else
+          wait "$monitor_pid"
+          status=$?
+          monitor_pid=
+          stop_monitor
+          [ "$status" -ne 0 ] || status=1
+        fi
+      else
+        # Preserve config generation if the persistent monitor could not be created.
+        # shellcheck disable=SC2086
+        inotifywait -q -r -t 2 -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --timefmt '%F %T' --format '%T %e %w%f' --outfile "$log" $watch_paths 2>>"$log"
+        status=$?
+      fi
+    fi
+  else
+    # A previously missing watched path appeared during the last wait. Refresh the path set and
+    # arm the watcher before rebuilding so later edits are not lost during config generation.
+    refresh_watch_paths
+    if [ -z "$missing_paths" ] && [ -z "$monitor_pid" ] && ! start_monitor; then
+      echo "$(date '+%F %T') could not start the persistent config monitor; will retry after rebuilding" >>"$log"
     fi
   fi
   if [ "$status" -eq 0 ] || [ "$status" -eq 2 ]; then
@@ -74,6 +147,15 @@ while :; do
     sleep 2
     continue
   fi
+  if [ -z "$monitor_pid" ]; then
+    refresh_watch_paths
+    if [ -z "$missing_paths" ] && ! start_monitor; then
+      echo "$(date '+%F %T') could not start the persistent config monitor; will retry after rebuilding" >>"$log"
+    fi
+  fi
+  if [ -z "$event_description" ]; then
+    event_description='inotify event'
+  fi
   if [ -n "$event_description" ]; then
     echo "$(date '+%F %T') config change observed ($event_description); rebuilding" >>"$log"
   else
@@ -89,9 +171,9 @@ while :; do
     continue
   fi
   if "$build" >/dev/null 2>>"$log"; then
-    echo "$(date '+%F %T') config rebuild succeeded after ($event)" >>"$log"
+    echo "$(date '+%F %T') config rebuild succeeded after ($event_description)" >>"$log"
   else
     build_status=$?
-    echo "$(date '+%F %T') config rebuild failed with status $build_status after ($event); the session keeps its previous config" >>"$log"
+    echo "$(date '+%F %T') config rebuild failed with status $build_status after ($event_description); the session keeps its previous config" >>"$log"
   fi
 done
