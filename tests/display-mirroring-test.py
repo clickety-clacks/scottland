@@ -44,7 +44,7 @@ def ipc(method, data=None):
     while len(response) < length:
         response += sock.recv(length - len(response))
     value = json.loads(response)
-    return value.get("info", value)
+    return value.get("info", value) if isinstance(value, dict) else value
 
 
 def wait_for(predicate, label, timeout=12):
