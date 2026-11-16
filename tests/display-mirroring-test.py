@@ -202,13 +202,14 @@ def mirror_window_transfer_diagnostics(panel, target, marker, failure):
           json.dumps(diagnostics, sort_keys=True), flush=True)
 
 
-def mirror_unplug_diagnostics(marker, failure, last_poll, destroy_result, target):
+def mirror_unplug_diagnostics(marker, failure, last_poll, destroy_result, target, fixture_output_id):
     diagnostics = {
         "failure": str(failure),
         "last_poll": last_poll,
         "mirror_commands": mirror_commands,
         "simulated_unplug": {
             "target": {"id": target.get("id"), "name": target.get("name")},
+            "fixture_output_id": fixture_output_id,
             "ipc_result": destroy_result,
         },
         "session_state": capture_value(session_state),
@@ -441,10 +442,17 @@ def main():
           restored_geometry.get("width") == 1280 and restored_geometry.get("height") == 720,
           {"state": state_off, "output": restored_output})
     after_off_window = view_by_app()
-    check("window remains on the panel after mirror mode is removed, as after unplug and replug",
+    after_off_outputs = outputs()
+    after_off_output = next((row for row in after_off_outputs
+                             if after_off_window and
+                             row.get("id") == after_off_window.get("output-id")), None)
+    check("window remains on its surviving output after mirror mode is removed",
           after_off_window is not None and after_off_window.get("id") == original_window_id and
-          after_off_window.get("output-id") == panel["id"],
-          after_off_window)
+          after_off_window.get("mapped") and after_off_output is not None and
+          after_off_output.get("name") == moved.get("output-name") and
+          after_off_window.get("output-name") == after_off_output.get("name"),
+          {"window": after_off_window, "output": after_off_output,
+           "surviving_output": moved.get("output-name")})
 
     toggled_on = display("toggle")
     wait_for(lambda: session_state().get("mirrors"), "toggle on mirror state")
@@ -460,18 +468,19 @@ def main():
           marker.parent == SESSION_DIR / "display-mirror" / DISPLAY and
           not (SESSION_DIR / "display-mirror" / "other-session" / "request").exists())
 
+    unplug_target = output_named("DP-1")
+    if not isinstance(unplug_target, dict) or not isinstance(unplug_target.get("id"), int):
+        raise AssertionError(f"removable DP-1 fixture missing before mirror-on: {unplug_target!r}")
     unplug_on = display("on")
     wait_for(lambda: any(row.get("target") == "DP-1"
                          for row in session_state().get("mirrors", [])),
              "mirror active before output removal")
     last_unplug_poll = {}
-    unplug_target = output_named("DP-1")
-    if not isinstance(unplug_target, dict) or not isinstance(unplug_target.get("id"), int):
-        raise AssertionError(f"removable DP-1 fixture disappeared before unplug: {unplug_target!r}")
-    destroy_result = ipc("wayfire/destroy-headless-output", {"output-id": unplug_target["id"]})
+    destroy_result = ipc("wayfire/destroy-headless-output", {"output-id": dynamic_output["id"]})
     if isinstance(destroy_result, dict) and destroy_result.get("error"):
         error = AssertionError(f"simulated unplug failed: {destroy_result['error']}")
-        mirror_unplug_diagnostics(marker, error, last_unplug_poll, destroy_result, target)
+        mirror_unplug_diagnostics(marker, error, last_unplug_poll, destroy_result, unplug_target,
+                                  dynamic_output["id"])
         raise error
 
     def unplug_cleared():
@@ -499,7 +508,8 @@ def main():
     try:
         unplugged = wait_for(unplug_cleared, "unplug clears the mirror request")
     except AssertionError as error:
-        mirror_unplug_diagnostics(marker, error, last_unplug_poll, destroy_result, target)
+        mirror_unplug_diagnostics(marker, error, last_unplug_poll, destroy_result, unplug_target,
+                                  dynamic_output["id"])
         raise
     remaining = wait_for(lambda: rows if len(rows := outputs()) == 2 else None,
                          "only the panel and second external remain")
