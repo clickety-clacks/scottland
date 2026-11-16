@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""WK7-WK9/WP4/WP8: Window-mode cycles reach both sides with real stipc input and Mike's zone settings.
+"""WK7-WK9/WP4/WP8: Window-mode cycles reach both sides with real stipc input and reference zone settings.
 
-Mike's report (2026-10-04, on 2560x1600 with a 30% center zone and a steep scale curve):
+The product owner's report (2026-10-04, on 2560x1600 with a 30% center zone and a steep scale curve):
 1. A periphery window dragged back to the center, dropped just past the center zone's edge where it
    still shows at 100%, overwrote its periphery memory with that spot: cycling then went between
    two full-scale spots and a widget.
@@ -9,9 +9,9 @@ Mike's report (2026-10-04, on 2560x1600 with a 30% center zone and a steep scale
    most of it over the center zone: it read as another center spot or an unscaled periphery window.
    Its drawn scale also stayed off the zone's scale by its center's pixel rounding.
 Both are checked here, plus a periphery memory that zone settings have since moved into the
-center's softness band (a memory like Mike's live window 52 kept).
+center's softness band (a memory like the retained reference window 52).
 
-Mike's ruling on where a fresh periphery spot goes (2026-10-04): as close to the center as possible
+The product owner's ruling on where a fresh periphery spot goes (2026-10-04): as close to the center as possible
 while overlapping the center as little as possible; it may hang a little into the center zone
 where that covers no center window, never half of it. WP4 allows up to a quarter of its scaled
 width there: with empty space at the center edge it hangs about that far (and lands bigger than
@@ -29,8 +29,8 @@ artifacts = Path(sys.argv[1])
 passed = failed = 0
 clients = []
 request_path = None
-# Mike's layout.ini on daily-desktop (2026-10-04).
-MIKE = {'scottland/center_width': 30.0, 'scottland/rail_width': 1.9, 'scottland/blend_width': 40.0,
+# Reference layout settings on the daily desktop (2026-10-04).
+REFERENCE = {'scottland/center_width': 30.0, 'scottland/rail_width': 1.9, 'scottland/blend_width': 40.0,
         'scottland/scale_curve': '0.000:0.997 0.041:0.779 1.000:0.255',
         'scottland/min_scale': 0.255, 'scottland/max_scale': 0.997}
 PAD = 32 / 3 + 5   # WP7: halo plus 5 pt
@@ -240,12 +240,12 @@ def launch_dialog(name, x, y):
 try:
     ipc('wayfire/set-config-options', {'output:HEADLESS-1/mode': '2560x1600@60000'})
     time.sleep(.5)
-    ipc('wayfire/set-config-options', dict(MIKE, **{'scottland/sounds': False, 'scottland/alt_hold_delay': 300}))
+    ipc('wayfire/set-config-options', dict(REFERENCE, **{'scottland/sounds': False, 'scottland/alt_hold_delay': 300}))
     output = ipc('window-rules/list-outputs')[0]['geometry']
     width, height = output['width'], output['height']
-    check((width, height) == (2560, 1600), "Mike's screen size (2560x1600 pt)", (width, height))
+    check((width, height) == (2560, 1600), "reference screen size (2560x1600 pt)", (width, height))
     left_edge, right_edge = width * .35, width * .65
-    # Mike's terminals are about 1180x1050 here; an odd width puts each center on a half pixel.
+    # Reference terminals are about 1180x1050 here; an odd width puts each center on a half pixel.
     ww, wh = 1179, 1051
 
     # --- 1. Periphery, then dragged to the center, dropped just past its edge (still 100%).
@@ -346,7 +346,7 @@ try:
 
     # --- 2. Never in the periphery, cycled there: visibly scaled, as close to the center as it
     # may: with nothing at the center edge it hangs a quarter of its width into the center zone.
-    for name, w, h in (('Small', 301, 181), ('Mike', ww, wh), ('Wide', 1601, 1121)):
+    for name, w, h in (('Small', 301, 181), ('Reference', ww, wh), ('Wide', 1601, 1121)):
         i = launch(name, width * .5, height * .45, w, h)
         start = center(view(name))
         out = stops(i, name, 1)[0]
@@ -356,9 +356,9 @@ try:
               'at most a quarter of its width into the empty center zone, drawn at its zone scale',
               dict(summary(out), spread=spread, hang=round(hang(out), 3), on_screen=on_screen(out)))
         print(f'      {name} landed: {summary(out)}, hang {hang(out):.3f}', flush=True)
-        if name == 'Mike':
+        if name == 'Reference':
             # The first fix kept the whole window clear of the zone: 0.52 for this window.
-            check(out['scale'] > .6, 'Mike-sized: it lands bigger than a spot clear of the center zone (0.52)',
+            check(out['scale'] > .6, 'reference-sized: it lands bigger than a spot clear of the center zone (0.52)',
                   summary(out))
         subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts / f'fresh-{name}.png')], check=True)
         side = 1 if center(out)[0] < width / 2 else 2
@@ -387,7 +387,7 @@ try:
     subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts / 'fresh-beside-edge.png')], check=True)
     close_all()
 
-    # With other windows about, like Mike's desktop: two in the left periphery, one in the center
+    # With other windows about, like the reference desktop: two in the left periphery, one in the center
     # wider than the center zone (its right edge 206 pt into the periphery).
     launch('Left1', width * .2, height * .3, 1050, 960); drag('Left1', width * .17, height * .3)
     launch('Left2', width * .2, height * .6, 1021, 960); drag('Left2', width * .18, height * .7)
@@ -417,7 +417,7 @@ try:
     check(abs(center(out)[0] - spot) > 20 and lands_in_periphery(out) and hang(out) <= .25 + .002,
           'once it reads as full scale, that memory is not used: the cycle places it in the periphery',
           dict(summary(out), old_spot=spot))
-    ipc('wayfire/set-config-options', {'scottland/center_width': MIKE['scottland/center_width']}); time.sleep(.5)
+    ipc('wayfire/set-config-options', {'scottland/center_width': REFERENCE['scottland/center_width']}); time.sleep(.5)
     left_edge, right_edge = width * .35, width * .65
     close_all()
 except Exception as error:

@@ -124,7 +124,7 @@ int main()
     check(!mode.hold_due(1700) && mode.hold_due(1800) && pairs.size() == 1, "the hold delay is a setting");
     mode.hold_delay = 500;
 
-    // WK35 (Mike, 2026-10-04): the focused window's press acts on release, so a hold never moves it first.
+    // WK35 (product owner, 2026-10-04): the focused window's press acts on release, so a hold never moves it first.
     reset(1); mode.letter('a', 1000);
     check(moves.empty() && mode.hold_waiting(), "focused hint press waits for its release");
     mode.release('a', 1100);

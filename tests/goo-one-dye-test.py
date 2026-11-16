@@ -5,7 +5,7 @@ Scenes, each judged by the GPU dye history (goo-state samples) and by screen pix
 
 1. Focus colors the whole goo. A window focused and unfocused by real clicks, on plain
    yellow paper: the change reaches the shore of its band, not only the wall, at no pickup,
-   at the shipped pickup and at Mike's (full pickup, density 1.5).
+   at the shipped pickup and at the reference preset (full pickup, density 1.5).
 2. Mixing, not replacement. The dye at full pickup lies on the subtractive (absorbance)
    line between the pure focus dye and the pure picked-up dye, strictly between them, and
    closer to it than any linear RGB blend of the two. Pickup strength is set through the
@@ -329,7 +329,7 @@ try:
           all(min(f, p) - 20 <= m <= max(f, p) + 20 for m, f, p in zip(M_px, F_px, P_px)), record['mixing']['screen'])
     quiet('mixed')
 
-    # 2b. Pickup balance (Mike, 2026-10-05: "just give me a slider"), through its Settings row:
+    # 2b. Pickup balance (product owner, 2026-10-05: "just give me a slider"), through its Settings row:
     #     lower favors the window's own color, higher the picked-up color, live; Defaults puts
     #     back 0.45 and Cancel the opening values, and the dye follows.
     panel, layout = open_panel()
@@ -374,7 +374,7 @@ try:
           norm(sub(px_back, M_px)) < min(norm(sub(px_back, px_low)), norm(sub(px_back, px_high))), record['balance'])
     quiet('balance')
 
-    # 2c. Dye density scales all dye, picked-up color included (Mike, 2026-10-05): with only
+    # 2c. Dye density scales all dye, picked-up color included (product owner, 2026-10-05): with only
     #     picked-up color in the goo, density changes how much of it shows, not its hue.
     options(goo_pickup_balance=1., goo_dye_density=0.); rest('pure pickup, no density')
     thin_px = shot('2c-density-0'); thin = avg([dye(x, y) for x, y in pts])
@@ -430,7 +430,7 @@ try:
           drift < .02 and pixel_drift <= 8, {'dye_drift': drift, 'pixel_drift': pixel_drift})
 
     # 4. Spread and swirl smear the paper: red above, blue below, along a band crossing it. At the
-    # default Pickup balance (Mike's soak 1, density 1.5): at balance 1 near-instant re-pickup
+    # default Pickup balance (reference soak 1, density 1.5): at balance 1 near-instant re-pickup
     # erases most of the smear, which made a 4 pt width pass.
     stop(paper)
     for t in ('dye-a', 'dye-b', 'dye-magenta'):

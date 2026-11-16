@@ -1299,7 +1299,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         frame->set_configured_opacity(target);
     }
 
-    // Pairing makes both windows fully opaque once (Mike, 2026-10-06; WK36). Opacity is recomputed
+    // Pairing makes both windows fully opaque once (product owner, 2026-10-06; WK36). Opacity is recomputed
     // on every focus change, Window mode entry and exit, and setting change, so "once" is kept by the
     // pair's existing placement record rather than a new flag: a window still exactly where pairing
     // put it, at the pair's scale, and not being dragged. Any move, resize, rescale or drag ends it.

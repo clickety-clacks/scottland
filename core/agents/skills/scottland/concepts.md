@@ -93,7 +93,7 @@ when cycled back.
 ## Attention
 
 A window (or its widget) whose app needs the user breathes a halo in the **attention color** until
-the user goes to it. Built-in triggers: the app asks for focus (a terminal bell, a finished task),
+The user goes to it. Built-in triggers: the app asks for focus (a terminal bell, a finished task),
 sets its urgency hint, or sends a desktop notification from its own process. Other programs can be
 attention sources by configuration ([`widgets.md`](widgets.md#attention-sources)). Apps can't take
 focus by asking: only a request that comes from input in the app the user is using (a link opened

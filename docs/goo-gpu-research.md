@@ -127,7 +127,7 @@ sample lattice used when GO16 alpha shapes intersect breathing support still
 needs broader contour and custom-curve checks. Extreme settings, rotation,
 many outputs, allocation failure and physical-display animation also need
 targeted checks. The extra keyframe textures scale with output pixels. AMD test host
-has an RX 580; the Intel Xe live target and Mike's visual acceptance on the
+has an RX 580; the Intel Xe live target and the user's visual acceptance on the
 120 Hz physical panel remain unmeasured. Shared-GPU contention makes short busy
 percentages noisy, so every idle sample records whole-GPU and compositor busy
 plus process/load snapshots and submitted-pixel counters.

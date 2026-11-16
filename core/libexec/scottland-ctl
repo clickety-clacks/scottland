@@ -33,7 +33,7 @@ NAMES += GOO + UNFOCUSED_EDGE + ("cycle_overshoot", "key_impulse", "key_friction
                 "key_max_velocity", "alt_hold_delay", "window_double_tap_delay", "window_mode_tint", "hint_background_opacity", "window_hold_delay") + WIDGETS + OPACITY
 NAMES += ("window_avoidance_always", "solo_audition_hotspot")
 TEXT = ("scale_curve", "screen_zones", "goo_falloff", "attention_color_family")
-# Renamed settings: the old name is still accepted (Mike, 2026-10-05: dye strength is dye density).
+# Renamed settings: the old name is still accepted (product owner, 2026-10-05: dye strength is dye density).
 LEGACY_OPTIONS = {"hint_avoidance_always": "window_avoidance_always", "goo_dye_strength": "goo_dye_density"}
 ACCEPTED_NAMES = set(NAMES) | set(LEGACY_OPTIONS)
 

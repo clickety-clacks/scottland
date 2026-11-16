@@ -32,7 +32,7 @@ setting yet; its metadata and Settings help say so until they land.
 **The solo window.** Already in the center zone: it stays where it is (P2, P14). Otherwise it goes
 to its remembered center spot (WP2), else the middle of the screen, padded on screen (WP7), at full
 scale, in front. It gets no special status in window avoidance: like any window, if something
-later covers it, it peeks (WK13; Mike, 2026-10-05: peeking never moves its true location).
+later covers it, it peeks (WK13; product owner decision (2026-10-05): peeking never moves its true location).
 
 **The solve** (`core/plugin/src/spread.{hpp,cpp}`, pure, no Wayfire). Windows whose center is in the
 center zone are *arrivals*; periphery windows are *residents*; widgets and rail windows are fixed.
@@ -175,7 +175,7 @@ left without Scottland), all headless on either test machine.
 
 While a window is shown as a widget during a drag, or a widget is dragged along a rail, only
 widgets on that output and rail take part. The dragged item stays under the pointer and keeps its
-existing WG1/WG13 morph. The rail spreads to make room for the item's landing interval (Mike,
+existing WG1/WG13 morph. The rail spreads to make room for the item's landing interval (product owner,
 2026-10-04): any widget may move when that's what it takes, widgets keep their order, total
 movement is the least it can be, and widgets overlap the item only when the rail is truly full.
 Touching as little as possible is the preference that falls out of least movement, not a rule.
@@ -214,7 +214,7 @@ room on the other side with the rest.
 
 If none of the allowed splits fits, the widgets overlap the item rather than it moving or the
 placed order being broken, by the least amount: their packed run reaches into the item from the
-side that lacks room. That happens on a rail that is truly full, and in one more case **for Mike
+side that lacks room. That happens on a rail that is truly full, and in one more case **for the user
 to look at**: a drop that clips a widget pinned at a rail end, with the drop's center past that
 widget, keeps the widget on its aimed side, so it overlaps the drop by at most half the dropped
 card (in the review fuzz: 1.5% of pauses, worst 44 px) even though crossing it would make room.
@@ -285,7 +285,7 @@ actors with nonzero solver offsets receive a real move on drop.
 | ID | Invariant | Status |
 |---|---|---|
 | SM1 | A rail solve considers widgets from the dragged item's output and rail, excluding the dragged item (whose spot stays open). Any of them may move; they keep their order and never cross sides; total squared movement around the fixed item is least for the chosen split (exact per side by pool-adjacent-violators). | verified (unit suite incl. brute-force grid search, 2026-10-04) |
-| SM2 | P14: the dropped item never moves; the order around it follows where it was placed (a widget its center is on may go either side). Clearance is 1 px (existing overlaps between widgets are never deepened). Widgets overlap the item only when no allowed order fits: a truly full rail, or a clipped widget pinned at a rail end (at most half the item; for Mike to look at). | verified (AMD test host/ARM test host unit suite, review fuzz: no intrusion into the placed item, order kept, overlap only when no allowed order fits; real stipc input, 2026-10-04) |
+| SM2 | P14: the dropped item never moves; the order around it follows where it was placed (a widget its center is on may go either side). Clearance is 1 px (existing overlaps between widgets are never deepened). Widgets overlap the item only when no allowed order fits: a truly full rail, or a clipped widget pinned at a rail end (at most half the item; for the user to look at). | verified (AMD test host/ARM test host unit suite, review fuzz: no intrusion into the placed item, order kept, overlap only when no allowed order fits; real stipc input, 2026-10-04) |
 | SM3 | Shifts stay visual until drop, then commit; Esc and dragging out restore exact geometry and drawn positions. A drop before any completed pause, or more than 4 px from where the last pause solved, solves once more; otherwise it commits the held layout. | verified (AMD test host real stipc input, 2026-10-04) |
 | SM4 | Each solve checks its 256-actor bound before allocation, reuses captured order and scratch state, and returns only complete validated results. A drag solves only on pause/drop, never each pointer event; a non-drag widget arrival solves once after mapping. | verified (AMD test host; bounded unit suite and real stipc input, 2026-10-04) |
 | SM5 | A 4 px pointer wobble is part of the same pause. The 350 ms default dwell is live configurable from 100–1500 ms; movement after a solve holds that layout until the next completed pause. | verified (AMD test host real stipc input, 2026-10-04) |

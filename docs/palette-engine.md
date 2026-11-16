@@ -1,6 +1,6 @@
 # Palette engine (concept)
 
-Status: concept only, not started (Mike, 2026-10-03). Recorded so the idea isn't lost while a
+Status: concept only, not started (product owner, 2026-10-03). Recorded so the idea isn't lost while a
 Scottland distro doesn't exist yet; see [distro-notes.md](distro-notes.md).
 
 ## Why
@@ -53,7 +53,7 @@ select = "#ffaa50"                # a hard-coded value
 Evaluates the schema's algorithms, applies the config's overrides, and produces the palette for
 that schema's desktop. With no config, the schema's own algorithms decide everything.
 
-## Decided (Mike, 2026-10-03)
+## Decided (product owner, 2026-10-03)
 
 - **`base` is just another color** defined by the schema, like accent or selection. Nothing is
   extracted from a wallpaper.
@@ -68,7 +68,7 @@ that schema's desktop. With no config, the schema's own algorithms decide everyt
 - **Packaging:** the engine is its own repository, which the distro installs. The distro contains
   the default themes. Scottland knows how to read configs made with the Scottland schema.
 
-## To do in Scottland when this is built (Mike, 2026-10-03)
+## To do in Scottland when this is built (product owner, 2026-10-03)
 
 Today Scottland's palette comes through the Omarchy bridge: the adapter's provider
 (`omarchy/accent.d/10-omarchy-theme`) reads the current Omarchy theme's `colors.toml` and writes

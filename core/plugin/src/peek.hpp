@@ -14,7 +14,7 @@
 
 namespace scottland::windowing
 {
-// Decision 1 (Mike, 2026-10-04): a strip at least 24 pt deep and about 100 pt long, in logical
+// Decision 1 (product owner, 2026-10-04): a strip at least 24 pt deep and about 100 pt long, in logical
 // points, times the desktop text scale; not shrunk by a window's zone scale.
 inline constexpr double peek_strip_depth = 24, peek_strip_length = 100;
 // Calm rules (P11), in logical pixels; they do not scale with text size.

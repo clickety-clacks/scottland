@@ -24,10 +24,10 @@ struct interval_t
 
 enum class status_t { clear, overlap, skipped };
 
-// WG26 (Mike, 2026-10-04): making room on a rail is a spread over the whole rail. Any widget
+// WG26 (product owner, 2026-10-04): making room on a rail is a spread over the whole rail. Any widget
 // may move when that's what it takes, widgets keep their order, total movement is the least
 // it can be (squared displacement from where each widget is), and widgets overlap only when
-// the rail is truly full. P14 (Mike, 2026-10-04, "the user always wins"): the dropped item
+// the rail is truly full. P14 (product owner, 2026-10-04, "the user always wins"): the dropped item
 // ends up exactly where the user put it; only the other widgets move around it, and the
 // order around it is decided by where it was placed.
 //
