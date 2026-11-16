@@ -43,7 +43,9 @@ start_monitor() {
   fi
   # Keep inotifywait active while the parent rebuilds, so events during that rebuild are queued.
   # shellcheck disable=SC2086
-  inotifywait -q -r -m -e close_write -e moved_to -e create -e delete -e delete_self -e move_self \
+  # Recursive monitor mode observes new directories internally; omit create from emitted events so
+  # a new file's CREATE and CLOSE_WRITE do not cause two config rebuilds.
+  inotifywait -q -r -m -e close_write -e moved_to -e delete -e delete_self -e move_self \
     --timefmt '%F %T' --format '%T %e %w%f' $watch_paths >"$monitor_fifo" 2>>"$log" &
   monitor_pid=$!
   monitor_paths=$watch_paths
