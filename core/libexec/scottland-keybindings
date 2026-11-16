@@ -18,6 +18,7 @@ DEFAULT_LABELS = {
     ("command", "binding_scottland_settings"): "Open Scottland Settings",
     ("command", "binding_switch"): "Switch desktop session",
     ("command", "binding_scottland_reload"): "Reload Scottland",
+    ("command", "binding_window_transparency"): "Toggle window transparency",
     ("command", "binding_logout"): "Log out",
     ("command", "binding_screenshot"): "Take screenshot",
     ("command", "binding_screenshot_interactive"): "Take selected-area screenshot",
