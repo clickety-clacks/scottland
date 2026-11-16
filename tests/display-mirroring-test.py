@@ -292,7 +292,9 @@ def main():
 
     rows = outputs()
     panel = next(row for row in rows if row.get("name") == "eDP-1")
-    target = next(row for row in rows if row.get("id") == dynamic_output["id"])
+    # Output ids can be reassigned while the fixture resets and reloads outputs. Resolve the
+    # removable output from the current list instead of retaining the creation-time id.
+    target = next(row for row in rows if row.get("name") == "DP-1")
     untouched = next(row for row in rows if row.get("name") == "HDMI-A-1")
     original_ids = (panel["id"], target["id"], untouched["id"])
 
@@ -390,7 +392,10 @@ def main():
                          for row in session_state().get("mirrors", [])),
              "mirror active before output removal")
     last_unplug_poll = {}
-    destroy_result = ipc("wayfire/destroy-headless-output", {"output-id": dynamic_output["id"]})
+    unplug_target = output_named("DP-1")
+    if not isinstance(unplug_target, dict) or not isinstance(unplug_target.get("id"), int):
+        raise AssertionError(f"removable DP-1 fixture disappeared before unplug: {unplug_target!r}")
+    destroy_result = ipc("wayfire/destroy-headless-output", {"output-id": unplug_target["id"]})
     if isinstance(destroy_result, dict) and destroy_result.get("error"):
         error = AssertionError(f"simulated unplug failed: {destroy_result['error']}")
         mirror_unplug_diagnostics(marker, error, last_unplug_poll, destroy_result, target)
