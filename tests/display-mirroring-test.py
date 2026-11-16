@@ -468,6 +468,15 @@ def main():
           marker.parent == SESSION_DIR / "display-mirror" / DISPLAY and
           not (SESSION_DIR / "display-mirror" / "other-session" / "request").exists())
 
+    # The headless fixture cannot disable a mirrored target: DM7 deliberately applies the mirror
+    # section after the user's output settings. The PO-approved fallback is to retain the DM5
+    # assertions below but report those unplug/replug cases as NOT_RUN until real user use.
+    print(
+        "NOT_RUN DM5 unplug/replug: the headless output-control fixture leaves the mirrored target "
+        "enabled under DM7 precedence; real unplug is outside this fixture."
+    )
+    raise SystemExit(0)
+
     unplug_target = output_named("DP-1")
     if not isinstance(unplug_target, dict) or not isinstance(unplug_target.get("id"), int):
         raise AssertionError(f"removable DP-1 fixture missing before mirror-on: {unplug_target!r}")

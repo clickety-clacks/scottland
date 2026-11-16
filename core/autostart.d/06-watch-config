@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Rebuild the session's config whenever one of its sources changes (the base config, or files a
 # config.d generator reads). Wayfire notices the rewritten file and reloads it.
 command -v inotifywait >/dev/null || exit 0
@@ -253,6 +253,48 @@ while :; do
     echo "$(date '+%F %T') config change observed; rebuilding" >>"$log"
   fi
   sleep 0.3  # let editors finish writing
+  # Merge events that arrived during the editor-write grace period into this rebuild. Events that
+  # arrive while the builder is running stay in the FIFO and cause one follow-up rebuild.
+  queued_change=0
+  queued_rewatch=0
+  queued_poll=0
+  if [ -n "$monitor_pid" ]; then
+    while IFS= read -r -t 0.01 queued_event <&3; do
+      if [ "$queued_event" = poll ]; then
+        queued_poll=1
+        continue
+      fi
+      queued_change=1
+      echo "$queued_event" >>"$log"
+      case "$queued_event" in
+        *DELETE_SELF*|*MOVE_SELF*) queued_rewatch=1 ;;
+      esac
+    done
+    if [ "$queued_poll" -eq 1 ]; then
+      path_appeared=0
+      # shellcheck disable=SC2086
+      for path in $missing_paths; do
+        [ -e "$path" ] && path_appeared=1
+      done
+      if [ "$path_appeared" -eq 1 ]; then
+        queued_change=1
+        event_description='watched input appeared with queued changes'
+      fi
+    fi
+    if [ "$queued_change" -eq 1 ]; then
+      old_monitor_paths=$monitor_paths
+      refresh_watch_paths
+      if [ "$queued_rewatch" -eq 1 ] || [ "$old_monitor_paths" != "$watch_paths" ]; then
+        stop_monitor
+        if [ -n "$watch_paths" ] && ! start_monitor; then
+          echo "$(date '+%F %T') could not restart the config monitor after queued input changes" >>"$log"
+        fi
+      fi
+      if [ "$event_description" != 'watched input appeared with queued changes' ]; then
+        event_description="$event_description plus queued config events"
+      fi
+    fi
+  fi
   if [ -n "$pause_file" ] && [ -e "$pause_file" ]; then
     if [ -n "$event_description" ]; then
       echo "$(date '+%F %T') config change consumed while automatic reload is paused ($event_description)" >>"$log"

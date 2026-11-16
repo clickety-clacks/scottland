@@ -24,6 +24,7 @@ mkdir -m 700 -p "$evidence"
 tmp=$(mktemp -d "$repo/build/config-watch-missing-settings.XXXXXX")
 watcher_group=
 observer_pid=
+source_observer_pid=
 session_started=0
 cleanup() {
   local status=$?
@@ -36,6 +37,10 @@ cleanup() {
   if [[ -n $observer_pid ]]; then
     kill -TERM "$observer_pid" 2>/dev/null || true
     wait "$observer_pid" 2>/dev/null || true
+  fi
+  if [[ -n $source_observer_pid ]]; then
+    kill -TERM "$source_observer_pid" 2>/dev/null || true
+    wait "$source_observer_pid" 2>/dev/null || true
   fi
   [[ ! -f $headless/wayfire.log ]] || cp -- "$headless/wayfire.log" "$evidence/wayfire.log"
   [[ ! -f $tmp/watcher.log ]] || cp -- "$tmp/watcher.log" "$evidence/watcher.log"
@@ -63,6 +68,11 @@ if [ "${1:-}" = --watch-paths ]; then
   exit 0
 fi
 printf 'build\n' >>"$BUILD_LOG"
+if [ -e "$BUILD_BLOCK_NEXT" ]; then
+  rm -f -- "$BUILD_BLOCK_NEXT"
+  : >"$BUILD_STARTED"
+  while [ ! -e "$BUILD_RELEASE" ]; do sleep 0.05; done
+fi
 copy=$(mktemp "$SCOTTLAND_SESSION_DIR/wayfire.ini.test.XXXXXX")
 cat "$SCOTTLAND_SESSION_DIR/wayfire.ini" >"$copy"
 cat "$copy" >"$SCOTTLAND_SESSION_DIR/wayfire.ini"
@@ -81,6 +91,9 @@ exec env \
   TEST_REPO="$TEST_REPO" \
   TEST_BASE="$TEST_BASE" \
   BUILD_LOG="$BUILD_LOG" \
+  BUILD_BLOCK_NEXT="$TEST_BUILD_BLOCK_NEXT" \
+  BUILD_STARTED="$TEST_BUILD_STARTED" \
+  BUILD_RELEASE="$TEST_BUILD_RELEASE" \
   HYPRLAND_INSTANCE_SIGNATURE= \
   "$TEST_REPO/core/autostart.d/06-watch-config"
 WATCHER
@@ -90,6 +103,8 @@ export TEST_HOME="$tmp/home" TEST_CONFIG_HOME="$tmp/home/.config"
 export TEST_STATE_HOME="$tmp/state" TEST_SESSION_DIR="$headless"
 export TEST_HOOKS="$tmp/hooks" TEST_REPO="$repo"
 export TEST_BASE="$tmp/base/scottland.ini" BUILD_LOG="$tmp/builds.log"
+export TEST_BUILD_BLOCK_NEXT="$tmp/block-next-build" TEST_BUILD_STARTED="$tmp/build-started"
+export TEST_BUILD_RELEASE="$tmp/release-build"
 export WATCHER_PID_FILE="$tmp/watcher.pid"
 
 session_started=1
@@ -153,7 +168,29 @@ for _ in $(seq 50); do
   sleep 0.1
 done
 ((waiting)) || { echo 'watcher did not resume watching the settings directory after rebuilding' >&2; exit 1; }
-printf '# changed setting\n' >"$TEST_CONFIG_HOME/scottland/layout.ini"
+inotifywait -q -m -e close_write --format '%f' "$TEST_CONFIG_HOME/scottland" \
+  >"$tmp/source-events.log" 2>"$tmp/source-events.err" &
+source_observer_pid=$!
+source_observer_ready=0
+for _ in $(seq 50); do
+  for fd in /proc/"$source_observer_pid"/fd/*; do
+    [[ $(readlink "$fd" 2>/dev/null || true) == anon_inode:inotify ]] && source_observer_ready=1
+  done
+  ((source_observer_ready)) && break
+  sleep 0.1
+done
+((source_observer_ready)) || { echo 'source change observer did not become ready' >&2; exit 1; }
+
+# Two source writes in one burst should be drained into one rebuild.
+source_events_before=$(wc -l <"$tmp/source-events.log")
+printf '# burst layout change\n' >"$TEST_CONFIG_HOME/scottland/layout.ini"
+printf '# burst overrides change\n' >"$TEST_CONFIG_HOME/scottland/overrides.ini"
+for _ in $(seq 50); do
+  source_events=$(wc -l <"$tmp/source-events.log")
+  ((source_events >= source_events_before + 2)) && break
+  sleep 0.1
+done
+((source_events >= source_events_before + 2)) || { echo 'source observer did not see both burst writes' >&2; exit 1; }
 for _ in $(seq 50); do
   [[ $(wc -l <"$BUILD_LOG") -ge 2 ]] && break
   sleep 0.1
@@ -162,7 +199,20 @@ sleep 0.5
 builds=$(wc -l <"$BUILD_LOG")
 writes=$(wc -l <"$tmp/config-writes.log")
 [[ $builds == 2 && $writes -ge 2 ]] || {
-  echo "layout.ini change produced $builds rebuild(s) and $writes Wayfire config write(s), expected two total rebuilds and at least two writes" >&2
+  echo "two queued source writes produced $((builds - 1)) rebuild(s), expected one" >&2
+  exit 1
+}
+
+printf '# changed setting\n' >"$TEST_CONFIG_HOME/scottland/layout.ini"
+for _ in $(seq 50); do
+  [[ $(wc -l <"$BUILD_LOG") -ge 3 ]] && break
+  sleep 0.1
+done
+sleep 0.5
+builds=$(wc -l <"$BUILD_LOG")
+writes=$(wc -l <"$tmp/config-writes.log")
+[[ $builds == 3 && $writes -ge 3 ]] || {
+  echo "layout.ini change produced $builds rebuild(s) and $writes Wayfire config write(s), expected three total rebuilds and at least three writes" >&2
   exit 1
 }
 waiting=0
@@ -178,20 +228,6 @@ done
 ((waiting)) || { echo 'watcher did not resume watching after the layout setting change' >&2; exit 1; }
 printf '# another changed setting\n' >"$TEST_CONFIG_HOME/scottland/overrides.ini"
 for _ in $(seq 50); do
-  [[ $(wc -l <"$BUILD_LOG") -ge 3 ]] && break
-  sleep 0.1
-done
-sleep 0.5
-builds=$(wc -l <"$BUILD_LOG")
-writes=$(wc -l <"$tmp/config-writes.log")
-[[ $builds == 3 && $writes -ge 3 ]] || {
-  echo "overrides.ini change produced $builds rebuild(s) and $writes Wayfire config write(s), expected three total rebuilds and at least three writes" >&2
-  exit 1
-}
-replacement=$(mktemp "$tmp/base/scottland.ini.replacement.XXXXXX")
-cp -- "$repo/core/config/scottland.ini" "$replacement"
-mv -f -- "$replacement" "$TEST_BASE"
-for _ in $(seq 50); do
   [[ $(wc -l <"$BUILD_LOG") -ge 4 ]] && break
   sleep 0.1
 done
@@ -199,7 +235,21 @@ sleep 0.5
 builds=$(wc -l <"$BUILD_LOG")
 writes=$(wc -l <"$tmp/config-writes.log")
 [[ $builds == 4 && $writes -ge 4 ]] || {
-  echo "base config replacement produced $builds rebuild(s) and $writes Wayfire config write(s), expected four total rebuilds and at least four writes" >&2
+  echo "overrides.ini change produced $builds rebuild(s) and $writes Wayfire config write(s), expected four total rebuilds and at least four writes" >&2
+  exit 1
+}
+replacement=$(mktemp "$tmp/base/scottland.ini.replacement.XXXXXX")
+cp -- "$repo/core/config/scottland.ini" "$replacement"
+mv -f -- "$replacement" "$TEST_BASE"
+for _ in $(seq 50); do
+  [[ $(wc -l <"$BUILD_LOG") -ge 5 ]] && break
+  sleep 0.1
+done
+sleep 0.5
+builds=$(wc -l <"$BUILD_LOG")
+writes=$(wc -l <"$tmp/config-writes.log")
+[[ $builds == 5 && $writes -ge 5 ]] || {
+  echo "base config replacement produced $builds rebuild(s) and $writes Wayfire config write(s), expected five total rebuilds and at least five writes" >&2
   exit 1
 }
 waiting=0
@@ -213,5 +263,37 @@ for _ in $(seq 50); do
   sleep 0.1
 done
 ((waiting)) || { echo 'watcher did not resume watching after the base config was replaced' >&2; exit 1; }
+
+# An event burst emitted while a rebuild is blocked remains queued and causes one follow-up rebuild.
+rm -f -- "$TEST_BUILD_STARTED" "$TEST_BUILD_RELEASE"
+touch "$TEST_BUILD_BLOCK_NEXT"
+source_events_before=$(wc -l <"$tmp/source-events.log")
+builds_before=$(wc -l <"$BUILD_LOG")
+printf '# blocked build trigger\n' >"$TEST_CONFIG_HOME/scottland/layout.ini"
+for _ in $(seq 50); do
+  [[ -e $TEST_BUILD_STARTED ]] && break
+  sleep 0.1
+done
+[[ -e $TEST_BUILD_STARTED ]] || { echo 'fake rebuild did not reach its controlled wait' >&2; exit 1; }
+printf '# event during build one\n' >>"$TEST_CONFIG_HOME/scottland/layout.ini"
+printf '# event during build two\n' >>"$TEST_CONFIG_HOME/scottland/overrides.ini"
+for _ in $(seq 50); do
+  source_events=$(wc -l <"$tmp/source-events.log")
+  ((source_events >= source_events_before + 3)) && break
+  sleep 0.1
+done
+((source_events >= source_events_before + 3)) || { echo 'source observer did not see both events during the blocked rebuild' >&2; exit 1; }
+touch "$TEST_BUILD_RELEASE"
+for _ in $(seq 50); do
+  [[ $(wc -l <"$BUILD_LOG") -ge $((builds_before + 2)) ]] && break
+  sleep 0.1
+done
+sleep 0.5
+builds=$(wc -l <"$BUILD_LOG")
+writes=$(wc -l <"$tmp/config-writes.log")
+[[ $builds == $((builds_before + 2)) && $writes -ge $((builds_before + 2)) ]] || {
+  echo "two events during one blocked rebuild produced $((builds - builds_before - 1)) follow-up rebuild(s), expected one" >&2
+  exit 1
+}
 tests/headless.sh run true
-printf 'settings directory creation, two file changes, and base config replacement: rebuilds: %s; Wayfire config writes: %s; headless session remained reachable\n' "$builds" "$writes"
+printf 'settings directory creation, queued burst, single changes, base replacement, and in-build burst: rebuilds: %s; Wayfire config writes: %s; headless session remained reachable\n' "$builds" "$writes"
