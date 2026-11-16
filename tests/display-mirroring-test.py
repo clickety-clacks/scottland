@@ -86,6 +86,46 @@ def view_by_app():
     return next((view for view in views if view.get("app-id") == WINDOW_APP), None)
 
 
+def capture_value(operation):
+    try:
+        value = operation()
+    except Exception as error:
+        return {"capture_error": f"{type(error).__name__}: {error}"}
+    if isinstance(value, subprocess.CompletedProcess):
+        return {
+            "returncode": value.returncode,
+            "stdout": value.stdout,
+            "stderr": value.stderr,
+        }
+    return value
+
+
+def mirror_off_diagnostics(toggled_off, marker, failure):
+    diagnostics = {
+        "failure": str(failure),
+        "toggle_command": capture_value(lambda: toggled_off),
+        "session_state": capture_value(session_state),
+        "active_wayfire_outputs": capture_value(outputs),
+        "scottland_output_list": capture_value(
+            lambda: command(HOOKS / "libexec/scottland-output", "list", timeout=5)
+        ),
+        "display_status": capture_value(lambda: command(CLI, "mirror", "status", timeout=5)),
+        "request_marker": capture_value(lambda: {
+            "exists": marker.exists(),
+            "content": marker.read_text() if marker.exists() else None,
+        }),
+        "generated_config": capture_value(CONFIG.read_text),
+        "user_overrides": capture_value(OVERRIDES.read_text),
+    }
+    artifact = ARTIFACTS / "mirror-off-diagnostics.json"
+    try:
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text(json.dumps(diagnostics, indent=2, sort_keys=True) + "\n")
+    except OSError as error:
+        print(f"Could not write mirror-off diagnostics artifact: {error}", file=sys.stderr, flush=True)
+    print("MIRROR-OFF-DIAGNOSTICS " + json.dumps(diagnostics, sort_keys=True), flush=True)
+
+
 results = []
 
 
@@ -216,8 +256,12 @@ def main():
           (again.stdout.strip(), again.stderr.strip()))
 
     toggled_off = display("toggle")
-    state_off = wait_for(lambda: session_state() if not session_state().get("mirrors") else None,
-                         "Wayfire reports the restored output mode")
+    try:
+        state_off = wait_for(lambda: session_state() if not session_state().get("mirrors") else None,
+                             "Wayfire reports the restored output mode")
+    except AssertionError as error:
+        mirror_off_diagnostics(toggled_off, marker, error)
+        raise
     off_status = display("status")
     check("toggle off returns to extended and the configured mode", toggled_off.returncode == 0 and
           off_status.stdout.splitlines()[:1] == ["extended"] and
