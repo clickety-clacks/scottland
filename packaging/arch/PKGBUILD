@@ -1,7 +1,7 @@
 # Local build: cd packaging/arch && makepkg -si
 pkgbase=scottland
 pkgname=(scottland scottland-sunlight scottland-omarchy)
-pkgver=0.4.9
+pkgver=0.4.10
 pkgrel=1
 pkgdesc="Spatial desktop on Wayfire, after Scott Jenson's working-memory concept"
 arch=('x86_64' 'aarch64')
@@ -122,6 +122,7 @@ package_scottland() {
   install -Dm755 "$_root/core/config.d/85-session-outputs" "$pkgdir/usr/lib/scottland/config.d/85-session-outputs"
   install -Dm755 "$_root/core/config.d/90-user-overrides" "$pkgdir/usr/lib/scottland/config.d/90-user-overrides"
   install -Dm755 "$_root/core/config.d/95-session-output-scales" "$pkgdir/usr/lib/scottland/config.d/95-session-output-scales"
+  install -Dm755 "$_root/core/config.d/98-session-output-mirror" "$pkgdir/usr/lib/scottland/config.d/98-session-output-mirror"
   install -Dm755 "$_root/core/session/scottland-settings" "$pkgdir/usr/bin/scottland-settings"
   ln -s /usr/bin/scottland-settings "$pkgdir/usr/lib/scottland/libexec/scottland-settings"
   # scottland-source runs the base binaries from tools/base; keep their
