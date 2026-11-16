@@ -25,7 +25,7 @@ import textwrap
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from omarchy_fixture import REPO, Checks, Fixture, Session, screenshot  # noqa: E402
+from omarchy_fixture import REPO, Checks, Fixture, Session, pixel, screenshot  # noqa: E402
 
 check = Checks()
 root = REPO / "build/omarchy-switch-fixture"
@@ -133,7 +133,11 @@ check("close with Scottland already running: switches to its VT and ends the cal
       and not any(n == "systemd-run" for n, _ in calls), (result.returncode, result.stderr, calls))
 
 # 3. the dialog, headless
-URGENT = (0xa5, 0x55, 0x55)  # Omarchy shell default: no theme in the fixture HOME
+LIGHT_THEME_COLORS = REPO / "omarchy/themes/watercolor-dream-light/colors.toml"
+LIGHT_THEME_RED = next(line.split("=", 1)[1].strip().strip('"')
+                       for line in LIGHT_THEME_COLORS.read_text().splitlines()
+                       if line.startswith("red ="))
+URGENT = tuple(bytes.fromhex(LIGHT_THEME_RED.lstrip("#")))  # Color.urgent uses the light theme's red.
 
 
 def near(color, target, tolerance=24):
@@ -147,6 +151,37 @@ def urgent_pixels(image):
     return sum(1 for i in range(0, len(rgb) - 2, 3) if near(rgb[i:i + 3], URGENT))
 
 
+def peripheral_luminances(image):
+    """Sample the desktop around the centered card, excluding the card's footprint."""
+    if not image:
+        return []
+    width, height, _rgb = image
+    values = []
+    for y in range(8, height - 8, 16):
+        for x in range(8, width - 8, 16):
+            if width * 0.30 <= x <= width * 0.70 and height * 0.22 <= y <= height * 0.78:
+                continue
+            red, green, blue = pixel(image, x, y)
+            values.append(0.2126 * red + 0.7152 * green + 0.0722 * blue)
+    return values
+
+
+def background_still_visible(before, after):
+    """A blank/opaque screen has no peripheral wallpaper variation or correlation."""
+    first, second = peripheral_luminances(before), peripheral_luminances(after)
+    if len(first) < 100 or len(first) != len(second):
+        return False
+    mean_first = sum(first) / len(first)
+    mean_second = sum(second) / len(second)
+    variance_first = sum((value - mean_first) ** 2 for value in first)
+    variance_second = sum((value - mean_second) ** 2 for value in second)
+    if variance_first < 1 or variance_second < 1:
+        return False
+    covariance = sum((a - mean_first) * (b - mean_second) for a, b in zip(first, second))
+    correlation = covariance / (variance_first * variance_second) ** 0.5
+    return correlation >= 0.85 and max(second) - min(second) >= 12
+
+
 def dialog_alive(session, pid):
     return bool(session.owns(pid) or [p for p in session.descendants(pid) if session.owns(p)])
 
@@ -155,7 +190,23 @@ with Session(fixture, "hl-switch-dialog", omarchy=False) as session:
     session_config = session.dir / "config/scottland"
     session_config.mkdir(parents=True, exist_ok=True)
     (session_config / "switch.json").write_text(json.dumps({"closeCurrent": False}) + "\n")
-    before = urgent_pixels(screenshot(session, "before"))
+    current_theme = fixture.home / ".local/state/omarchy/current/theme"
+    current_theme.parent.mkdir(parents=True, exist_ok=True)
+    current_theme.symlink_to(REPO / "omarchy/themes/watercolor-dream-light", target_is_directory=True)
+    wallpaper_pid = session.spawn(
+        f"GOO_WALLPAPER_PATCHES=light exec qs -p {REPO / 'tests/GooWallpaper.qml'}",
+        log=session.dir / "wallpaper.log")
+
+    def light_wallpaper_ready():
+        image = screenshot(session, "light-desktop-before")
+        return image if len(set(peripheral_luminances(image))) > 1 else None
+
+    wallpaper_ready, before_image = session.wait(light_wallpaper_ready, timeout=30, interval=0.5)
+    check("the controlled light-theme desktop is visible before the dialog",
+          wallpaper_ready and len(set(peripheral_luminances(before_image))) > 1,
+          {"wallpaper log": (session.dir / "wallpaper.log").read_text(errors="replace")
+                             if (session.dir / "wallpaper.log").exists() else "missing"})
+    before = urgent_pixels(before_image)
     dialog = REPO / "omarchy/switch-dialog"
     launch = f"OTHER=hyprland CURRENT=scottland exec qs -p {dialog}"
     fixture.log.write_text("")
@@ -164,6 +215,13 @@ with Session(fixture, "hl-switch-dialog", omarchy=False) as session:
                              interval=0.5)
     check("the dialog draws its warning in the theme's urgent color", ok and before == 0,
           {"before": before, "with dialog": urgent_pixels(screenshot(session, "dialog"))})
+    dialog_image = screenshot(session, "dialog-visible-desktop")
+    check("the light-theme desktop remains visible around the centered dialog",
+          ok and background_still_visible(before_image, dialog_image),
+          {"before luminance range": (min(peripheral_luminances(before_image)),
+                                      max(peripheral_luminances(before_image))) if before_image else None,
+           "after luminance range": (min(peripheral_luminances(dialog_image)),
+                                     max(peripheral_luminances(dialog_image))) if dialog_image else None})
     session.tap("KEY_SPACE")
     session.tap("KEY_ENTER")
     ok, calls = fixture.wait_calls(lambda c: ("scottland-switch", "--to hyprland") in c, timeout=10)
@@ -195,5 +253,7 @@ with Session(fixture, "hl-switch-dialog", omarchy=False) as session:
     session.tap("KEY_ESC")
     if not session.wait(lambda: not any(dialog_alive(session, p) for p in pid), timeout=10)[0]:
         session.terminate(*pid)
+    if session.owns(wallpaper_pid) or any(session.owns(child) for child in session.descendants(wallpaper_pid)):
+        session.terminate(wallpaper_pid)
 
 sys.exit(check.summary())
