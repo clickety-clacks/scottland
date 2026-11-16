@@ -393,14 +393,26 @@ def main():
           marker.read_text() == "eDP-1\nDP-1\n" if marker.exists() else False,
           marker.read_text() if marker.exists() else "marker missing")
 
+    def moved_to_surviving_output():
+        current_outputs = outputs()
+        outputs_by_id = {row.get("id"): row for row in current_outputs}
+        current_names = {row.get("name") for row in current_outputs}
+        view = view_by_app()
+        destination = outputs_by_id.get(view.get("output-id")) if view else None
+        if (view and view.get("id") == original_window_id and view.get("mapped") and
+                target["name"] not in current_names and destination and
+                destination.get("name") != target["name"] and
+                view.get("output-name") == destination.get("name")):
+            return view
+        return None
+
     try:
-        moved = wait_for(lambda: (view if (view := view_by_app()) and
-                                  view.get("output-id") == panel["id"] else None),
-                         "window transferred from the mirrored output to the panel")
+        moved = wait_for(moved_to_surviving_output,
+                         "window moved from the destroyed mirror output to a surviving output")
     except AssertionError as error:
         mirror_window_transfer_diagnostics(panel, target, marker, error)
         raise
-    check("window on the mirrored output stays open and moves to the panel",
+    check("window on the mirrored output stays open and moves to a surviving output",
           moved.get("id") == original_window_id, moved)
 
     again = display("on")
