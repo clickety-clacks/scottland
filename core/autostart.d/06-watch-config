@@ -15,8 +15,39 @@ monitor_dir=
 monitor_fifo=
 monitor_pid=
 monitor_paths=
+all_watch_paths=
+last_logged_watch_state=
 mkdir -p "$(dirname "$log")"
 echo "$(date '+%F %T') watching (pid $$)" >>"$log"
+record_watch_state() {
+  state_mode=$1
+  state_present=0
+  state_missing=0
+  state_mirror_dir=not-tracked
+  # Keep paths private and summarize only the watcher mode and whether the mirror request
+  # directory is among the paths that exist or are waiting to appear.
+  for state_path in $all_watch_paths; do
+    if [ -e "$state_path" ]; then
+      state_present=$((state_present + 1))
+    else
+      state_missing=$((state_missing + 1))
+    fi
+    case "$state_path" in
+      */display-mirror/*)
+        if [ -d "$state_path" ]; then
+          state_mirror_dir=present
+        else
+          state_mirror_dir=missing
+        fi
+        ;;
+    esac
+  done
+  state_summary="$state_mode:$state_present:$state_missing:$state_mirror_dir"
+  if [ "$state_summary" != "$last_logged_watch_state" ]; then
+    echo "$(date '+%F %T') watch state: mode=$state_mode present=$state_present missing=$state_missing mirror-request-dir=$state_mirror_dir" >>"$log"
+    last_logged_watch_state=$state_summary
+  fi
+}
 stop_monitor() {
   if [ -n "$monitor_pid" ]; then
     kill "$monitor_pid" 2>/dev/null || true
@@ -46,17 +77,19 @@ start_monitor() {
   # Recursive monitor mode observes new directories internally; omit create from emitted events so
   # a new file's CREATE and CLOSE_WRITE do not cause two config rebuilds.
   inotifywait -q -r -m -e close_write -e moved_to -e delete -e delete_self -e move_self \
-    --timefmt '%F %T' --format '%T %e %w%f' $watch_paths >"$monitor_fifo" 2>>"$log" &
+    --timefmt '%F %T' --format 'persistent %T %e %f' $watch_paths >"$monitor_fifo" 2>>"$log" &
   monitor_pid=$!
   monitor_paths=$watch_paths
   if ! exec 3<"$monitor_fifo"; then
     stop_monitor
     return 1
   fi
+  record_watch_state persistent
   return 0
 }
 refresh_watch_paths() {
   paths=$("$build" --watch-paths)
+  all_watch_paths=$paths
   watch_paths=
   missing_paths=
   # The builder's path list has always used shell word splitting at the inotifywait boundary.
@@ -89,9 +122,10 @@ while :; do
   if [ "$path_appeared" -ne 1 ]; then
     if [ -n "$missing_paths" ]; then
       stop_monitor
+      record_watch_state one-shot
       # Keep watching present inputs while checking for a newly created input path.
       # shellcheck disable=SC2086
-      inotifywait -q -r -t 2 -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --timefmt '%F %T' --format '%T %e %w%f' --outfile "$log" $watch_paths 2>>"$log"
+      inotifywait -q -r -t 2 -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --timefmt '%F %T' --format 'one-shot %T %e %f' --outfile "$log" $watch_paths 2>>"$log"
       status=$?
     else
       if [ -z "$monitor_pid" ] && ! start_monitor; then
@@ -111,7 +145,8 @@ while :; do
       else
         # Preserve config generation if the persistent monitor could not be created.
         # shellcheck disable=SC2086
-        inotifywait -q -r -t 2 -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --timefmt '%F %T' --format '%T %e %w%f' --outfile "$log" $watch_paths 2>>"$log"
+        record_watch_state one-shot
+        inotifywait -q -r -t 2 -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --timefmt '%F %T' --format 'one-shot %T %e %f' --outfile "$log" $watch_paths 2>>"$log"
         status=$?
       fi
     fi
