@@ -190,7 +190,7 @@ with Session(fixture, "hl-switch-dialog", omarchy=False) as session:
     session_config = session.dir / "config/scottland"
     session_config.mkdir(parents=True, exist_ok=True)
     (session_config / "switch.json").write_text(json.dumps({"closeCurrent": False}) + "\n")
-    current_theme = session.dir / "state/omarchy/current/theme"
+    current_theme = fixture.home / ".local/state/omarchy/current/theme"
     current_theme.parent.mkdir(parents=True, exist_ok=True)
     current_theme.symlink_to(REPO / "omarchy/themes/watercolor-dream-light", target_is_directory=True)
     wallpaper_pid = session.spawn(
