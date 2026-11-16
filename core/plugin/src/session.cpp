@@ -248,27 +248,27 @@ struct session_t::impl
                 continue;
             }
 
-            wf::json_t mode = wf::json_t::object();
+            wf::json_t mode;
             mode["name"] = output->name;
             mode["enabled"] = state.source != wf::OUTPUT_IMAGE_SOURCE_NONE;
             mode["mirrored"] = state.source == wf::OUTPUT_IMAGE_SOURCE_MIRROR;
             mode["width"] = state.mode.width;
             mode["height"] = state.mode.height;
             mode["refresh-millihz"] = state.mode.refresh;
-            output_modes.push_back(std::move(mode));
+            output_modes.append(std::move(mode));
 
             if (state.source != wf::OUTPUT_IMAGE_SOURCE_MIRROR)
             {
                 continue;
             }
 
-            wf::json_t mirror = wf::json_t::object();
+            wf::json_t mirror;
             mirror["source"] = state.mirror_from;
             mirror["target"] = output->name;
             mirror["width"] = state.mode.width;
             mirror["height"] = state.mode.height;
             mirror["refresh-millihz"] = state.mode.refresh;
-            mirrors.push_back(std::move(mirror));
+            mirrors.append(std::move(mirror));
         }
         reply["mirrors"] = std::move(mirrors);
         reply["output-modes"] = std::move(output_modes);
