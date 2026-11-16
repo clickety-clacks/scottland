@@ -229,9 +229,20 @@ def reset_outputs():
 
 
 def main():
+    dynamic_output = ipc("wayfire/create-headless-output", {"width": 1280, "height": 720}).get("output")
+    if not isinstance(dynamic_output, dict) or not isinstance(dynamic_output.get("id"), int):
+        raise AssertionError(f"could not create the removable DP-1 fixture output: {dynamic_output!r}")
+
     expected_names = {"eDP-1", "DP-1", "HDMI-A-1"}
-    found = wait_for(lambda: outputs() if {row.get("name") for row in outputs()} == expected_names else None,
-                     "all three named virtual outputs")
+    def fixture_outputs_ready():
+        rows = outputs()
+        if ({row.get("name") for row in rows} == expected_names and
+                any(row.get("id") == dynamic_output["id"] and row.get("name") == "DP-1"
+                    for row in rows)):
+            return rows
+        return None
+
+    found = wait_for(fixture_outputs_ready, "panel, both external outputs, and the removable DP-1 fixture")
     check("setup: panel and both external outputs are reported", found is not None, found)
 
     initial = session_state()
@@ -281,7 +292,7 @@ def main():
 
     rows = outputs()
     panel = next(row for row in rows if row.get("name") == "eDP-1")
-    target = next(row for row in rows if row.get("name") == "DP-1")
+    target = next(row for row in rows if row.get("id") == dynamic_output["id"])
     untouched = next(row for row in rows if row.get("name") == "HDMI-A-1")
     original_ids = (panel["id"], target["id"], untouched["id"])
 
@@ -379,7 +390,7 @@ def main():
                          for row in session_state().get("mirrors", [])),
              "mirror active before output removal")
     last_unplug_poll = {}
-    destroy_result = ipc("wayfire/destroy-headless-output", {"output": target["name"]})
+    destroy_result = ipc("wayfire/destroy-headless-output", {"output-id": dynamic_output["id"]})
     if isinstance(destroy_result, dict) and destroy_result.get("error"):
         error = AssertionError(f"simulated unplug failed: {destroy_result['error']}")
         mirror_unplug_diagnostics(marker, error, last_unplug_poll, destroy_result, target)

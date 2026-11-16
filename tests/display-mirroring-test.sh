@@ -1,6 +1,6 @@
 #!/bin/bash
 # DM1-DM7: exercise mirror selection, the existing config watcher, user-mode restoration, and
-# window survival with three virtual outputs named like a panel and two external monitors.
+# window survival with two startup outputs plus a removable virtual external output.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${SCOTTLAND_HEADLESS_DIR:?set an isolated headless directory under build/}"
@@ -44,8 +44,8 @@ cc -shared -fPIC -o "$fixture/output-names.so" tests/output-names.c -ldl
 cp -a build/hooks "$hooks"
 export SCOTTLAND_TEST_HOOKS=$hooks
 export SCOTTLAND_TEST_PRELOAD="$fixture/output-names.so"
-export SCOTTLAND_TEST_OUTPUT_NAMES='HEADLESS-1=eDP-1,HEADLESS-2=DP-1,HEADLESS-3=HDMI-A-1,HEADLESS-4=DP-1'
-export SCOTTLAND_TEST_OUTPUTS=3
+export SCOTTLAND_TEST_OUTPUT_NAMES='HEADLESS-1=eDP-1,HEADLESS-2=HDMI-A-1,HEADLESS-3=DP-1,HEADLESS-4=DP-1'
+export SCOTTLAND_TEST_OUTPUTS=2
 started=1
 tests/headless.sh start --config-watcher
 
