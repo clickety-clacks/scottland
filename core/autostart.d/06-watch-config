@@ -91,27 +91,29 @@ start_monitor() {
     stop_monitor
     return 1
   fi
-  # Keep watching the paths that exist while checking periodically for missing paths to appear.
-  # The timer shares the event FIFO, so rebuilds never leave an event-listening gap.
-  (
-    poll_sleep=
-    stop_poller() {
-      if [ -n "$poll_sleep" ]; then
-        kill "$poll_sleep" 2>/dev/null || true
-        wait "$poll_sleep" 2>/dev/null || true
-      fi
-      exit 0
-    }
-    trap 'stop_poller' TERM INT HUP
-    while :; do
-      sleep 2 &
-      poll_sleep=$!
-      wait "$poll_sleep" || exit
+  if [ -n "$missing_paths" ]; then
+    # Keep watching the paths that exist while checking periodically for missing paths to appear.
+    # The timer shares the event FIFO, so rebuilds never leave an event-listening gap.
+    (
       poll_sleep=
-      printf 'poll\n' >"$monitor_fifo" || exit
-    done
-  ) &
-  poll_pid=$!
+      stop_poller() {
+        if [ -n "$poll_sleep" ]; then
+          kill "$poll_sleep" 2>/dev/null || true
+          wait "$poll_sleep" 2>/dev/null || true
+        fi
+        exit 0
+      }
+      trap 'stop_poller' TERM INT HUP
+      while :; do
+        sleep 2 &
+        poll_sleep=$!
+        wait "$poll_sleep" || exit
+        poll_sleep=
+        printf 'poll\n' >"$monitor_fifo" || exit
+      done
+    ) &
+    poll_pid=$!
+  fi
   record_watch_state persistent
   return 0
 }
