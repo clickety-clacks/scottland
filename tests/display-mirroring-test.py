@@ -63,11 +63,33 @@ def wait_for(predicate, label, timeout=12):
 
 
 def command(program, *args, timeout=25):
-    return subprocess.run([str(program), *args], capture_output=True, text=True, timeout=timeout)
+    argv = [str(program), *args]
+    process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        process.kill()
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(argv, timeout, output=stdout, stderr=stderr) from error
+    result = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+    result.pid = process.pid
+    return result
+
+
+mirror_commands = []
 
 
 def display(*args):
-    return command(CLI, "mirror", *args)
+    result = command(CLI, "mirror", *args)
+    if args and args[0] in {"on", "off", "toggle"}:
+        mirror_commands.append({
+            "pid": result.pid,
+            "args": list(args),
+            "returncode": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        })
+    return result
 
 
 def outputs():
@@ -94,6 +116,7 @@ def capture_value(operation):
         return {"capture_error": f"{type(error).__name__}: {error}"}
     if isinstance(value, subprocess.CompletedProcess):
         return {
+            "pid": getattr(value, "pid", None),
             "returncode": value.returncode,
             "stdout": value.stdout,
             "stderr": value.stderr,
@@ -148,10 +171,15 @@ def mirror_off_diagnostics(toggled_off, marker, failure, reloads_before_toggle):
     print("MIRROR-OFF-DIAGNOSTICS " + json.dumps(diagnostics, sort_keys=True), flush=True)
 
 
-def mirror_unplug_diagnostics(marker, failure, last_poll):
+def mirror_unplug_diagnostics(marker, failure, last_poll, destroy_result, target):
     diagnostics = {
         "failure": str(failure),
         "last_poll": last_poll,
+        "mirror_commands": mirror_commands,
+        "simulated_unplug": {
+            "target": {"id": target.get("id"), "name": target.get("name")},
+            "ipc_result": destroy_result,
+        },
         "session_state": capture_value(session_state),
         "watch_config_log": capture_value(WATCH_LOG.read_text),
         "watch_config_process": capture_value(watch_config_status),
@@ -350,7 +378,7 @@ def main():
     wait_for(lambda: any(row.get("target") == "DP-1"
                          for row in session_state().get("mirrors", [])),
              "mirror active before output removal")
-    ipc("wayfire/destroy-headless-output", {"output-id": target["id"]})
+    destroy_result = ipc("wayfire/destroy-headless-output", {"output-id": target["id"]})
     last_unplug_poll = {}
 
     def unplug_cleared():
@@ -378,7 +406,7 @@ def main():
     try:
         unplugged = wait_for(unplug_cleared, "unplug clears the mirror request")
     except AssertionError as error:
-        mirror_unplug_diagnostics(marker, error, last_unplug_poll)
+        mirror_unplug_diagnostics(marker, error, last_unplug_poll, destroy_result, target)
         raise
     remaining = wait_for(lambda: rows if len(rows := outputs()) == 2 else None,
                          "only the panel and second external remain")
