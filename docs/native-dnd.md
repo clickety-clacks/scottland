@@ -5,7 +5,7 @@ the separate Super/halo/touch/three-finger mechanism. Normal content input must
 reach the app with its original serial and implicit grab intact. Wayfire and
 wlroots own drag validation, icon placement, target offers and transfer.
 
-Mike's 2026-10-03 report is **still open**: the source shows a preview which cannot
+The product owner's 2026-10-03 report is **still open**: the source shows a preview which cannot
 leave its own window. That can indicate a rejected or absent `start_drag`, but
 it has not been reproduced in the following isolated AMD test host fixtures. No
 drag-validation bypass or speculative compositor workaround was added.
@@ -36,5 +36,5 @@ dropping on a default card forwards data to the hidden represented app.
 
 The failing source app and item are still needed to exercise the reported path.
 These are headless compositor sessions on AMD test host; physical libinput touchpad
-input and Mike's daily Intel desktop desktop have not been driven. No installed package or
+input and the user's daily Intel desktop desktop have not been driven. No installed package or
 live-session build was changed.

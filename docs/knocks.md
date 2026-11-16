@@ -1,4 +1,4 @@
-# Knocks (concept, in discussion with Mike, 2026-10-04)
+# Knocks (concept, in discussion with the product owner, 2026-10-04)
 
 Status: the larger knock model is still being formalized. The sender-window lookup in part 2 has a
 scoped implementation candidate; build and real-terminal/tmux validation are
@@ -6,7 +6,7 @@ pending. This supersedes the narrower "agentd as an attention source" framing; a
 bell menu, notifications, bells and requests for a user decision are all expected to become cases
 of this.
 
-## The bigger picture: attention regimes (Mike, 2026-10-04)
+## The bigger picture: attention regimes (product owner, 2026-10-04)
 
 Scottland and Gooarchy are about attention. The desktop is a small window the user uses to pull in the
 things that have their attention, and it is organized as **attention regimes**:
@@ -17,7 +17,7 @@ things that have their attention, and it is organized as **attention regimes**:
 4. **The ether**: everything not represented on the desktop. Objects there still exist; at some point
    they want the user's attention and can be promoted to a higher regime.
 
-The ether is a mental place, not a location on screen (Mike): a website the user closes isn't gone; it is
+The ether is a mental place, not a location on screen (the user): a website the user closes isn't gone; it is
 still there, can keep running, and can be opened again. Because a sender can be on the desktop in any
 form, **a way to see and act on its knocks must exist in every form: a full-size window, a scaled
 window, and a widget** (and for a sender with no form at all).
@@ -26,7 +26,7 @@ Objects move between regimes: the user promotes and demotes them; an object asks
 knock. This is the frame for everything below, and for how Scottland models and visualizes the bigger
 picture of what is trying to get the user's attention.
 
-## The model so far (Mike's words, organized)
+## The model so far (the user's words, organized)
 
 - **Objects** exist whether or not they are on the desktop: an agent session on some host, the
   machine itself (CPU overheating), a remote SaaS, an app.
@@ -47,7 +47,7 @@ picture of what is trying to get the user's attention.
 - **Mapping a knock to the window representing its sender must be dependable** (declared identity,
   exact match, never a guess).
 
-## How a knock is reached on a sender (direction, Mike, 2026-10-04)
+## How a knock is reached on a sender (direction, product-owner ruling, 2026-10-04)
 
 The breathing border (the goo/halo in the attention color) is the direct representation of a knock,
 not a pointer to something else. The existing interaction to hang access on: hovering near a border
@@ -55,17 +55,17 @@ makes it swell (A7; the swell is a fixed on-screen size however small the window
 full-size windows, scaled windows and widgets alike). A swollen border that carries a knock is where
 its message and answer UI come from.
 
-Constraints and directions added by Mike (2026-10-04):
+Constraints and directions from the product owner (2026-10-04):
 - A swollen border can't simply be clicked: it is the drag handle (and its corners resize). A click
   meaning has to live on a designated portion of it, the way the close dot does (A11).
 - A knock whose sender has no window or widget may look like free-floating goo with no window in it.
 
-Importance (Mike, 2026-10-04):
+Importance (product owner, 2026-10-04):
 - Knocks from objects on the desktop matter most: they are there because the user elected them to be there.
 - Knocks also carry a priority. Scottland does not set it; some other system provides it, and Scottland
   just renders it.
 
-Channels (Mike, 2026-10-04): knocks don't share one channel, so they aren't ranked against each other.
+Channels (product owner, 2026-10-04): knocks don't share one channel, so they aren't ranked against each other.
 Every window (every representation of an object) is a channel for that object's knocks. A knock can
 be high priority and not be represented on the desktop at all. Both coexist: there is an entire desktop
 to render them.

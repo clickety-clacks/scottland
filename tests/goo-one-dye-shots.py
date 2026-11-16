@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GO28 pictures: the same scene at the shipped goo settings and at Mike's, at rest.
+"""GO28 pictures: the same scene at the shipped goo settings and at the reference preset, at rest.
 
   tests/headless.sh run python3 tests/goo-one-dye-shots.py ARTIFACTS
 
@@ -46,7 +46,7 @@ SHIPPED = {'goo_thickness': 13., 'goo_thinning': .45, 'goo_noise': .32, 'goo_lum
            'goo_release': .06, 'goo_shine': .75, 'goo_relief': 5., 'goo_depth': 6., 'goo_profile': .65, 'goo_soak': .12,
            'goo_overlap_film': 4., 'goo_hover_cloudiness': .65, 'goo_hover_emissivity': .35,
            'goo_dye_density': 1., 'goo_dye_strength': 1.}
-MIKE = dict(SHIPPED, goo_thickness=22., goo_thinning=.27, goo_noise=.38, goo_lump=315., goo_drift=.39, goo_wave_speed=.16,
+REFERENCE = dict(SHIPPED, goo_thickness=22., goo_thinning=.27, goo_noise=.38, goo_lump=315., goo_drift=.39, goo_wave_speed=.16,
             goo_wave_damp=.958, goo_wave_height=.76, goo_spread=.83, goo_swirl=3., goo_release=.3, goo_shine=.89,
             goo_relief=5.6, goo_depth=4., goo_profile=.45, goo_soak=1., goo_overlap_film=10., goo_hover_cloudiness=.2,
             goo_hover_emissivity=.31, goo_dye_density=1.5, goo_dye_strength=1.5)
@@ -69,7 +69,7 @@ try:
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
     time.sleep(2)
     ipc('scottland/attention', {'window': view('shot-attention')['id'], 'attention': True, 'source': 'one-dye-shots'})
-    for name, preset in (('shipped', SHIPPED), ('mike', MIKE)):
+    for name, preset in (('shipped', SHIPPED), ('reference', REFERENCE)):
         options(preset)
         for focus in ('shot-front', 'shot-apart'):
             f = view(focus)['frame']; click(f['x'] + 40, f['y'] + 40)

@@ -227,7 +227,7 @@ touch_drag = true   # optional: a finger drag anywhere moves it (only if it drag
 ```
 
 A widget is any program (QML via Quickshell, GTK, a web view, a TUI...), fully interactive, with
-the user's normal access (files, network, D-Bus). It gets the window's identity in its
+The user's normal access (files, network, D-Bus). It gets the window's identity in its
 environment: `SCOTTLAND_WIDGET_APP_ID`, `_ICON`, `_NAME`, `_DESKTOP`, `_PID` (the app's
 process), `_WINDOW`, `_ID`, `_STATE` (a complete JSON presentation snapshot, written atomically
 before the widget starts and replaced live: identity, title, rail, minimized, badge, focus,
@@ -253,7 +253,7 @@ Troubleshooting: `~/.local/state/scottland/widgets.log` says which widget was ch
 A window (or its widget) whose app needs the user gets a breathing halo in the attention color,
 until the user goes to it. Built in: an app's bell or focus request, its urgency hint, a desktop
 notification from its own process. **Add a source** (another program that knows which windows need
-the user) with a file `~/.config/scottland/attention.d/<name>.ini`, then run `scottland-reload`:
+The user) with a file `~/.config/scottland/attention.d/<name>.ini`, then run `scottland-reload`:
 
 ```ini
 [source]

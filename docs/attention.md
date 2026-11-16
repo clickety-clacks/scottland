@@ -2,7 +2,7 @@
 
 How a window says it needs the user, and how Scottland shows it. Showing it is in
 [widgets.md](widgets.md) (WG15) and [../core/INVARIANTS.md](../core/INVARIANTS.md) (L28). This doc
-records the design Mike asked for (2026-10-01): attention from anywhere, many sources at once,
+records the product owner's design request (2026-10-01): attention from anywhere, many sources at once,
 plugged in by configuration, never by code that names a particular app. Rows say what's built.
 
 ## What exists now
@@ -63,12 +63,12 @@ attention-local-v0 revision 4; the Scottland window client and Agentd bridge are
   Server-Sent Events can be subscribed to, each agent resolved to its terminal window, and
   attention turned on and off, with no polling. That needs push sources (a long-running command
   writing on/off lines), the next step for AT3.
-- Mike's setup: his attention app's list is a configured source in his own
+- A user's attention-app list can be a configured source in that user's own
   ~/.config/scottland/attention.d/ (personal configuration, not Scottland code).
 
 Action replies are validated before replacing a snapshot. Stale listed IDs are ignored; a
 window closing during marking or removal leaves the helper running for other sources/windows.
 Regression: `tests/attention-sources-test.py` exercises stale listings and both close races.
-- Notifications: Scottland will redefine how notifications are shown and how they work (Mike,
+- Notifications: Scottland will redefine how notifications are shown and how they work (product owner,
   2026-10-01), as part of attention: the desktop's own notification surfaces and behavior replace the
   integration's where they conflict (C5). Not designed yet.

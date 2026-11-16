@@ -1,8 +1,8 @@
 #!/bin/bash
 # No backdrop inside a window (GO27), in a private headless session.
 #   tests/goo-strip-test.sh ARTIFACTS [STRIP_LIMIT [natural]]
-# Default: Mike's first layout with the strip limit lowered to 3 (strips merge across the front
-# window). `16 natural`: his second layout at the shipped limit, where merging happens by itself.
+# Default: the user's first layout with the strip limit lowered to 3 (strips merge across the front
+# window). `16 natural`: the second reference layout at the shipped limit, where merging happens by itself.
 # Needs a fresh SCOTTLAND_HEADLESS_DIR; SCOTTLAND_TEST_GOO_GLES=2 selects the packed path.
 set -euo pipefail
 cd "$(dirname "$0")/.."
