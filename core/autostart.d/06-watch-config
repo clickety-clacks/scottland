@@ -14,6 +14,7 @@ pause_file=
 monitor_dir=
 monitor_fifo=
 monitor_pid=
+poll_pid=
 monitor_paths=
 all_watch_paths=
 last_logged_watch_state=
@@ -54,6 +55,11 @@ stop_monitor() {
     wait "$monitor_pid" 2>/dev/null || true
     monitor_pid=
   fi
+  if [ -n "$poll_pid" ]; then
+    kill "$poll_pid" 2>/dev/null || true
+    wait "$poll_pid" 2>/dev/null || true
+    poll_pid=
+  fi
   exec 3<&- 2>/dev/null || true
   if [ -n "$monitor_dir" ]; then
     rm -rf -- "$monitor_dir"
@@ -63,6 +69,7 @@ stop_monitor() {
   monitor_paths=
 }
 start_monitor() {
+  [ -n "$watch_paths" ] || return 1
   runtime=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}
   monitor_dir=$(mktemp -d "$runtime/scottland-watch-config.XXXXXX") || return 1
   monitor_fifo=$monitor_dir/events
@@ -84,6 +91,27 @@ start_monitor() {
     stop_monitor
     return 1
   fi
+  # Keep watching the paths that exist while checking periodically for missing paths to appear.
+  # The timer shares the event FIFO, so rebuilds never leave an event-listening gap.
+  (
+    poll_sleep=
+    stop_poller() {
+      if [ -n "$poll_sleep" ]; then
+        kill "$poll_sleep" 2>/dev/null || true
+        wait "$poll_sleep" 2>/dev/null || true
+      fi
+      exit 0
+    }
+    trap 'stop_poller' TERM INT HUP
+    while :; do
+      sleep 2 &
+      poll_sleep=$!
+      wait "$poll_sleep" || exit
+      poll_sleep=
+      printf 'poll\n' >"$monitor_fifo" || exit
+    done
+  ) &
+  poll_pid=$!
   record_watch_state persistent
   return 0
 }
@@ -103,81 +131,105 @@ refresh_watch_paths() {
   done
 }
 trap 'stop_monitor; echo "$(date "+%F %T") watcher stopped by signal" >>"$log"; exit 0' TERM INT HUP
-previous_missing_paths=
 while :; do
   refresh_watch_paths
-  if [ -n "$monitor_pid" ] && {
-    [ -n "$missing_paths" ] || [ "$monitor_paths" != "$watch_paths" ];
-  }; then
-    stop_monitor
-  fi
-  path_appeared=0
-  # shellcheck disable=SC2086
-  for path in $previous_missing_paths; do
-    [ -e "$path" ] && path_appeared=1
-  done
-  previous_missing_paths=$missing_paths
   status=0
   event_description=
-  if [ "$path_appeared" -ne 1 ]; then
-    if [ -n "$missing_paths" ]; then
-      stop_monitor
-      record_watch_state one-shot
-      # Keep watching present inputs while checking for a newly created input path.
-      # shellcheck disable=SC2086
-      inotifywait -q -r -t 2 -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --timefmt '%F %T' --format 'one-shot %T %e %f' --outfile "$log" $watch_paths 2>>"$log"
-      status=$?
+  if [ -n "$monitor_pid" ] && {
+    [ "$monitor_paths" != "$watch_paths" ] || ! kill -0 "$monitor_pid" 2>/dev/null;
+  }; then
+    if [ "$monitor_paths" != "$watch_paths" ]; then
+      event_description='watched input set changed'
     else
-      if [ -z "$monitor_pid" ] && ! start_monitor; then
-        echo "$(date '+%F %T') could not start the persistent config monitor; will retry after rebuilding" >>"$log"
-      fi
-      if [ -n "$monitor_pid" ]; then
-        if IFS= read -r event <&3; then
-          event_description=$event
-          echo "$event" >>"$log"
-        else
-          wait "$monitor_pid"
-          status=$?
-          monitor_pid=
-          stop_monitor
-          [ "$status" -ne 0 ] || status=1
-        fi
-      else
-        # Preserve config generation if the persistent monitor could not be created.
-        # shellcheck disable=SC2086
-        record_watch_state one-shot
-        inotifywait -q -r -t 2 -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --timefmt '%F %T' --format 'one-shot %T %e %f' --outfile "$log" $watch_paths 2>>"$log"
-        status=$?
-      fi
+      echo "$(date '+%F %T') persistent config monitor exited; restarting" >>"$log"
     fi
-  else
-    # A previously missing watched path appeared during the last wait. Refresh the path set and
-    # arm the watcher before rebuilding so later edits are not lost during config generation.
-    refresh_watch_paths
-    if [ -z "$missing_paths" ] && [ -z "$monitor_pid" ] && ! start_monitor; then
+    stop_monitor
+  fi
+  if [ -n "$watch_paths" ] && [ -z "$monitor_pid" ]; then
+    if ! start_monitor; then
       echo "$(date '+%F %T') could not start the persistent config monitor; will retry after rebuilding" >>"$log"
     fi
   fi
-  if [ "$status" -eq 0 ] || [ "$status" -eq 2 ]; then
-    remaining_missing_paths=
-    path_appeared=0
-    # shellcheck disable=SC2086
-    for path in $missing_paths; do
-      if [ -e "$path" ]; then
-        path_appeared=1
+  if [ -n "$monitor_pid" ]; then
+    if [ -n "$event_description" ]; then
+      :  # A changed watch-path set already requires a config rebuild.
+    elif IFS= read -r event <&3; then
+      if [ "$event" = poll ]; then
+        path_appeared=0
+        # shellcheck disable=SC2086
+        for path in $missing_paths; do
+          [ -e "$path" ] && path_appeared=1
+        done
+        if [ "$path_appeared" -ne 1 ]; then
+          continue
+        fi
+        refresh_watch_paths
+        if [ "$monitor_paths" != "$watch_paths" ]; then
+          stop_monitor
+          if [ -n "$watch_paths" ] && ! start_monitor; then
+            echo "$(date '+%F %T') could not extend the config monitor after a watched path appeared" >>"$log"
+          fi
+        fi
+        event_description='watched input appeared'
       else
-        remaining_missing_paths="$remaining_missing_paths $path"
+        event_description=$event
+        echo "$event" >>"$log"
+        case "$event" in
+          *DELETE_SELF*|*MOVE_SELF*)
+            # Replacing a watched file invalidates its inode watch even when the path is unchanged.
+            refresh_watch_paths
+            stop_monitor
+            if [ -n "$watch_paths" ] && ! start_monitor; then
+              echo "$(date '+%F %T') could not restart the config monitor after a watched path moved" >>"$log"
+            fi
+            ;;
+        esac
+        if [ -n "$monitor_pid" ]; then
+          old_monitor_paths=$monitor_paths
+          refresh_watch_paths
+          if [ "$old_monitor_paths" != "$watch_paths" ]; then
+            stop_monitor
+            if [ -n "$watch_paths" ] && ! start_monitor; then
+              echo "$(date '+%F %T') could not restart the config monitor after a watched input changed" >>"$log"
+            fi
+          fi
+        fi
       fi
-    done
-    previous_missing_paths=$remaining_missing_paths
-    # inotifywait uses status 2 for a timeout; only rebuild if a missing input appeared.
-    if [ "$status" -eq 2 ] && [ "$path_appeared" -eq 1 ]; then
-      status=0
-      event_description='watched input appeared'
+    else
+      wait "$monitor_pid"
+      status=$?
+      monitor_pid=
+      stop_monitor
+      [ "$status" -ne 0 ] || status=1
     fi
-  fi
-  if [ "$status" -eq 2 ]; then
-    continue  # No watched input changed during the missing-path check interval.
+  else
+    if [ -z "$watch_paths" ]; then
+      record_watch_state waiting
+      sleep 2
+      refresh_watch_paths
+      [ -n "$watch_paths" ] || continue
+      if ! start_monitor; then
+        echo "$(date '+%F %T') could not start the persistent config monitor after a watched path appeared" >>"$log"
+      fi
+      event_description='watched input appeared'
+    else
+      # Preserve config generation if the persistent monitor could not be created.
+      # shellcheck disable=SC2086
+      record_watch_state one-shot
+      inotifywait -q -r -t 2 -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --timefmt '%F %T' --format 'one-shot %T %e %f' --outfile "$log" $watch_paths 2>>"$log"
+      status=$?
+      if [ "$status" -eq 2 ]; then
+        path_appeared=0
+        # shellcheck disable=SC2086
+        for path in $missing_paths; do
+          [ -e "$path" ] && path_appeared=1
+        done
+        [ "$path_appeared" -eq 1 ] || continue
+        event_description='watched input appeared'
+      elif [ "$status" -eq 0 ]; then
+        event_description='inotify event'
+      fi
+    fi
   fi
   if [ "$status" -ne 0 ]; then
     echo "$(date '+%F %T') inotifywait exited $status; retrying" >>"$log"
