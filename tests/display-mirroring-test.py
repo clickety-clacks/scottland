@@ -171,6 +171,37 @@ def mirror_off_diagnostics(toggled_off, marker, failure, reloads_before_toggle):
     print("MIRROR-OFF-DIAGNOSTICS " + json.dumps(diagnostics, sort_keys=True), flush=True)
 
 
+def mirror_window_transfer_diagnostics(panel, target, marker, failure):
+    diagnostics = {
+        "failure": str(failure),
+        "expected_panel_before_mirror": {
+            key: panel.get(key) for key in ("id", "name", "geometry")
+        },
+        "mirror_target_before_mirror": {
+            key: target.get(key) for key in ("id", "name", "geometry")
+        },
+        "current_outputs": capture_value(outputs),
+        "current_panel": capture_value(lambda: output_named("eDP-1")),
+        "current_mirror_target": capture_value(lambda: output_named("DP-1")),
+        "window": capture_value(view_by_app),
+        "session_state": capture_value(session_state),
+        "display_status": capture_value(lambda: command(CLI, "mirror", "status", timeout=5)),
+        "request_marker": capture_value(lambda: {
+            "exists": marker.exists(),
+            "content": marker.read_text() if marker.exists() else None,
+        }),
+    }
+    artifact = ARTIFACTS / "mirror-window-transfer-diagnostics.json"
+    try:
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text(json.dumps(diagnostics, indent=2, sort_keys=True) + "\n")
+    except OSError as error:
+        print(f"Could not write mirror window-transfer diagnostics artifact: {error}",
+              file=sys.stderr, flush=True)
+    print("MIRROR-WINDOW-TRANSFER-DIAGNOSTICS " +
+          json.dumps(diagnostics, sort_keys=True), flush=True)
+
+
 def mirror_unplug_diagnostics(marker, failure, last_poll, destroy_result, target):
     diagnostics = {
         "failure": str(failure),
@@ -336,9 +367,13 @@ def main():
           marker.read_text() == "eDP-1\nDP-1\n" if marker.exists() else False,
           marker.read_text() if marker.exists() else "marker missing")
 
-    moved = wait_for(lambda: (view if (view := view_by_app()) and
-                              view.get("output-id") == panel["id"] else None),
-                     "window transferred from the mirrored output to the panel")
+    try:
+        moved = wait_for(lambda: (view if (view := view_by_app()) and
+                                  view.get("output-id") == panel["id"] else None),
+                         "window transferred from the mirrored output to the panel")
+    except AssertionError as error:
+        mirror_window_transfer_diagnostics(panel, target, marker, error)
+        raise
     check("window on the mirrored output stays open and moves to the panel",
           moved.get("id") == original_window_id, moved)
 
