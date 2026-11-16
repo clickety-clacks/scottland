@@ -148,6 +148,35 @@ def mirror_off_diagnostics(toggled_off, marker, failure, reloads_before_toggle):
     print("MIRROR-OFF-DIAGNOSTICS " + json.dumps(diagnostics, sort_keys=True), flush=True)
 
 
+def mirror_unplug_diagnostics(marker, failure, last_poll):
+    diagnostics = {
+        "failure": str(failure),
+        "last_poll": last_poll,
+        "session_state": capture_value(session_state),
+        "watch_config_log": capture_value(WATCH_LOG.read_text),
+        "watch_config_process": capture_value(watch_config_status),
+        "active_wayfire_outputs": capture_value(outputs),
+        "scottland_output_list": capture_value(
+            lambda: command(HOOKS / "libexec/scottland-output", "list", timeout=5)
+        ),
+        "display_status": capture_value(lambda: command(CLI, "mirror", "status", timeout=5)),
+        "request_marker": capture_value(lambda: {
+            "exists": marker.exists(),
+            "content": marker.read_text() if marker.exists() else None,
+        }),
+        "generated_config": capture_value(CONFIG.read_text),
+        "user_overrides": capture_value(OVERRIDES.read_text),
+    }
+    artifact = ARTIFACTS / "mirror-unplug-diagnostics.json"
+    try:
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text(json.dumps(diagnostics, indent=2, sort_keys=True) + "\n")
+    except OSError as error:
+        print(f"Could not write mirror-unplug diagnostics artifact: {error}",
+              file=sys.stderr, flush=True)
+    print("MIRROR-UNPLUG-DIAGNOSTICS " + json.dumps(diagnostics, sort_keys=True), flush=True)
+
+
 results = []
 
 
@@ -322,10 +351,35 @@ def main():
                          for row in session_state().get("mirrors", [])),
              "mirror active before output removal")
     ipc("wayfire/destroy-headless-output", {"output-id": target["id"]})
-    unplugged = wait_for(lambda: session_state()
-                         if not marker.exists() and not session_state().get("mirrors") and
-                         display("status").stdout.splitlines()[:1] == ["extended"] else None,
-                         "unplug clears the mirror request")
+    last_unplug_poll = {}
+
+    def unplug_cleared():
+        state = session_state()
+        marker_exists = marker.exists()
+        status = display("status")
+        marker_absent = not marker_exists
+        mirrors_empty = not state.get("mirrors")
+        status_extended = status.stdout.splitlines()[:1] == ["extended"]
+        last_unplug_poll.clear()
+        last_unplug_poll.update({
+            "request_marker_exists": marker_exists,
+            "session_state": state,
+            "display_status": capture_value(lambda: status),
+            "predicate": {
+                "request_marker_absent": marker_absent,
+                "session_mirrors_empty": mirrors_empty,
+                "status_extended": status_extended,
+            },
+        })
+        if marker_absent and mirrors_empty and status_extended:
+            return state
+        return None
+
+    try:
+        unplugged = wait_for(unplug_cleared, "unplug clears the mirror request")
+    except AssertionError as error:
+        mirror_unplug_diagnostics(marker, error, last_unplug_poll)
+        raise
     remaining = wait_for(lambda: rows if len(rows := outputs()) == 2 else None,
                          "only the panel and second external remain")
     unplugged_window = wait_for(
