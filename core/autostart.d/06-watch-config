@@ -35,16 +35,16 @@ while :; do
   done
   previous_missing_paths=$missing_paths
   status=0
-  event=
+  event_description=
   if [ "$path_appeared" -ne 1 ]; then
     if [ -n "$missing_paths" ]; then
       # Keep watching present inputs while checking for a newly created input path.
       # shellcheck disable=SC2086
-      event=$(inotifywait -q -r -t 2 -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --format '%e %f' $watch_paths 2>>"$log")
+      inotifywait -q -r -t 2 -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --timefmt '%F %T' --format '%T %e %w%f' --outfile "$log" $watch_paths 2>>"$log"
       status=$?
     else
       # shellcheck disable=SC2086
-      event=$(inotifywait -q -r -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --format '%e %f' $watch_paths 2>>"$log")
+      inotifywait -q -r -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --timefmt '%F %T' --format '%T %e %w%f' --outfile "$log" $watch_paths 2>>"$log"
       status=$?
     fi
   fi
@@ -63,7 +63,7 @@ while :; do
     # inotifywait uses status 2 for a timeout; only rebuild if a missing input appeared.
     if [ "$status" -eq 2 ] && [ "$path_appeared" -eq 1 ]; then
       status=0
-      event='watched input appeared'
+      event_description='watched input appeared'
     fi
   fi
   if [ "$status" -eq 2 ]; then
@@ -74,11 +74,18 @@ while :; do
     sleep 2
     continue
   fi
-  [ -n "$event" ] || event='watched input changed'
-  echo "$(date '+%F %T') config change observed ($event); rebuilding" >>"$log"
+  if [ -n "$event_description" ]; then
+    echo "$(date '+%F %T') config change observed ($event_description); rebuilding" >>"$log"
+  else
+    echo "$(date '+%F %T') config change observed; rebuilding" >>"$log"
+  fi
   sleep 0.3  # let editors finish writing
   if [ -n "$pause_file" ] && [ -e "$pause_file" ]; then
-    echo "$(date '+%F %T') config change consumed while automatic reload is paused ($event)" >>"$log"
+    if [ -n "$event_description" ]; then
+      echo "$(date '+%F %T') config change consumed while automatic reload is paused ($event_description)" >>"$log"
+    else
+      echo "$(date '+%F %T') config change consumed while automatic reload is paused" >>"$log"
+    fi
     continue
   fi
   if "$build" >/dev/null 2>>"$log"; then
