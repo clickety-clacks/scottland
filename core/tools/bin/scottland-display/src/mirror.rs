@@ -444,13 +444,14 @@ fn wait_for_reload(session: &scottland::session::Session, before: u64) -> Result
     let deadline = Instant::now() + RELOAD_WAIT;
     loop {
         let state = query_state(session)?;
-        if reload_count(&state)? > before {
+        let observed = reload_count(&state)?;
+        if observed > before {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            return Err(
-                "the existing config watcher did not report applying the mirror change".to_owned(),
-            );
+            return Err(format!(
+                "the existing config watcher did not report applying the mirror change (config-reloads stayed at {before}; last observed {observed})"
+            ));
         }
         thread::sleep(Duration::from_millis(50));
     }

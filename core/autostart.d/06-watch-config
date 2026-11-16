@@ -35,15 +35,16 @@ while :; do
   done
   previous_missing_paths=$missing_paths
   status=0
+  event=
   if [ "$path_appeared" -ne 1 ]; then
     if [ -n "$missing_paths" ]; then
       # Keep watching present inputs while checking for a newly created input path.
       # shellcheck disable=SC2086
-      inotifywait -qq -r -t 2 -e close_write -e moved_to -e create -e delete -e delete_self -e move_self $watch_paths
+      event=$(inotifywait -q -r -t 2 -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --format '%e %f' $watch_paths 2>>"$log")
       status=$?
     else
       # shellcheck disable=SC2086
-      inotifywait -qq -r -e close_write -e moved_to -e create -e delete -e delete_self -e move_self $watch_paths
+      event=$(inotifywait -q -r -e close_write -e moved_to -e create -e delete -e delete_self -e move_self --format '%e %f' $watch_paths 2>>"$log")
       status=$?
     fi
   fi
@@ -62,6 +63,7 @@ while :; do
     # inotifywait uses status 2 for a timeout; only rebuild if a missing input appeared.
     if [ "$status" -eq 2 ] && [ "$path_appeared" -eq 1 ]; then
       status=0
+      event='watched input appeared'
     fi
   fi
   if [ "$status" -eq 2 ]; then
@@ -72,11 +74,17 @@ while :; do
     sleep 2
     continue
   fi
+  [ -n "$event" ] || event='watched input changed'
+  echo "$(date '+%F %T') config change observed ($event); rebuilding" >>"$log"
   sleep 0.3  # let editors finish writing
   if [ -n "$pause_file" ] && [ -e "$pause_file" ]; then
-    echo "$(date '+%F %T') config change consumed while automatic reload is paused" >>"$log"
+    echo "$(date '+%F %T') config change consumed while automatic reload is paused ($event)" >>"$log"
     continue
   fi
-  "$build" >/dev/null 2>>"$log" ||
-    echo "$(date '+%F %T') rebuild failed (above); the session keeps its previous config" >>"$log"
+  if "$build" >/dev/null 2>>"$log"; then
+    echo "$(date '+%F %T') config rebuild succeeded after ($event)" >>"$log"
+  else
+    build_status=$?
+    echo "$(date '+%F %T') config rebuild failed with status $build_status after ($event); the session keeps its previous config" >>"$log"
+  fi
 done

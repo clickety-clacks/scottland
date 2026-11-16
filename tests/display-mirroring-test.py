@@ -24,6 +24,7 @@ SESSION_DIR = Path(ENV["SCOTTLAND_SESSION_DIR"])
 OVERRIDES = Path(ENV["XDG_CONFIG_HOME"]) / "scottland" / "overrides.ini"
 CONFIG = Path(ENV["SCOTTLAND_CONFIG_OUTPUT"])
 HOOKS = Path(ENV["SCOTTLAND_HOOKS"])
+WATCH_LOG = Path(ENV["XDG_STATE_HOME"]) / "scottland" / "watch-config.log"
 CLI = HOOKS / "libexec/scottland-display"
 WINDOW_APP = "scottland-mirror-window"
 client = None
@@ -100,11 +101,32 @@ def capture_value(operation):
     return value
 
 
-def mirror_off_diagnostics(toggled_off, marker, failure):
+def watch_config_status():
+    log = WATCH_LOG.read_text()
+    pids = [line.rsplit("watching (pid ", 1)[1].split(")", 1)[0]
+            for line in log.splitlines() if "watching (pid " in line]
+    if not pids:
+        return {"running": False, "reason": "watch log has no startup record"}
+    proc = Path("/proc") / pids[-1]
+    try:
+        stat = (proc / "stat").read_text()
+    except FileNotFoundError:
+        return {"running": False}
+    except OSError as error:
+        return {"running": None, "error": str(error)}
+    fields = stat[stat.rfind(")") + 2:].split()
+    state = fields[0] if fields else "unknown"
+    return {"running": state not in {"Z", "X", "unknown"}, "state": state}
+
+
+def mirror_off_diagnostics(toggled_off, marker, failure, reloads_before_toggle):
     diagnostics = {
         "failure": str(failure),
         "toggle_command": capture_value(lambda: toggled_off),
+        "config_reloads_before_toggle": reloads_before_toggle,
         "session_state": capture_value(session_state),
+        "watch_config_log": capture_value(WATCH_LOG.read_text),
+        "watch_config_process": capture_value(watch_config_status),
         "active_wayfire_outputs": capture_value(outputs),
         "scottland_output_list": capture_value(
             lambda: command(HOOKS / "libexec/scottland-output", "list", timeout=5)
@@ -255,12 +277,13 @@ def main():
           any(row.get("target") == "DP-1" for row in session_state().get("mirrors", [])),
           (again.stdout.strip(), again.stderr.strip()))
 
+    reloads_before_toggle = session_state().get("config-reloads")
     toggled_off = display("toggle")
     try:
         state_off = wait_for(lambda: session_state() if not session_state().get("mirrors") else None,
                              "Wayfire reports the restored output mode")
     except AssertionError as error:
-        mirror_off_diagnostics(toggled_off, marker, error)
+        mirror_off_diagnostics(toggled_off, marker, error, reloads_before_toggle)
         raise
     off_status = display("status")
     check("toggle off returns to extended and the configured mode", toggled_off.returncode == 0 and
