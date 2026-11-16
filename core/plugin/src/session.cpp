@@ -21,9 +21,14 @@ extern "C" {
 }
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <ctime>
 #include <map>
 #include <string>
+#include <utility>
+#include <system_error>
+#include <unistd.h>
 
 namespace scottland
 {
@@ -44,6 +49,91 @@ bool session_locked()
 namespace
 {
 const wlr_switch_impl test_switch_impl = {.name = "scottland-test-switch"};
+
+bool valid_runtime_component(const std::string& value)
+{
+    if (value.empty() || value == "." || value == "..")
+    {
+        return false;
+    }
+
+    for (unsigned char ch : value)
+    {
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+              (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-'))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::filesystem::path mirror_request_path()
+{
+    const char *display = std::getenv("WAYLAND_DISPLAY");
+    if (!display || !valid_runtime_component(display))
+    {
+        return {};
+    }
+
+    const char *configured = std::getenv("SCOTTLAND_SESSION_DIR");
+    std::filesystem::path session_dir;
+    if (configured && *configured)
+    {
+        session_dir = configured;
+    } else if (const char *runtime = std::getenv("XDG_RUNTIME_DIR"); runtime && *runtime)
+    {
+        session_dir = std::filesystem::path(runtime) / "scottland";
+    } else
+    {
+        session_dir = std::filesystem::path("/run/user") / std::to_string(getuid()) / "scottland";
+    }
+
+    return session_dir / "display-mirror" / display / "request";
+}
+
+void clear_mirror_for_unavailable_output()
+{
+    auto request_path = mirror_request_path();
+    if (request_path.empty())
+    {
+        return;
+    }
+
+    std::ifstream request(request_path);
+    std::string source, target;
+    if (!(request >> source >> target))
+    {
+        return;
+    }
+
+    const auto configuration = wf::get_core().output_layout->get_current_configuration();
+    auto state_for = [&] (const std::string& name)
+    {
+        for (const auto& [handle, state] : configuration)
+        {
+            if (handle && handle->name && name == handle->name)
+            {
+                return state.source;
+            }
+        }
+
+        return wf::OUTPUT_IMAGE_SOURCE_NONE;
+    };
+    if (state_for(source) != wf::OUTPUT_IMAGE_SOURCE_NONE &&
+        state_for(target) != wf::OUTPUT_IMAGE_SOURCE_NONE)
+    {
+        return;
+    }
+
+    std::error_code error;
+    std::filesystem::remove(request_path, error);
+    if (error)
+    {
+        LOGE("scottland: could not clear mirror request after output removal: ", error.message());
+    }
+}
 
 /** Virtual switches for test sessions, on their own headless backend like stipc's devices. */
 struct test_switches_t
@@ -134,11 +224,54 @@ struct session_t::impl
         powered_off.erase(ev->output->handle);
     };
 
+    // Entering mirror mode destroys Wayfire's logical output_t and emits output_removed, too.
+    // The layout signal distinguishes that transition from a physical unplug: a present mirror
+    // remains in the configuration; unplug is represented as NONE before Wayfire erases it.
+    wf::signal::connection_t<wf::output_layout_configuration_changed_signal>
+        on_output_layout_changed = [=] (wf::output_layout_configuration_changed_signal*)
+    {
+        clear_mirror_for_unavailable_output();
+    };
+
     wf::ipc::method_callback state = [=] (wf::json_t)
     {
         wf::json_t reply = wf::ipc::json_ok();
         reply["locked"] = session_locked();
         reply["config-reloads"] = config_reloads;
+        wf::json_t mirrors = wf::json_t::array();
+        wf::json_t output_modes = wf::json_t::array();
+        const auto configuration = wf::get_core().output_layout->get_current_configuration();
+        for (const auto& [output, state] : configuration)
+        {
+            if (!output || !output->name)
+            {
+                continue;
+            }
+
+            wf::json_t mode;
+            mode["name"] = output->name;
+            mode["enabled"] = state.source != wf::OUTPUT_IMAGE_SOURCE_NONE;
+            mode["mirrored"] = state.source == wf::OUTPUT_IMAGE_SOURCE_MIRROR;
+            mode["width"] = state.mode.width;
+            mode["height"] = state.mode.height;
+            mode["refresh-millihz"] = state.mode.refresh;
+            output_modes.append(std::move(mode));
+
+            if (state.source != wf::OUTPUT_IMAGE_SOURCE_MIRROR)
+            {
+                continue;
+            }
+
+            wf::json_t mirror;
+            mirror["source"] = state.mirror_from;
+            mirror["target"] = output->name;
+            mirror["width"] = state.mode.width;
+            mirror["height"] = state.mode.height;
+            mirror["refresh-millihz"] = state.mode.refresh;
+            mirrors.append(std::move(mirror));
+        }
+        reply["mirrors"] = std::move(mirrors);
+        reply["output-modes"] = std::move(output_modes);
         return reply;
     };
 
@@ -224,6 +357,7 @@ void session_t::init()
     priv->power_requests.reset(wl_display_add_protocol_logger(
         wf::get_core().display, impl::observe_power_request, priv.get()));
     wf::get_core().output_layout->connect(&priv->on_output_removed);
+    wf::get_core().output_layout->connect(&priv->on_output_layout_changed);
     priv->ipc->register_method("scottland/session-state", priv->state);
     wf::get_core().connect(&priv->on_switch);
     wf::get_core().connect(&priv->on_config_reload);
@@ -248,6 +382,7 @@ void session_t::fini()
 
     priv->on_switch.disconnect();
     priv->on_config_reload.disconnect();
+    priv->on_output_layout_changed.disconnect();
     priv.reset();
 }
 }

@@ -325,6 +325,14 @@ jobs:
                 timeout --signal=TERM --kill-after=30s 2m \
                 tests/config-watch-missing-settings-test.sh "$PWD/build/config-watch-evidence"
               rmdir -- build/config-watch-scratch
+              mkdir -m 700 build/display-mirroring-scratch
+              SCOTTLAND_TEST_SCRATCH="$PWD/build/display-mirroring-scratch" \
+                SCOTTLAND_HEADLESS_DIR="$PWD/build/display-mirroring-scratch/session" \
+                tests/display-mirroring-test.sh "$PWD/build/display-mirroring-evidence"
+              SCOTTLAND_TEST_SCRATCH="$PWD/build/display-mirroring-scratch" \
+                tests/display-mirroring-session-end-test.sh \
+                "$PWD/build/display-mirroring-evidence/session-end.log"
+              rmdir -- build/display-mirroring-scratch
               mkdir -m 700 build/widgets-fast-check-scratch
               widgets_log="$PWD/build/widgets-fast-check-scratch/widgets-test.log"
               if SCOTTLAND_TEST_SCRATCH="$PWD/build/widgets-fast-check-scratch" \
@@ -341,6 +349,14 @@ jobs:
                 timeout --signal=TERM --kill-after=30s 2m \
                 python3 tests/omarchy-global-actions-test.py
             '
+
+      - name: Upload display mirroring evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: display-mirroring-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/display-mirroring-evidence/
+          if-no-files-found: warn
 
       - name: Upload middle-press events on failure
         if: ${{ always() && !cancelled() && hashFiles('build/middle-press-fast-check-failed') != '' }}

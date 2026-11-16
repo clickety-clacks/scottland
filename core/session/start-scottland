@@ -42,11 +42,22 @@ main() {
     [ -r "$env_hook" ] && . "$env_hook"
   done
 
+  clear_session_mirror_request() {
+    case ${WAYLAND_DISPLAY:-} in
+      ''|*[!A-Za-z0-9._-]*) return 0 ;;
+    esac
+    session_dir=${SCOTTLAND_SESSION_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland}
+    rm -f -- "$session_dir/display-mirror/$WAYLAND_DISPLAY/request" ||
+      printf '%s\n' 'Scottland: could not clear the session mirror request' >&2
+  }
+  trap clear_session_mirror_request EXIT
+
   # A new session starts from the installed (or dev) plugin, not a previous session's reload copy,
   # and with the configured displays, not a previous session's output settings (scottland-output).
   rm -rf "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/plugins"
   rm -f "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/session-outputs.json"
   rm -f "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/session-output-scales.json"
+  clear_session_mirror_request
 
   state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
   mkdir -p "$state"
@@ -112,6 +123,8 @@ main() {
       fi
     fi
   fi
+
+  clear_session_mirror_request
 
   # If this session brought up the user's graphical-session services, take them down with it.
   if systemctl --user is-active --quiet scottland-session.target; then
