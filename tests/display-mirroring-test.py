@@ -149,7 +149,8 @@ def main():
           CONFIG.read_bytes() == no_panel_config and
           session_state().get("config-reloads") == no_panel_before)
     reset_outputs()
-    wait_for(lambda: all(row.get("enabled") for row in outputs()), "all outputs restored")
+    wait_for(lambda: {row.get("name") for row in outputs()} == expected_names,
+             "all outputs restored")
 
     OVERRIDES.parent.mkdir(parents=True, exist_ok=True)
     override_bytes = b"[output:DP-1]\nmode = 1280x720@60\n"
