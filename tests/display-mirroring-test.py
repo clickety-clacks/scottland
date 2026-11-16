@@ -327,6 +327,32 @@ def main():
     # removable output from the current list instead of retaining the creation-time id.
     target = next(row for row in rows if row.get("name") == "DP-1")
     untouched = next(row for row in rows if row.get("name") == "HDMI-A-1")
+
+    # Keep the panel as the nearest surviving output when DP-1 is disabled for mirroring. The
+    # default headless order put DP-1 between the panel and HDMI-A-1, so Wayfire correctly moved
+    # a view to HDMI-A-1 as it would when that output is unplugged.
+    panel_width = round(panel["geometry"]["width"])
+    ipc("wayfire/set-config-options", {
+        f"output:{panel['name']}/position": "0, 0",
+        f"output:{target['name']}/position": f"{panel_width}, 0",
+        f"output:{untouched['name']}/position": f"{panel_width * 3}, 0",
+    })
+
+    def mirror_layout_ready():
+        current = outputs()
+        by_name = {row.get("name"): row for row in current}
+        if set(by_name) != expected_names:
+            return None
+        if (round(by_name["eDP-1"]["geometry"]["x"]) == 0 and
+                round(by_name["DP-1"]["geometry"]["x"]) == panel_width and
+                round(by_name["HDMI-A-1"]["geometry"]["x"]) == panel_width * 3):
+            return current
+        return None
+
+    arranged = wait_for(mirror_layout_ready, "panel-adjacent mirror fixture layout")
+    panel = next(row for row in arranged if row.get("name") == "eDP-1")
+    target = next(row for row in arranged if row.get("name") == "DP-1")
+    untouched = next(row for row in arranged if row.get("name") == "HDMI-A-1")
     original_ids = (panel["id"], target["id"], untouched["id"])
 
     client = subprocess.Popen(["foot", "--app-id", WINDOW_APP,
