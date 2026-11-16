@@ -13,10 +13,10 @@ const SCALE_PRESETS: [f64; 6] = [1.0, 1.25, 1.6, 2.0, 3.0, 4.0];
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq)]
-struct OutputInfo {
-    name: String,
-    enabled: bool,
-    scale: f64,
+pub(super) struct OutputInfo {
+    pub(super) name: String,
+    pub(super) enabled: bool,
+    pub(super) scale: f64,
 }
 
 pub(super) fn run(args: &[&str]) -> Result<(), String> {
@@ -227,8 +227,46 @@ fn output_by_name(name: &str) -> Result<OutputInfo, String> {
 }
 
 fn list_outputs() -> Result<Vec<OutputInfo>, String> {
-    let output = Command::new(scottland_hooks().join("libexec/scottland-output"))
-        .arg("list")
+    let mut command = Command::new(scottland_hooks().join("libexec/scottland-output"));
+    command.arg("list");
+    parse_outputs(command)
+}
+
+pub(super) fn list_outputs_for_session(
+    session: &scottland::session::Session,
+) -> Result<Vec<OutputInfo>, String> {
+    let mut command = Command::new(hooks_dir_for_session(session).join("libexec/scottland-output"));
+    command.arg("list").env_clear().envs(session.env.iter());
+    parse_outputs(command)
+}
+
+pub(super) fn hooks_dir_for_session(session: &scottland::session::Session) -> PathBuf {
+    if let Some(hooks) = session
+        .var("SCOTTLAND_HOOKS")
+        .filter(|value| !value.is_empty())
+    {
+        return PathBuf::from(hooks);
+    }
+    let data_home = session
+        .var("XDG_DATA_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            session
+                .var("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".local/share"))
+        });
+    if let Some(dev) = data_home.map(|path| path.join("scottland/dev"))
+        && dev.join("libexec").is_dir()
+    {
+        return dev;
+    }
+    PathBuf::from(scottland::dirs::PACKAGE_HOOKS)
+}
+
+fn parse_outputs(mut command: Command) -> Result<Vec<OutputInfo>, String> {
+    let output = command
         .output()
         .map_err(|error| format!("could not run scottland-output list: {error}"))?;
     if !output.status.success() {
@@ -496,13 +534,13 @@ fn scale_text(scale: f64) -> String {
     scale.to_string()
 }
 
-fn is_internal(name: &str) -> bool {
+pub(super) fn is_internal(name: &str) -> bool {
     ["eDP-", "LVDS-", "DSI-"]
         .iter()
         .any(|prefix| name.starts_with(prefix))
 }
 
-fn valid_name(value: &str) -> bool {
+pub(super) fn valid_name(value: &str) -> bool {
     !value.is_empty()
         && value
             .bytes()

@@ -2,8 +2,9 @@
 # A Scottland session with no screen, for testing without touching anyone's display: the real
 # config (shipped base + generated fragments, e.g. imported shortcuts) and the repo's plugin
 # build, driven with Wayfire's stipc virtual input. It runs only hooks that stay inside the test
-# session: never 05-import-environment (would repoint the user's systemd services), 06-watch-
-# config (would rewrite the live session's config) or 20-omarchy-shell.
+# session: never 05-import-environment (would repoint the user's systemd services) or
+# 20-omarchy-shell; 06-watch-config is opt in with --config-watcher so it rebuilds only this
+# session's private config.
 #
 #   tests/headless.sh start [--omarchy] [--widgets]   start; --omarchy adds the Hyprland shim and
 #                                         Lua host (--hyprland-start also runs the config's
@@ -14,6 +15,7 @@
 #                                         all thread stacks into wayfire.log, then resumes
 #                                         --stock omits Scottland for a protocol control
 #                                         SCOTTLAND_TEST_PRELOAD=LIB preloads LIB into Wayfire only
+#                                         --config-watcher starts the existing isolated config watcher
 #                                         SCOTTLAND_TEST_WRAP=EXE wraps only the Omarchy monitor
 #                                         fixture's run-owned --omarchy Wayfire launch
 #   tests/headless.sh run CMD [ARGS...]   run CMD inside it (scottland-exec: its own environment)
@@ -980,6 +982,7 @@ case ${1:-} in
         # own config would start its real autostart apps inside the test session).
         --hyprland-start) started+=(45-hyprland-start) ;;
         --widgets) started+=(08-widget-bus); private_bus=1 ;;
+        --config-watcher) started+=(06-watch-config) ;;
         --gdb)
           [[ $(realpath -m "$dir") == "$repo"/build/* ]] || {
             echo '--gdb requires SCOTTLAND_HEADLESS_DIR under this checkout build/ (stack logs can be large)' >&2
@@ -1007,7 +1010,7 @@ GDB
       # the session's own variables.
       for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case $name in
-          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|SCOTTLAND_TEST_PATH|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_HEADLESS_ISOLATION|SCOTTLAND_TEST_SCRATCH|SCOTTLAND_TEST_DISABLE_PRIMARY_SELECTION|SCOTTLAND_SESSION_DIR|SCOTTLAND_HEADLESS_DIR|SCOTTLAND_HEADLESS_OWNER|SCOTTLAND_HEADLESS_OWNER_DIR|SCOTTLAND_HEADLESS_DIAGNOSTICS_DIR|SCOTTLAND_SETTINGS_FALLBACKS_ONLY|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|SCOTTLAND_TEST_PATH|SCOTTLAND_TEST_OUTPUT_NAMES|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_HEADLESS_ISOLATION|SCOTTLAND_TEST_SCRATCH|SCOTTLAND_TEST_DISABLE_PRIMARY_SELECTION|SCOTTLAND_SESSION_DIR|SCOTTLAND_HEADLESS_DIR|SCOTTLAND_HEADLESS_OWNER|SCOTTLAND_HEADLESS_OWNER_DIR|SCOTTLAND_HEADLESS_DIAGNOSTICS_DIR|SCOTTLAND_SETTINGS_FALLBACKS_ONLY|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
           *) unset "$name" 2>/dev/null || true ;;
         esac
       done

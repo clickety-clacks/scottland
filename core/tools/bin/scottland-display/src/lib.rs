@@ -7,13 +7,14 @@ pub(crate) mod brightness;
 pub(crate) mod brightness_target;
 pub(crate) mod color_scheme;
 pub(crate) mod gamma;
+pub(crate) mod mirror;
 pub(crate) mod night_light;
 pub(crate) mod outputs;
 
 const SCHEMA: &str = "org.gnome.desktop.interface";
 const KEY: &str = "text-scaling-factor";
 const RANGE_ERROR: &str = "text size must be a number in the range 0.5 to 3.0";
-const USAGE: &str = "usage: scottland-display text-size [set <factor>|reset] | color-scheme [once|watch|ensure|cursor-size] | cursor-size | brightness [--no-osd] [--output NAME] [STEP|off|on] | brightness keyboard [--no-osd] [up|down|cycle|off|restore] | output focused|internal|external-active|scale [up|down|SCALE] | wake | palette --all|KEY [FALLBACK] | terminal-theme push | night-light <on|off|toggle|status>";
+const USAGE: &str = "usage: scottland-display text-size [set <factor>|reset] | color-scheme [once|watch|ensure|cursor-size] | cursor-size | brightness [--no-osd] [--output NAME] [STEP|off|on] | brightness keyboard [--no-osd] [up|down|cycle|off|restore] | output focused|internal|external-active|scale [up|down|SCALE] | mirror <on|off|toggle|status> | wake | palette --all|KEY [FALLBACK] | terminal-theme push | night-light <on|off|toggle|status>";
 
 pub fn run(args: &[OsString]) -> Result<(), String> {
     match run_with_exit_status(args)? {
@@ -49,6 +50,7 @@ pub fn run_with_exit_status(args: &[OsString]) -> Result<u8, String> {
         ["cursor-size"] => appearance::cursor_size().map(|()| 0),
         ["brightness", command @ ..] => brightness::run(command).map(|()| 0),
         ["output", command @ ..] => outputs::run(command).map(|()| 0),
+        ["mirror", command @ ..] => mirror::run(command).map(|()| 0),
         ["wake"] => brightness::wake().map(|()| 0),
         ["palette", command @ ..] => appearance::palette(command).map(|()| 0),
         ["terminal-theme", "push"] => appearance::push_terminal_theme().map(|()| 0),
