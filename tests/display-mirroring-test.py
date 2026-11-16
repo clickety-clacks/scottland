@@ -476,7 +476,7 @@ def main():
                          for row in session_state().get("mirrors", [])),
              "mirror active before output removal")
     last_unplug_poll = {}
-    destroy_result = ipc("wayfire/destroy-headless-output", {"output-id": unplug_target["id"]})
+    destroy_result = ipc("wayfire/destroy-headless-output", {"output": unplug_target["name"]})
     if isinstance(destroy_result, dict) and destroy_result.get("error"):
         error = AssertionError(f"simulated unplug failed: {destroy_result['error']}")
         mirror_unplug_diagnostics(marker, error, last_unplug_poll, destroy_result, unplug_target,
