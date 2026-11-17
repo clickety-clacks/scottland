@@ -16,7 +16,7 @@ installed scripts are not edited. Inside Scottland only, the shell launch path p
 compatibility commands first; currently this makes the workspace-layout action report that layout
 cycling is unavailable instead of showing a misleading Hyprland-reload notice. Rerun
 `scottland-omarchy-setup` after each adapter package upgrade: a package upgrade alone does not update
-the user's menu extension or check the pinned screen-sharing portal. Setup preserves existing
+The user's menu extension or check the pinned screen-sharing portal. Setup preserves existing
 same-named themes.
 
 Inside Scottland, `XDG_CURRENT_DESKTOP` starts with `Scottland`; `scottland-exec --list` lists

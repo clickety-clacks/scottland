@@ -587,7 +587,7 @@ int main()
             "13 concentric no_room hints clear each other and the front hint by the collision gap");
     }
     // An anchored window (the focused one; during a drag, the dragged one) never moves; any other
-    // covered window peeks (Mike, 2026-10-05: peeking never moves a window's true location).
+    // covered window peeks (product owner, 2026-10-05: peeking never moves a window's true location).
     {
         peek_request r; r.screen = screen;
         auto front = window({200, 200, 600, 400});

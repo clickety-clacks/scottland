@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Measure Dye spread, Dye swirl and Dye release on the current candidate, not a pass/fail test.
 Run in a private headless session, on each GPU path. This probe records the candidate SHA and
-reports pixel deltas against repeated Mike-value controls; it does not declare product acceptance.
+reports pixel deltas against repeated reference-value controls; it does not declare product acceptance.
 
-Fixture: Mike's live goo settings (layout.ini, 2026-10-06), a patterned wallpaper (strong color
+Fixture: reference goo settings from layout.ini (2026-10-06), a patterned wallpaper (strong color
 patches, so pickup gives the dye something to smear), two windows, the left one focused.
 
 The dye is read from the GPU, not from the screen: `goo-state` `dye_points` returns the dye at
@@ -12,10 +12,10 @@ at one simulation step (a "dye capture"). Each capture records the simulation st
 and coast-tick count. Differences are mean absolute 8-bit levels over the ring's RGB (p95 and max
 too). Screen pixels along the same rings (grim) are compared the same way.
 
-1. Settled: for each value across each slider's range (the others at Mike's), the same stimulus
+1. Settled: for each value across each slider's range (the others at their reference values), the same stimulus
    (a real Super-drag of the left window and back, a click-focus to the right one and back),
-   then rest; the captured dye is compared with Mike's value. Each trial clears both dye targets
-   through the isolated-test hook before the stimulus; repeated Mike runs estimate input noise.
+   then rest; the captured dye is compared with the reference value. Each trial clears both dye targets
+   through the isolated-test hook before the stimulus; repeated reference runs estimate input noise.
 2. Moving: in the same trials, captures while the dragged window is held away (0.3 s, 1 s) and
    screen and dye samples are taken before release, then after the focus change (0.25, 0.6, 1.5 s).
 3. Coast: after the same stimulus, restart a five-second sleeping coast and sample dye, screen,
@@ -50,13 +50,13 @@ record['candidate'] = {
     'purpose': 'current-tip slider pixel measurement; not an acceptance attestation',
 }
 
-# Mike's goo settings on the daily machine (its layout.ini), 2026-10-06.
-MIKE = dict(goo_thickness=26, goo_reach=35, goo_thinning=.27, goo_swell=.7, goo_noise=.38, goo_lump=315,
+# reference goo settings on the daily desktop (its layout.ini), 2026-10-06.
+REFERENCE = dict(goo_thickness=26, goo_reach=35, goo_thinning=.27, goo_swell=.7, goo_noise=.38, goo_lump=315,
             goo_drift=.39, goo_wave_speed=.22, goo_wave_damp=.958, goo_wave_height=.76, goo_spread=.9,
             goo_swirl=2.9, goo_release=.155, goo_shine=.62, goo_relief=3.5, goo_depth=4., goo_profile=.52,
             goo_soak=1., goo_pickup_balance=.47, goo_overlap_film=10., goo_hover_cloudiness=0.,
             goo_hover_emissivity=.46, goo_hover_distance=48., goo_dye_density=1.5)
-MIKE_FALLOFF = ('0.000:1.000 0.063:0.779 0.125:0.607 0.188:0.472 0.250:0.368 0.313:0.287 0.375:0.223 '
+REFERENCE_FALLOFF = ('0.000:1.000 0.063:0.779 0.125:0.607 0.188:0.472 0.250:0.368 0.313:0.287 0.375:0.223 '
                 '0.395:0.223 0.500:0.135 0.569:0.113 0.625:0.082 0.688:0.064 0.750:0.050 0.813:0.039 '
                 '0.875:0.030 0.938:0.024 1.000:0.018')
 RANGES = {'goo_spread': [0., .225, .45, .675, .9], 'goo_swirl': [0., .5, .9, 1.8, 2.9, 3.],
@@ -123,7 +123,7 @@ def ring(frame, d, step=4, margin=18):
     pts += [(x - d, y + t) for t in range(int(h) - margin, margin, -step)]
     return pts
 def rings(frames):
-    d = MIKE['goo_thickness']/2
+    d = REFERENCE['goo_thickness']/2
     return [p for f in frames for p in ring(f, d)]
 def capture_sample(points):
     """The dye and counters for every point, read in one main-loop turn (one simulation step)."""
@@ -335,7 +335,7 @@ def coast_measure(tag, duration=5.):
             'samples': rows}, snapshots
 
 def trial(name, value, include_coast=False):
-    settings = dict(MIKE); settings[name] = value
+    settings = dict(REFERENCE); settings[name] = value
     options(**settings); rest('apply ' + name)
     reset_dye(); rest('fresh dye baseline')
     captures = stimulus('%s-%g' % (name, value), {})
@@ -344,7 +344,7 @@ def trial(name, value, include_coast=False):
 
 try:
     ipc('wayfire/set-config-options', {'output:HEADLESS-1/mode': '1280x720@60000'})
-    options(**MIKE); ipc('wayfire/set-config-options', {'scottland/goo_falloff': MIKE_FALLOFF})
+    options(**REFERENCE); ipc('wayfire/set-config-options', {'scottland/goo_falloff': REFERENCE_FALLOFF})
     spawn('win-a', *A); spawn('win-b', *B)
     paper = wallpaper(); focus('win-a'); rest('fixture')
     s0 = state(); record['path'] = {'packed': s0['packed']}
@@ -353,8 +353,8 @@ try:
     record['capture_ms'] = round(1000*(time.monotonic() - t)); log('capture ms', record['capture_ms'])
 
     if 'settled' in only:
-        base = [trial('goo_spread', MIKE['goo_spread'], include_coast=True) for _ in range(3)]
-        # Every repeated Mike run starts with both GPU dye targets cleared.
+        base = [trial('goo_spread', REFERENCE['goo_spread'], include_coast=True) for _ in range(3)]
+        # Every repeated reference run starts with both GPU dye targets cleared.
         keys = [k for k in base[0][0] if k != 'capture_meta']
         record['noise'] = {k: [diff(base[0][0][k], base[i][0][k]) for i in (1, 2)] for k in keys}
         log('noise floor', json.dumps({k: v for k, v in record['noise'].items()}))
@@ -383,7 +383,7 @@ try:
                 rows.append(row)
                 log(name, v, json.dumps(row))
             record['sliders'][name] = rows
-        options(**MIKE); rest('back to Mike')
+        options(**REFERENCE); rest('back to reference settings')
 
     if 'hints' in only:
         # The rows' help, as Settings shows it when the pointer rests on a row.
@@ -407,26 +407,26 @@ try:
         pointer(5, 5); tap('KEY_ESC'); time.sleep(.5)
     if 'cross' in only:
         # 4. Is transport hidden by fast renewal? Swirl and spread at both ends of their range,
-        # at Mike's release and at a slow one; Mike's swirl/spread run twice for the noise floor.
+        # at the reference release setting and at a slow one; reference swirl/spread runs repeat to estimate the noise floor.
         record['cross'] = {}
         for release in (.155, .03):
             out = {}
-            for label, extra in (('mike', {}), ('mike-again', {}), ('swirl0', {'goo_swirl': 0.}),
+            for label, extra in (('reference', {}), ('reference-again', {}), ('swirl0', {'goo_swirl': 0.}),
                                  ('spread0', {'goo_spread': 0.}), ('both0', {'goo_swirl': 0., 'goo_spread': 0.})):
-                settings = dict(MIKE); settings.update(extra); settings['goo_release'] = release
+                settings = dict(REFERENCE); settings.update(extra); settings['goo_release'] = release
                 options(**settings); rest('cross settings')
                 reset_dye(); rest('cross fresh dye')
                 out[label] = stimulus('cross-%g-%s' % (release, label), {})
-            keys = [k for k in out['mike'] if k != 'capture_meta' and not k.startswith('screen')]
-            screen_keys = [k for k in out['mike'] if k.startswith('screen')]
-            rows = {label: {k: diff(out[label][k], out['mike'][k]) for k in keys + screen_keys}
-                    for label in out if label != 'mike'}
+            keys = [k for k in out['reference'] if k != 'capture_meta' and not k.startswith('screen')]
+            screen_keys = [k for k in out['reference'] if k.startswith('screen')]
+            rows = {label: {k: diff(out[label][k], out['reference'][k]) for k in keys + screen_keys}
+                    for label in out if label != 'reference'}
             for label in out:
                 rows.setdefault(label, {})['sharpness'] = {k: spatial(out[label][k]) for k in ('settled', 'focus-0.25', 'held-1.0')}
                 rows[label]['capture_meta'] = out[label]['capture_meta']
             record['cross']['release %g' % release] = rows
             log('cross release', release, json.dumps(rows))
-        options(**MIKE); rest('back to Mike')
+        options(**REFERENCE); rest('back to reference settings')
     if 'wake' in only:
         # Each row is selected and changed with real Settings input while the goo is idle.
         # Shine at its existing value is the no-change control. Pixel sampling brackets only
@@ -438,11 +438,11 @@ try:
         # (row, Shift+arrow presses); Shine with no arrow is the control.
         for name, presses in (('goo_shine', 0), ('goo_spread', -9), ('goo_swirl', -6), ('goo_release', 3),
                               ('goo_spread', -4), ('goo_swirl', -3), ('goo_release', -2)):
-            options(**MIKE); rest('wake reset'); reset_dye(); rest('wake fresh dye')
+            options(**REFERENCE); rest('wake reset'); reset_dye(); rest('wake fresh dye')
             pts = rings([view('win-a')['frame'], view('win-b')['frame']])
             panel = open_panel(); rest('panel open')
             lo, hi = LOW_HIGH[name]
-            target = MIKE[name]
+            target = REFERENCE[name]
             if target >= hi: target -= STEPS[name] * .25
             elif target <= lo: target += STEPS[name] * .25
             before_select = state()
@@ -453,9 +453,9 @@ try:
                 raise AssertionError('Settings selected row %s instead of %s' %
                                      (selected_row.get('selected'), expected_index))
             selected = option(name); after_select = state()
-            if abs(selected - MIKE[name]) > STEPS[name] * .5 + 1e-6:
+            if abs(selected - REFERENCE[name]) > STEPS[name] * .5 + 1e-6:
                 raise AssertionError('%s row selection changed the control value: %g to %g' %
-                                     (name, MIKE[name], selected))
+                                     (name, REFERENCE[name], selected))
             selection_wakes = (after_select['wakes'].get('settings', 0)
                                - before_select['wakes'].get('settings', 0))
             before = rest('row selected')
@@ -523,7 +523,7 @@ try:
             record['wake']['%s %+d: %g->%g' % (name, presses, selected, value)] = row
             log('wake', name, presses, json.dumps(row))
             if panel in clients: stop(panel); clients.remove(panel)
-        options(**MIKE); rest('back to Mike')
+        options(**REFERENCE); rest('back to reference settings')
     (art / 'probe.json').write_text(json.dumps(record, indent=1))
 finally:
     (art / 'probe.json').write_text(json.dumps(record, indent=1))

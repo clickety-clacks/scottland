@@ -1,6 +1,6 @@
 # Scottland's system tools
 
-Scottland's command-line tools are Rust binaries, one per subsystem, in this Cargo workspace. Mike
+Scottland's command-line tools are Rust binaries, one per subsystem, in this Cargo workspace. The user
 asked to "group the scripts by subsystem and make a single binary for that subsystem"
 ([rulings](../../docs/rulings.md)); the shell and Python helpers in `core/libexec` move into them over
 time. Like the rest of core, the tools run on any distro and never know about Omarchy.

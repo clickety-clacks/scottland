@@ -1270,7 +1270,7 @@
             {
                 // An unremembered side destination goes as close to the center as it may (WP4): its
                 // center past where the zone scale has visibly fallen (WP8), and at most a quarter
-                // of its scaled width hanging into the center zone, never half of it (Mike,
+                // of its scaled width hanging into the center zone, never half of it (product owner,
                 // 2026-10-04), where it fits on screen (WP7); else as far out as fits. From there
                 // the placement routine below keeps it off center windows (and any other) and
                 // nearest the center. Remembered positions remain exact (WP2).
@@ -1856,7 +1856,7 @@
                         // The focused window never moves for avoidance; during a drag that is the
                         // window under the user's hand (WK13, 10-02). Peeking never moves a window's true
                         // location, so solo, pair and audition history give no special status: any
-                        // other covered window peeks (Mike, 2026-10-05).
+                        // other covered window peeks (product owner, 2026-10-05).
                         input.anchored = view == focused;
                         input.full_hint = hint_size(view);
                         input.minimum_hint = 48 * text;

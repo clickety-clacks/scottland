@@ -346,7 +346,7 @@ int main()
     {
         // Touching a pinned card (within the 1 px contact gap) is not overlap; clipping it
         // by 3 px with the drop's center below it keeps the aimed order: it stays above and
-        // overlaps the drop by those 3 px rather than flying across it (for Mike to look at:
+        // overlaps the drop by those 3 px rather than flying across it (for the user to look at:
         // room exists below, but crossing would break the order the drop chose).
         solver_t touching;
         touching.begin(top_card_items());

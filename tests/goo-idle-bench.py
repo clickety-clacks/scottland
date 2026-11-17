@@ -8,7 +8,7 @@ Both keyframe and exact strip modes run by default; each GPU sample is five seco
 The Astra controls (--settings/--stream-hz/--full-redraw/--refresh-hz/--scale/
 --deterministic) and Fable controls (--options/--visual) are retained.
 
-Mike's live desktop (2560x1600, scale 1) with one center window breathing, as read from
+The user's live desktop (2560x1600, scale 1) with one center window breathing, as read from
 its layout-state on 2026-10-02: nothing redraws, a 941x940 center window asks for
 attention while partly under a larger focused center window (so its goo has overlap
 film and the ordered shader path), scaled windows sit in the periphery and two rail

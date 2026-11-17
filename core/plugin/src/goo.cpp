@@ -507,7 +507,7 @@ class goo_node_t : public wf::scene::node_t
     // liquid (no simulation, no surface shading), each pass standing for less and less
     // until it stands for nothing. Then the tick ends and the dye stays exactly as it lies:
     // the picked-up, smeared color is kept, costs nothing, and changes only when the goo
-    // is stirred awake again or the wallpaper changes (Mike, 2026-10-03).
+    // is stirred awake again or the wallpaper changes (product owner, 2026-10-03).
     static constexpr double water_coast = 14;
     double water_started = 0, water_length = 0;
     bool water_running = false;

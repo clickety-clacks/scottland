@@ -1,6 +1,6 @@
 # Scottland's tenets
 
-What Scottland is for, in Mike's words (kept in sync with his notes, Drift doc 0024). Use them to
+What Scottland is for, in the product owner's words (kept in sync with the original notes, Drift doc 0024). Use them to
 decide the edges a request doesn't specify: when a new feature leaves a choice open, pick what the
 tenets point to and say which tenet decided it. When two pull different ways, ask. Specific
 behaviors and their status live in the invariants files and docs/; the bullets here are examples.

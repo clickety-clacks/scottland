@@ -9,15 +9,15 @@ come up, so the decision isn't lost while there is nowhere better to put them.
 
 ## Name
 
-**Gooarchy**, pronounced "goo-ah-shee" (Mike, 2026-10-03): goo, Arch and anarchy, after Omarchy, which
+**Gooarchy**, pronounced "goo-ah-shee" (product owner, 2026-10-03): goo, Arch and anarchy, after Omarchy, which
 DHH pronounces "om-ah-shee". The name was checked for collisions on 2026-10-03: no project or product
 by that name, GitHub name and the .com/.org domains unregistered. gooarchy.com registered on Porkbun
-2026-10-03 (Mike's account, WHOIS privacy on). Public repository:
+2026-10-03 (the user's account, WHOIS privacy on). Public repository:
 [clickety-clacks/gooarchy](https://github.com/clickety-clacks/gooarchy).
 
-## Gooarchy flavorings (Mike, 2026-10-03)
+## Gooarchy flavorings (product owner, 2026-10-03)
 
-Gooarchy flavorings (which app widgets ship and whose, e.g. Mike's Ghostty widget rather than someone
+Gooarchy flavorings (which app widgets ship and whose, e.g. The user's Ghostty widget rather than someone
 else's, and the app defaults listed below) lives in its own package,
 [clickety-clacks/gooarchy-flavorings](https://github.com/clickety-clacks/gooarchy-flavorings), not in
 Scottland's core (which defines what a widget is, never which ones ship) and not in the distro alone.
@@ -27,18 +27,18 @@ without it Scottland on Omarchy is incomplete. On Omarchy, flavorings add what O
 Each app widget is its own component built on Scottland's public widget interface (WG1-WG23), which
 therefore has to stay stable enough for outside packages.
 
-## Starting clean (Mike, 2026-10-04)
+## Starting clean (product owner, 2026-10-04)
 
 Gooarchy is patterned after Omarchy (installer structure, packaging, updates) but starts clean on plain Arch: it does not carry Omarchy's shell or the Hyprland shim. What Gooarchy lacks stays visibly missing (no bar yet means no bar) so the deficit is defined by the built distro, not hidden by borrowed parts.
 
-## No bar and no notification daemon for now (Mike, 2026-10-04)
+## No bar and no notification daemon for now (product owner, 2026-10-04)
 
 Gooarchy will have its own bar and its own notification system (see docs/knocks.md for the direction). Until they exist it ships neither: no borrowed bar, no stock notification daemon. Known consequences to list in the deficit: no clock/battery/network/volume indicators or tray; desktop notifications from apps are dropped (attention from bells and Scottland's own sources still works); volume/brightness keys work without an on-screen indicator; full-screen do-not-disturb hooks have nothing to hold.
 
 ## Defaults to ship
 
-- **Strata ([lgse/strata](https://github.com/lgse/strata)) is Gooarchy's standard file browser** (Mike, 2026-10-04): installed by default and set as the file manager (folder handler, Super+Shift+F). It ships in gooarchy-flavorings.
-- **Terminal window titles read "session on host"** (Mike, 2026-10-01), the same on every machine:
+- **Strata ([lgse/strata](https://github.com/lgse/strata)) is Gooarchy's standard file browser** (product owner, 2026-10-04): installed by default and set as the file manager (folder handler, Super+Shift+F). It ships in gooarchy-flavorings.
+- **Terminal window titles read "session on host"** (product owner, 2026-10-01), the same on every machine:
   tmux `set -g set-titles on` and `set -g set-titles-string '#S on #h'`, and no `[mosh] ` prefix
   (mosh honors `MOSH_TITLE_NOPREFIX=1` in the client's environment). The window title is what a
   widget's card shows first (WG10), so it should say what's in the window and where.
@@ -58,7 +58,7 @@ Gooarchy will have its own bar and its own notification system (see docs/knocks.
   autostart.d/02-link-agent-skills picks Claude Code, Codex, pi, Hermes).
 - **The opinionated keybindings** in core's shipped config that follow Omarchy's choices.
 
-- **Chromium uses the system title bar and borders** (Mike, 2026-10-03): ship Chromium with
+- **Chromium uses the system title bar and borders** (product owner, 2026-10-03): ship Chromium with
   "Use system title bar and borders" on (profile preference `browser.custom_chrome_frame = false`),
   so it doesn't draw its own frame with transparent margins inside its window geometry; goo and the
   halo then sit against its edge. Scottland itself should still handle client-drawn frames
@@ -80,7 +80,7 @@ App-compatibility knowledge that every Scottland install needs stays in Scottlan
 (for example, which apps take touchscreen scrolling as wheel steps), and the Omarchy adapter stays an
 integration package (it could become its own repository).
 
-## Kernel (Mike, 2026-10-05)
+## Kernel (product owner, 2026-10-05)
 
 Gooarchy builds its own kernel from Omarchy's linux-omarchy patch set, tracking Omarchy's
 releases, plus Gooarchy's own fixes on top (first: Cirrus Logic's spi-cs42l43 speaker-ID
