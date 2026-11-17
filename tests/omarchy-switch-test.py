@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Switching desktops always closes the current one (W2; keep mode removed, Mike 2026-10-06).
+"""Switching desktops always closes the current one (W2; keep mode removed by the 2026-10-06 product ruling).
 
 Three layers, each judged by what the next layer down received:
 

@@ -254,7 +254,7 @@ try:
                 under = tuple(n/255 for n in baseline.getpixel((px, py)))
                 check(max(abs(a-b) for a, b in zip(fill, badge_over(under, c))) < .025,
                     scheme+': exterior widget badge has the same themed backing as window badges')
-                # WK26's opaque widget backing guaranteed 3:1 over any wallpaper; WK42 (Mike,
+                # WK26's opaque widget backing guaranteed 3:1 over any wallpaper; WK42 (product owner,
                 # 2026-10-06) gives widget hints the window hints' opacity, so over wallpaper
                 # the letter contrast now depends on that setting. Measured, not gated.
                 print(f'      {scheme}: widget letter contrast over wallpaper at {backing:.0%} backing: '

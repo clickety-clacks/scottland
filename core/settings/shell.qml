@@ -816,7 +816,7 @@ ShellRoot {
     margins.bottom: Math.max(24, Math.round((screen?.height || 800)*0.04))
     implicitWidth: Math.min(Math.max(320,(screen?.width || 1280)-24),1040,
       Math.max(780,Math.round((screen?.width || 1280)*0.63)))
-    // About half the screen's height (Mike, 2026-10-02: the near-full-height panel was too large),
+    // About half the screen's height (product owner, 2026-10-02: the near-full-height panel was too large),
     // never so short that a tab's rows get cramped on small screens.
     implicitHeight: Math.min((screen?.height || 800)-24,
       Math.max(520, Math.round((screen?.height || 800)*0.5)))

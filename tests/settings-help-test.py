@@ -437,7 +437,7 @@ try:
     initial_edge = {name: option(name) for name in (
         "unfocused_edge_tone_light", "unfocused_edge_tone_dark", "unfocused_edge_strength")}
     initial_attention_family = string_option("attention_color_family")
-    check("GO22 defaults to Mike's cool attention color", initial_attention_family == "cool")
+    check("GO22 defaults to the user's cool attention color", initial_attention_family == "cool")
     palette_path = art / "palette.json"
     palette_path.write_text(json.dumps(dict(scheme="dark",background="#1c1d22",foreground="#e6e6e9",accent="#7aa2f7")))
     if os.environ.get("SCOTTLAND_SETTINGS_FALLBACKS_ONLY") == "1":

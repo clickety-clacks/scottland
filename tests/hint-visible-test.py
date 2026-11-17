@@ -305,7 +305,7 @@ try:
         client.wait(timeout=5)
     clients.clear()
     wait(lambda: not views())
-    # Mike's layout: a large front window covers almost all of a back window, leaving
+    # Reference layout: a large front window covers almost all of a back window, leaving
     # an 80px left strip. Entering Window mode, the rear window is nudged so its hint gets full
     # room where its zone allows (peek-strip decision 5); the focused front window stays put.
     peeking = []
@@ -319,7 +319,7 @@ try:
         drag(v['id'], x, 360)
     before_peek = views()
     hold()
-    drawn, state = capture('mike-left-strip', list(reversed(peeking)))
+    drawn, state = capture('reference-left-strip', list(reversed(peeking)))
     back, front = peeking
     check(abs(state[front]['dx']) + abs(state[front]['dy']) < 1 and
           state[back]['rung'] == 'full' and state[back]['badge']['size'] > 48,

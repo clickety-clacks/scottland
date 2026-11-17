@@ -354,7 +354,7 @@ try:
               f'focused {focused_id()} B {B}')
         key('LEFTALT', False); time.sleep(.3)
 
-    # 10. The focused window's hint acts on key release (WK35, Mike 2026-10-04): a tap moves it
+    # 10. The focused window's hint acts on key release (WK35, product owner ruling 2026-10-04): a tap moves it
     # once released; a hold solos it without first moving it (docs/spread.md).
     setup([(C, 480, 300, 640, 420), (B, 1060, 520, 420, 300), (A, 520, 140, 520, 360)], A)
     a_before, b_before, c_before = geometry(A), geometry(B), geometry(C)
@@ -429,7 +429,7 @@ try:
         shot('tall-paired.png'); alt(False)
     else: check(False, 'fixture: a window taller than the screen', str(geometry(A)))
 
-    # 16. Three-finger touchpad hold (WK35/WK36, Mike 2026-10-04), through a virtual touchpad that
+    # 16. Three-finger touchpad hold (WK35/WK36, product owner ruling 2026-10-04), through a virtual touchpad that
     # emits wlroots' hold/swipe/button events as libinput's backend does (scottland/test-touchpad).
     def pad(event, **data): return ipc('scottland/test-touchpad', dict(event=event, **data))
     def over(id): x1, y1, x2, y2 = footprint(id); pointer((x1 + x2) / 2, (y1 + y2) / 2); time.sleep(.1)

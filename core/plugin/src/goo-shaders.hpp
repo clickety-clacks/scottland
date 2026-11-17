@@ -55,7 +55,7 @@ vec3 absorb(vec3 c){return -log(clamp(c,.0025,1.));}
 vec3 dyeColor(vec4 stored){return exp(-dyeK(stored));}
 // How much pigment a source's release carries: A16 neutral strength for its neutral share, all of
 // it for its state share (0 is clear water). Dye density scales all of the goo's dye together,
-// picked-up color included (Mike, 2026-10-05), so it enters the amount below, not the mix.
+// picked-up color included (product owner, 2026-10-05), so it enters the amount below, not the mix.
 float sourceAmount(vec4 c7){return c7.w*(1.-c7.z)+c7.z;}
 vec4 source(int i, float column) { return texture2D(uSources, vec2((column+.5)/11., (float(i)+.5)/max(float(uCount),1.))); }
 float hash(vec2 p) { p = fract(p * vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
@@ -267,7 +267,7 @@ void main(){
         // A slow current along the band, eddying with the noise, plus a little cross flow.
         // It turns over every several seconds, so streaks of pigment lengthen, slacken
         // and reverse. Short currents keep each part of the goo near the colors beneath
-        // and beside it (Mike, 2026-10-03: local, never a screen-wide wash).
+        // and beside it (product owner, 2026-10-03: local, never a screen-wide wash).
         float current=(fbm(q*1.2+vec2(11.3,uFlow*.05))-.5)*20.;
         vel=mix(vel,along*(dot(vel,along)+current*sqrt(uSwirl)),.85);}
     }
@@ -314,7 +314,7 @@ void main(){
   vec4 under=texture2D(uUnder,uv);
   if(uPickup>0.&&under.a>.5){
     // Graded by thickness, never zero: thin goo takes about two thirds of what thick or
-    // pooled liquid does (Mike, 2026-10-03).
+    // pooled liquid does (product owner, 2026-10-03).
     float pool=clamp((ksum-maxK)/max(maxK,1e-4),0.,1.);
     float thick=max(pool,smoothstep(3.,uThickness,nearEdge));
     float pick=uRelease*uPickup*where*mix(.65,1.,thick)*smoothstep(uT*.5,uT,ksum);

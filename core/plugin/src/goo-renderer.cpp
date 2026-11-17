@@ -387,7 +387,7 @@ struct renderer_t::impl
         one("uT", settings.threshold());
         one("uPacked", packed ? 1 : 0);
         // GO28: pickup relative to release; the dye mixes it subtractively with what is there.
-        // Pickup balance (Mike, 2026-10-05: "just give me a slider") is the share of picked-up
+        // Pickup balance (product owner, 2026-10-05: "just give me a slider") is the share of picked-up
         // color at full pickup, in the middle of an ordinary band: there a window releases at
         // about 0.75 and pickup lands at about 0.8 of its rate, so this rate gives that share.
         // Wallpaper pickup follows soak^0.25 below that (GO24's curve), so the shipped 0.12 stays

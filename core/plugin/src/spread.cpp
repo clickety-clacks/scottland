@@ -1700,7 +1700,7 @@ class solver_t
     }
 
     // ------------------------------------------------------------------ the spacing pass
-    // A bounded cosmetic pass on the winning contact layout (decision 6 and Mike's round 2):
+    // A bounded cosmetic pass on the winning contact layout (decision 6 and the product owner's round 2):
     // try a halo for every close affected pair; failing that, the first common smaller
     // clearance that validates for all of them; else the contact layout stands.
     void spacing_pass()

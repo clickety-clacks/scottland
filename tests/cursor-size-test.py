@@ -86,9 +86,9 @@ with patch.dict(os.environ, {}, clear=False):
 with patch.dict(os.environ, {"XDG_SESSION_ID": "2"}), patch.object(core.subprocess, "run") as run:
     def loginctl(command, **_kwargs):
         if command[:3] == ["loginctl", "list-sessions", "--no-legend"]:
-            return CompletedProcess(command, 0, "1 1000 mike seat0 tty1 active no -\n2 1000 mike seat1 tty2 active no -", "")
+            return CompletedProcess(command, 0, "1 1000 test-user seat0 tty1 active no -\n2 1000 test-user seat1 tty2 active no -", "")
         if command[:2] == ["id", "-un"]:
-            return CompletedProcess(command, 0, "mike\n", "")
+            return CompletedProcess(command, 0, "test-user\n", "")
         return CompletedProcess(command, 0, "wayland\nactive\n", "")
     run.side_effect = loginctl
     check("shared activation environment is left alone when another GUI session is active",
@@ -97,8 +97,8 @@ with patch.dict(os.environ, {"XDG_SESSION_ID": "2"}), patch.object(core.subproce
 with patch.dict(os.environ, {"XDG_SESSION_ID": "2"}), patch.object(core.subprocess, "run") as run:
     def only_session(command, **_kwargs):
         if command[:3] == ["loginctl", "list-sessions", "--no-legend"]:
-            return CompletedProcess(command, 0, "2 1000 mike seat0 tty1 active no -", "")
-        return CompletedProcess(command, 0, "mike\n", "")
+            return CompletedProcess(command, 0, "2 1000 test-user seat0 tty1 active no -", "")
+        return CompletedProcess(command, 0, "test-user\n", "")
     run.side_effect = only_session
     check("activation environment can follow Scottland when it is the only GUI session",
           core._only_graphical_session() is True)

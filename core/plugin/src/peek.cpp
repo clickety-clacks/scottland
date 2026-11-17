@@ -68,7 +68,7 @@ double weighted(point o, const double *w)
     return std::hypot(x, y);
 }
 // Exact tie order after cost: nearer to where the window is drawn, then the smaller offset,
-// then y, x, then the placement. Mike chose no preference for the top; this only decides ties.
+// then y, x, then the placement. The product owner chose no preference for the top; this only decides ties.
 bool better(const peek_placement& a, const peek_placement& b, point displayed)
 {
     if (std::abs(a.cost - b.cost) > epsilon) return a.cost < b.cost;

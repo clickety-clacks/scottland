@@ -3,7 +3,7 @@
 
 Run through tests/goo-strip-test.sh in a private headless session on the test machine.
 
-The scene is Mike's desktop of 2026-10-04 (2560x1600): a window asking for attention
+The scene is the reference desktop setup from 2026-10-04 (2560x1600): a window asking for attention
 behind a stack of center windows, one of which covers the breather's left edge. The
 breather is first shown alone, so the goo's cached backdrop holds wallpaper beside it;
 then the front windows arrive. While the goo sleeps and breathes, frames the compositor
@@ -114,7 +114,7 @@ try:
     natural = len(sys.argv) > 3 and sys.argv[3] == 'natural'
     scene = [('strip-decision', 1190, 274, 936, 1248), ('strip-agent', 880, 521, 800, 600),
              ('strip-pin', 1180, 765, 200, 125), ('strip-front', 730, 336, 1184, 1051)]
-    if natural:  # Mike's desktop at the second sighting: three windows over the breather
+    if natural:  # the user's desktop at the second sighting: three windows over the breather
         place('strip-breather', 796, 196, 1272, 1113)
         scene = [('strip-wide', 138, 258, 1375, 1035), ('strip-decision', 864, 374, 833, 896),
                  ('strip-front', 1567, 534, 577, 770)]
@@ -122,7 +122,7 @@ try:
         spawn(title); place(title, *g)
         f = view(title)['frame']; click(f['x']+f['width']*.5, f['y']+f['height']-12); time.sleep(.3)
     ipc('stipc/move_cursor', {'x': 400, 'y': 1500})
-    # Two windows ask for attention (Mike had a window and a widget): more strips than the
+    # Two windows ask for attention (the user had a window and a widget): more strips than the
     # output's damage can hold as separate rectangles, so they are merged.
     for title in ('strip-breather', 'strip-decision'):
         ipc('scottland/attention', {'window': view(title)['id'], 'attention': True, 'source': 'strip-test'})

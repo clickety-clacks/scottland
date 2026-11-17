@@ -5,7 +5,7 @@
   tests/headless.sh run python3 tests/goo-one-dye-bench.py SESSION_DIR ARTIFACTS [--seconds 30] [--rounds 4]
   tests/headless.sh stop
 
-Mike's goo settings (full pickup, dye density 1.5, swirl 3) at 2560x1600 on a colorful
+The user's goo settings (full pickup, dye density 1.5, swirl 3) at 2560x1600 on a colorful
 wallpaper. A focused window lies in front of a window that redraws under its overlap film
 (a terminal flipping its background at 10 Hz, like video), beside a third window.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WK31/WK13: a cycled window's hint follows it while Alt is still held (Mike, 2026-10-04 bug:
+"""WK31/WK13: a cycled window's hint follows it while Alt is still held (product owner, 2026-10-04 bug:
 the hint stayed where the window used to be). Real stipc keys cycle the focused window
 center -> periphery -> widget -> center, and a second, unfocused window; after each move settles
 the badge must sit on what the window now shows: inside its drawn frame, or beside its widget

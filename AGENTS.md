@@ -1,6 +1,6 @@
 # Scottland: agent guide
 
-## Branches and releases (Mike, 2026-10-08)
+## Branches and releases (2026-10-08 decision)
 
 Every agent working in this repository follows this. It replaces ad hoc integration and `ship-*` branches.
 
@@ -16,7 +16,7 @@ Every agent working in this repository follows this. It replaces ad hoc integrat
 
 **Branches**
 
-- `main` is the released line: exactly what users run (Mike's daily Intel desktop, Omarchy users). Only fixes to the
+- `main` is the released line: exactly what users run (the user's daily Intel desktop, Omarchy users). Only fixes to the
   shipped release land here, and every release on it is a tag.
 - One branch per upcoming release, named for its version (`0.3`, `0.4`, ...). Feature work targets the
   release it is planned for: open your PR against that branch, never against `main`.
@@ -41,14 +41,14 @@ Every agent working in this repository follows this. It replaces ad hoc integrat
 - The full rehearsal (install and reload from the version the daily Intel desktop runs, real-session checks, NVIDIA test host on
   NVIDIA for rendering) runs on each release branch head regularly and before every release, not per PR.
   Fixture runs (headless on isolated AMD and ARM test hosts) are preflight, not acceptance.
-- The daily Intel desktop is never a test host. It changes only when Mike says go.
+- The daily Intel desktop is never a test host. It changes only when the user says go.
 
 **Shipping**
 
 - When a release branch passes its full rehearsal: tag the candidate (`v0.3.0-rc1`), rehearse that exact
   tag, then merge the branch into `main`, tag `v0.3.0`, and open the next release branch if it does not
   already exist. Work not landed rides the next release; no release waits for a late feature.
-- Tell Mike "ready for the daily desktop" with the tag and its contents list (what users get, in product terms).
+- Tell the user "ready for the daily desktop" with the tag and its contents list (what users get, in product terms).
 - A fix to a shipped release when `main` cannot take it directly: branch `release/0.3` from the tag,
   cherry-pick the fix from where it landed, tag `v0.3.1`, merge forward.
 
@@ -57,7 +57,7 @@ Every agent working in this repository follows this. It replaces ad hoc integrat
 - Gooarchy and gooarchy-flavorings consume this repository by tag, never by branch or untagged commit.
   Gooarchy's next-release branch may pin this repository's next release branch head for testing.
 
-## Isolated test hosts and daily desktop (Mike, 2026-10-02)
+## Isolated test hosts and daily desktop (2026-10-02 policy)
 
 Do not run Scottland tests, headless sessions, extra Wayfire/Quickshell instances,
 or test widget services on the daily Intel desktop. Sync this checkout to its own directory on
@@ -70,18 +70,18 @@ Scottland is a spatial desktop for Linux on Wayfire, after Scott Jenson's "worki
 Windows scale down as they move from a full-scale center zone toward the screen edges, and turn
 into widgets on thin rails at the edges. See README.md for the idea and layout.
 
-**The behaviors Mike has asked for are the spec and the test list:**
+**The behaviors the user has asked for are the spec and the test list:**
 
 - [core/INVARIANTS.md](core/INVARIANTS.md): the desktop itself, on any distro.
 - [omarchy/INVARIANTS.md](omarchy/INVARIANTS.md): the Omarchy adapter (switching, service
   handover, Hyprland shim, shortcut import, menu entries).
 
-When Mike asks for a new behavior or changes one, add or update its entry in the right file in the
+When the user asks for a new behavior or changes one, add or update its entry in the right file in the
 same change.
 
 **Scottland's tenets are in [docs/tenets.md](docs/tenets.md).** Read them before designing a
 feature: when a request leaves an edge unspecified, decide it the way the tenets point and say which
-tenet decided it; when they conflict, ask Mike.
+tenet decided it; when they conflict, ask the user.
 
 **Design docs live in [docs/](docs/)**, one file per subsystem, each with its own invariants table
 (IDs prefixed per doc). When a subsystem's design grows past a few rows in the files above, give it
@@ -105,7 +105,7 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
 - [docs/attention.md](docs/attention.md): attention (AT1-AT6): sources, per-app configuration,
   pluggable and networked sources (mostly not built yet).
 
-## Privacy of developer networks (Mike, 2026-10-04)
+## Privacy of developer networks (2026-10-04 policy)
 
 This repository is public. Never reveal the internal topology or identifiers of any developer's network:
 no host names, IP addresses, tailnet or domain names, user names, device names or home paths, in code,
@@ -116,7 +116,7 @@ are being removed (names already in git history stay); don't add new ones.
 
 ## Where does a request belong?
 
-Every time Mike asks for something, decide which of these it is, **say which you assumed and
+Every time the user asks for something, decide which of these it is, **say which you assumed and
 why**, and ask only if it's genuinely unclear:
 
 1. **Core** (`core/`, package `scottland`): what any Scottland user on any distro would want from
@@ -127,27 +127,27 @@ why**, and ask only if it's genuinely unclear:
    between desktops, service handover, Omarchy menu entries.
 3. **Gooarchy flavorings** (repo `clickety-clacks/gooarchy-flavorings`, installed by the Gooarchy distro
    and by the adapter): curated choices for Gooarchy users, not desktop mechanisms. Which app
-   widgets ship (and whose, e.g. Mike's Ghostty widget), app defaults such as Chromium's system
+   widgets ship (and whose, e.g. a user-specific Ghostty widget), app defaults such as Chromium's system
    title bar. Core defines what a widget/theme/default *is*; it never ships an app-specific widget
    (P9). Machine-independent distro notes still collect in docs/distro-notes.md until they move.
-4. **Mike's personal preference**: his taste, not a default others should get. Goes in his own
-   files, never in the repo: `~/.config/scottland/overrides.ini` (appended last, wins over
+4. **Personal preference**: what suits one user's setup, not a default others should get. Keep it in
+   that user's own files, never in the repo: `~/.config/scottland/overrides.ini` (appended last, wins over
    everything; example: natural scrolling), or `~/.config/scottland/layout.ini` (written by the
    settings app).
 
 Hints: "turn X off in both installed and shipped" is core. Anything mentioning Hyprland,
 Omarchy's menu, uwsm or Hyprland-config behavior is the adapter. "I like", "for me", or a tweak to
 feel/appearance with no reason others would want it is personal. A shipped default that's just
-a value (a slider position) is usually personal unless Mike says it should ship. "Gooarchy should
+a value (a slider position) is usually personal unless the user says it should ship. "Gooarchy should
 ship X", a particular app's widget, or "for the distro" belongs in Gooarchy flavorings.
 
-**Principles.** When Mike states a general rule while deciding a specific feature (it reads like a
+**Principles.** When the user states a general rule while deciding a specific feature (it reads like a
 tenet: "if I put it on the left I should find it on the left"), record it in the same change as a
-P-row in core/INVARIANTS.md "Principles (tenet candidates)", with his words and the date, and cite
-it where it decides an edge. Don't edit docs/tenets.md: it mirrors Mike's own notes; he promotes
-principles himself.
+P-row in core/INVARIANTS.md "Principles (tenet candidates)", with the original wording and date, and cite
+it where it decides an edge. Don't edit docs/tenets.md: it mirrors the user's own notes; only the product owner promotes
+principles into it.
 
-**Rulings log.** Every decision Mike makes goes into [docs/rulings.md](docs/rulings.md) (date, ruling in his terms, where it's specified) in the same change that updates the spec, so behavior can be reviewed against one list.
+**Rulings log.** Every product decision goes into [docs/rulings.md](docs/rulings.md) with its date and specification. Update it in the same change as the spec so behavior can be reviewed against one list.
 
 **No silent overrides (P10, O20).** Anything that replaces or displaces something the user already
 had (an Omarchy shortcut, a mapping, an app setting) must be reported to the user with what it was,
@@ -217,7 +217,7 @@ Before reporting anything as done:
    `tests/headless.sh` on the build the live session runs now (a `git worktree` at its commit),
    open a few windows, reload into the new build, and check it survives and renders. A reload
    swaps code under open windows; a crash there loses the user's windows. (2026-09-29: an
-   unrehearsed reload crashed Mike's session; the cause, statics shared across plugin copies,
+   unrehearsed reload crashed the user's session; the cause, statics shared across plugin copies,
    is now prevented by `-fno-gnu-unique` in core/plugin/meson.build.)
 5. Re-check every invariant the change could affect, and update its status.
 6. Test sessions never read personal config (`~/.config/scottland/layout.ini`, `overrides.ini`):
@@ -234,7 +234,7 @@ against the shim, headless and sandboxed), `tests/nested.sh` (Scottland in a win
 Hyprland), `scottland-ctl`, `scottland-exec`, and the logs in `~/.local/state/scottland/`
 (`wayfire.log`, `hyprshim.log`, `luahost.log`, `watch-config.log`).
 
-## Testing standard (Mike, 2026-10-04)
+## Testing standard (2026-10-04 policy)
 
 Every new or changed test meets these. Existing tests that don't yet are listed, with what each
 still needs, in [docs/tests-todo.md](docs/tests-todo.md).
