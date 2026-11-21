@@ -232,7 +232,8 @@ int main()
     reset(1); mode.letter('d', 1000);
     check(mode.hold_due(1500) && pairs == std::vector<std::pair<uint64_t, uint64_t>>{{3, 1}},
         "holding an unfocused widget's hint pairs its app");
-    std::vector<hint_entry> many = entries; many.push_back({27, 26, zone::center, false});
+    std::vector<hint_entry> many;
+    for (unsigned slot=0; slot<27; ++slot) many.push_back({slot+1, slot, zone::center, false});
     mode.end(); focus = 1; pairs.clear(); mode.begin(many, 1);
     mode.letter('s', 1000); mode.release('s', 1050); mode.letter('a', 1100); mode.release('s', 1150);
     check(!mode.hold_due(1599) && mode.hold_due(1600) && pairs == std::vector<std::pair<uint64_t, uint64_t>>{{27, 1}},

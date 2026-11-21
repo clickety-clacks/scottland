@@ -2083,7 +2083,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::map<uint64_t, widget_link_t> widgets;    // keyed by the app window
         widget_mode_t widget_mode = widget_mode_t::expanded;  // the mode taps choose; survives a reload
         std::optional<widget_mode_t> widget_mode_held;        // Super+M held: momentary until released
-        unsigned hint_width = 1; // stable prefix-free labels until all represented windows close
+        unsigned hint_width = 1; // shortest prefix-free labels for the currently represented slots
         drag_session_t drag;
         std::set<wf::output_t*> goo_outputs;          // screens with an available goo surface
         std::set<uint64_t> selected;                 // reserved for future multi-select

@@ -168,6 +168,10 @@ int main()
     mode.hint_peek_active=[&](uint64_t id){return peek_active && id==peeked_widget;};
     mode.move=[&](uint64_t,cycle_step d){moves.push_back(d);};
     mode.cycle_side=[&](uint64_t, bool){return false;}; mode.close=[&](uint64_t id){closed=id;};
+    mode.begin({{1,0,zone::center,false},{2,1,zone::center,false}},0);
+    check(mode.hint_width==1 && mode.label(0)=="a" && mode.label(1)=="s",
+        "fresh small set uses home-row-first single-letter hints");
+    mode.end();
     const std::vector<hint_entry> entries{{1,0,zone::center,false},{2,1,zone::right_periphery,false},{3,2,zone::left_rail,true}};
     mode.begin(entries,0);
     press('a'); check(selected==1 && moves.empty(),"unselected center first press only selects");
@@ -274,7 +278,9 @@ int main()
     mode.close_selected();check(closed==3,"close acts on selection");
     mode.refresh({{1,0,zone::center,false},{2,1,zone::center,false}});
     check(mode.selected==0,"closed selection is cleared safely");
-    mode.refresh({{1,0,zone::center,false},{27,26,zone::center,false}});
+    std::vector<hint_entry> overflow;
+    for (unsigned slot=0; slot<27; ++slot) overflow.push_back({slot+1,slot,zone::center,false});
+    mode.end(); mode.begin(overflow,0);
     check(mode.label(0)=="aa" && mode.label(26)=="sa","two-letter mode is prefix-free");
     press('s');check(selected==3,"partial two-letter hint does not select");
     press('a');check(selected==27,"complete two-letter hint selects");
@@ -283,17 +289,37 @@ int main()
     check(moves.empty(), "repeated multi-letter prefix alone does not move");
     tap_at('a',clock+221);
     check(moves == std::vector<S>{widget(false)}, "repeating complete two-letter hint double-taps to rail");
-    mode.refresh({{1,0,zone::center,false},{677,676,zone::center,false}});
-    check(mode.label(0)=="aaa" && mode.label(676)=="saa", "overflow grows hint width without dropping any window");
+    mode.letter('s',clock+500); // Partial two-letter prefix before the overflow slot closes.
+    mode.refresh({{1,0,zone::center,false},{2,1,zone::center,false}});
+    check(mode.hint_width==1 && mode.label(0)=="a" && mode.label(1)=="s",
+        "closing overflow slots returns a small set to single-letter hints");
+    mode.letter('s',clock+1000);
+    check(selected==2,"single-letter selection works after overflow labels contract");
+    mode.release('s',clock+1080);
+    std::vector<hint_entry> three_letter;
+    for (unsigned slot=0; slot<677; ++slot) three_letter.push_back({slot+1,slot,zone::center,false});
+    mode.end(); mode.begin(three_letter,0);
+    check(mode.hint_width==3 && mode.label(676)=="saa", "three-letter labels appear only after two-letter capacity is exhausted");
     mode.refresh({}); check(mode.hint_width==1,"empty desktop resets hint width");
     mode.end(); press('a');check(!mode.active,"inactive controller does nothing");
+    mode.begin(overflow,0);
+    check(mode.hint_width==2 && mode.label(26)=="sa","overflow invocation uses two-letter labels");
+    mode.refresh({{27,26,zone::center,false}});
+    check(mode.hint_width==2 && mode.label(mode.entries.front().slot)=="sa",
+        "a surviving high-slot window keeps its label while Window Mode remains open");
+    mode.end(); mode.begin({{27,26,zone::center,false}},0);
+    check(mode.hint_width==1 && mode.label(mode.entries.front().slot)=="a",
+        "a new invocation compacts a surviving high slot to a single-letter hint");
+    tap_at('a',clock+500);
+    check(selected==27,"single-letter hint selects the surviving high-slot window on re-entry");
+    mode.end();
     mode.double_tap_delay=300; moves.clear(); mode.begin(entries,0);
     tap_at('a',1000,120); tap_at('a',1300,120);
     check(moves==std::vector<S>{widget(false)},"120 ms dwell plus 180 ms gap (releases 300 ms apart) double-taps to rail");
     mode.end(); moves.clear(); mode.begin(entries,0);
     tap_at('a',1000,120); tap_at('a',1370,120);
     check(moves==std::vector<S>{periphery(false)},"120 ms dwell plus 250 ms gap (releases 370 ms apart) is two presses");
-    mode.end(); moves.clear(); mode.begin({{1,1,zone::center,false},{27,26,zone::center,false}},0);
+    mode.end(); moves.clear(); mode.begin(overflow,0);
     tap_at('a',2000,120); tap_at('s',2140,120);
     tap_at('a',2300,60);
     check(moves.empty(),"repeated prefix alone cannot move the selection");
