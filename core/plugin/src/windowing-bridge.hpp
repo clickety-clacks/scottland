@@ -2093,7 +2093,14 @@
                 }
                 auto anchor = hint_anchor(view);
                 unsigned slot = ensure_window_memory(it->first).hint_slot;
-                auto text = upper(window_keys.label(slot));
+                unsigned label_slot = slot;
+                if (window_keys.active)
+                {
+                    auto assigned = std::find_if(window_keys.entries.begin(), window_keys.entries.end(),
+                        [&] (const auto& entry) { return entry.id == it->first; });
+                    if (assigned != window_keys.entries.end()) label_slot = assigned->slot;
+                }
+                auto text = upper(window_keys.label(label_slot));
                 auto color = color_for_hint(slot);
                 if (auto frame = frame_of(view, false))
                     frame->set_hint_dye(glm::vec3{color.r, color.g, color.b});
@@ -2277,6 +2284,8 @@
         auto active = wf::get_core().seat->get_active_view();
         auto link = link_of_widget(active);
         window_keys.begin(window_entries(true), link ? link->window_id : active ? active->get_id() : 0);
+        model.hint_width = window_keys.hint_width;
+        publish_model();
         apply_all_opacity();
         apply_widget_mode();  // every widget comes back expanded while asking (WG16, WK12)
         palette_read = {}; // always read the current theme on entry

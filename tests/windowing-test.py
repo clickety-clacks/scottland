@@ -702,6 +702,21 @@ try:
     release()
     close_all()
 
+    ids = [launch(f'HighSlot{i:02}') for i in range(27)]
+    check(hint(ids[-1])['hint'] == 'sa', 'overflow window receives its stable two-letter slot')
+    hold()
+    for identifier in ids[:-1]:
+        ipc('window-rules/close-view', {'id': identifier})
+    wait_for(lambda: len(hints()['hints']) == 1)
+    check(hint(ids[-1])['hint'] == 'sa', 'surviving high-slot label stays stable during the active mode')
+    release()
+    hold()
+    check(hint(ids[-1])['hint'] == 'a', 'new Window Mode invocation compacts the surviving high slot')
+    choose(ids[-1])
+    check(focused() == ids[-1], 'single-letter selection reaches the surviving high-slot window')
+    release()
+    close_all()
+
     # WP7: a window Scottland places keeps off the screen's edges by the halo width plus 5 pt.
     pad = 32 / 3 + 5
     blockers = [launch('PadBlock%d' % i, width * x, height * .5) for i, x in enumerate((.3, .5, .7))]

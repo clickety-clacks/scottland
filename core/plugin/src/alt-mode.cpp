@@ -1,5 +1,8 @@
 #include "alt-mode.hpp"
 #include <algorithm>
+#include <cstddef>
+#include <map>
+#include <set>
 namespace scottland::windowing
 {
 static const std::string keys = "asdfghjklqwertyuiopzxcvbnm";
@@ -32,8 +35,8 @@ std::vector<cycle_step> cycle_order(destination start, bool start_left, bool wid
 }
 std::string alt_mode::label(unsigned slot) const
 {
-    // Prefix-free base-26 labels. Width follows the highest represented slot, while each
-    // window keeps its slot; closing overflow slots can shorten labels without reassigning slots.
+    // Prefix-free base-26 labels. Width follows the highest represented position; each
+    // window keeps its compact position for this invocation as overflow slots close.
     std::string result(hint_width, keys.front());
     for (unsigned i = hint_width; i > 0; --i)
     { result[i - 1] = keys[slot % keys.size()]; slot /= keys.size(); }
@@ -41,6 +44,32 @@ std::string alt_mode::label(unsigned slot) const
 }
 void alt_mode::refresh(std::vector<hint_entry> windows)
 {
+    if (active)
+    {
+        // Preserve the compact positions assigned on entry for surviving windows. New
+        // windows take the first free position; closing a window never relabels survivors.
+        std::map<uint64_t, unsigned> previous_slots;
+        std::set<unsigned> used_slots;
+        for (const auto& entry : entries) previous_slots.emplace(entry.id, entry.slot);
+        std::sort(windows.begin(), windows.end(), [] (auto a, auto b) { return a.slot < b.slot; });
+        for (auto& entry : windows)
+        {
+            auto previous = previous_slots.find(entry.id);
+            if (previous != previous_slots.end())
+            {
+                entry.slot = previous->second;
+                used_slots.insert(entry.slot);
+            }
+        }
+        for (auto& entry : windows)
+        {
+            if (previous_slots.count(entry.id)) continue;
+            unsigned slot = 0;
+            while (used_slots.count(slot)) ++slot;
+            entry.slot = slot;
+            used_slots.insert(slot);
+        }
+    }
     entries = std::move(windows);
     std::sort(entries.begin(), entries.end(), [] (auto a, auto b) { return a.slot < b.slot; });
     const unsigned previous_width = hint_width;
@@ -64,7 +93,14 @@ void alt_mode::refresh(std::vector<hint_entry> windows)
 void alt_mode::begin(std::vector<hint_entry> windows, uint64_t focused)
 {
     active = true; selected = focused; clear_cycle(); last_hint = 0; hold.reset(); waiting_tap.reset();
-    awaiting_release = repeat_candidate = false; prefix.clear(); refresh(std::move(windows));
+    awaiting_release = repeat_candidate = false; prefix.clear();
+    std::sort(windows.begin(), windows.end(), [] (auto a, auto b) { return a.slot < b.slot; });
+    for (std::size_t slot = 0; slot < windows.size(); ++slot)
+        windows[slot].slot = static_cast<unsigned>(slot);
+    // A new invocation ranks the current represented set afresh. Clear the old entries so
+    // refresh keeps these new compact positions rather than preserving the previous run.
+    entries.clear();
+    refresh(std::move(windows));
 }
 void alt_mode::end() { active = false; clear_cycle(); last_hint = 0; awaiting_release = repeat_candidate = false; hold.reset(); waiting_tap.reset(); prefix.clear(); }
 void alt_mode::clear_cycle()
