@@ -25,6 +25,7 @@ struct shortcuts_t::impl
         bool locked  = false;
         bool release = false;
         bool any_mods = false;
+        bool non_consuming = false;
         wf::activatorbinding_t keys;  // any_mods: matched on the raw key, not registered
         wf::activator_callback callback;
         uint32_t held_key  = 0;  // the key of the press this shortcut matched, until it is let go
@@ -34,7 +35,7 @@ struct shortcuts_t::impl
     };
 
     wf::option_wrapper_t<wf::config::compound_list_t<wf::activatorbinding_t, std::string, bool, bool, bool,
-        bool>> list{"scottland/shortcuts"};
+        bool, bool>> list{"scottland/shortcuts"};
     wf::option_wrapper_t<int> kb_repeat_delay{"input/kb_repeat_delay"};
     wf::option_wrapper_t<int> kb_repeat_rate{"input/kb_repeat_rate"};
     std::vector<std::unique_ptr<shortcut_t>> shortcuts;  // stable: the repository keeps callback pointers
@@ -116,7 +117,7 @@ struct shortcuts_t::impl
     void load()
     {
         clear();
-        for (const auto& [name, keys, command, repeat, locked, release, any_mods] : list.value())
+        for (const auto& [name, keys, command, repeat, locked, release, any_mods, non_consuming] : list.value())
         {
             if (command.empty())
             {
@@ -129,6 +130,7 @@ struct shortcuts_t::impl
             shortcut->locked  = locked;
             shortcut->release  = release;
             shortcut->any_mods = any_mods;
+            shortcut->non_consuming = non_consuming;
             shortcut->keys     = keys;
             auto *self = shortcut.get();
             shortcut->callback = [this, self] (const wf::activator_data_t& data)
@@ -143,7 +145,7 @@ struct shortcuts_t::impl
                 {
                     self->held_key  = data.activation_data;
                     self->held_mods = wf::get_core().seat->get_keyboard_modifiers();
-                    return true;
+                    return !self->non_consuming;
                 }
 
                 run(*self);
@@ -154,7 +156,7 @@ struct shortcuts_t::impl
                     start_repeat(*self);
                 }
 
-                return true;
+                return !self->non_consuming;
             };
             if (!any_mods)
             {

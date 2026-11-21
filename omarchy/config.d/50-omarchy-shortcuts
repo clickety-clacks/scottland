@@ -156,7 +156,8 @@ hl = setmetatable({
                   (opts["repeat"] or opts.repeating) and "1" or "0",
                   opts.release and "1" or "0", opts.locked and "1" or "0",
                   opts.mouse and "1" or "0", signature, option_signature(opts),
-                  from_user_omarchy_plugin() and "1" or "0", opts.ignore_mods and "1" or "0" }
+                  from_user_omarchy_plugin() and "1" or "0", opts.ignore_mods and "1" or "0",
+                  opts.non_consuming and "1" or "0" }
     if not binds[id] then order[#order + 1] = id end
     binds[id] = row
     return noop
@@ -474,11 +475,11 @@ def parse_scan_rows(output):
     for line in output.splitlines():
         if line.startswith("@"):
             continue
-        fields = (line.split("\t") + [""] * 12)[:12]
-        mods, key, description, kind, arg, repeat, release, locked, mouse, function, options, _plugin = fields
+        fields = (line.split("\t") + [""] * 14)[:14]
+        mods, key, description, kind, arg, repeat, release, locked, mouse, function, options, _plugin, _ignore_mods, non_consuming = fields
         rows.append({"identity": scan_identity(mods, key), "description": description,
                      "signature": (kind, arg, repeat, release, locked, mouse, function, options),
-                     "user_plugin": fields[11] == "1"})
+                     "user_plugin": fields[11] == "1", "non_consuming": non_consuming == "1"})
     return rows
 
 
@@ -1276,7 +1277,9 @@ def main():
                 keys=f"Window rule: {match or 'any window'}"))
             continue
         mods, key, description, kind, arg, repeat, release, locked = (line.split("\t") + [""] * 8)[:8]
-        ignore_mods = (line.split("\t") + [""] * 13)[12] == "1"
+        scan_fields = (line.split("\t") + [""] * 14)[:14]
+        ignore_mods = scan_fields[12] == "1"
+        non_consuming = scan_fields[13] == "1"
         label = f"{mods.replace(' ', '+')}+{key}".lstrip("+")
         ownership_key = combo("" if release == "1" and ignore_mods else mods, key)
         identity = normalized_combo(ownership_key) if ownership_key else None
@@ -1326,7 +1329,8 @@ def main():
                         kind=kind, action=arg)
                 continue
             shortcuts.append((f"{description or label} (on release)", wanted, command,
-                              {"locked": locked == "1", "release": True, "any_mods": ignore_mods}))
+                              {"locked": locked == "1", "release": True, "any_mods": ignore_mods,
+                               "non_consuming": non_consuming}))
             kept += 1
             continue
         switch = SWITCH_KEY.fullmatch(key) if not mods else None
@@ -1467,7 +1471,7 @@ def main():
                 continue  # this option is replaced by the imported activator below
             # Taking over the command of Scottland's binding keeps that binding's own flags, so
             # only when they match: otherwise it steps aside and the shortcut comes in whole.
-            same_flags = locked != "1" and option.startswith(
+            same_flags = not non_consuming and locked != "1" and option.startswith(
                 "repeatable_binding_" if repeat == "1" else "binding_")
             if (section == "command" and same_flags
                     and target[0] == "command" and not replaced_command):
@@ -1483,10 +1487,15 @@ def main():
             kept += 1
             continue
 
-        if target[0] == "command" and repeat == "1" and locked == "1":
+        if target[0] == "command" and (non_consuming or (repeat == "1" and locked == "1")):
             # Wayfire's command plugin has no binding that both repeats and runs on the lock
-            # screen; a core shortcut keeps both flags.
-            shortcuts.append((description or label, wanted, target[1], {"repeat": True, "locked": True}))
+            # screen; a core shortcut keeps both flags. A non-consuming binding also uses the
+            # core callback so it can run its action and return the key to the focused client.
+            flags = {flag: value == "1" for flag, value in (("repeat", repeat), ("locked", locked))
+                     if value == "1"}
+            if non_consuming:
+                flags["non_consuming"] = True
+            shortcuts.append((description or label, wanted, target[1], flags))
         elif target[0] == "command":
             # Hyprland's flags: repeating repeats while held; locked also works on the lock
             # screen (Wayfire's always binding).
@@ -1548,7 +1557,7 @@ def main():
             print(f"# {description}")
             print(f"shortcut_keys_omarchy_{index} = {keys}")
             print(f"shortcut_command_omarchy_{index} = {command}")
-            for flag in ("repeat", "locked", "release", "any_mods"):
+            for flag in ("repeat", "locked", "release", "any_mods", "non_consuming"):
                 if flags.get(flag):
                     print(f"shortcut_{flag}_omarchy_{index} = true")
         for index, (description, device, state, locked, command) in enumerate(switches):

@@ -65,8 +65,9 @@ def scan_rows(output):
     for line in output.splitlines():
         if not line or line.startswith("@"):
             continue
-        fields = (line.split("\t") + [""] * 13)[:13]
-        mods, key, description, kind, action, repeat, release, locked, mouse, signature, options, plugin, ignore_mods = fields
+        fields = (line.split("\t") + [""] * 14)[:14]
+        (mods, key, description, kind, action, repeat, release, locked, mouse, signature,
+         options, plugin, ignore_mods, non_consuming) = fields
         label = f"{mods.replace(' ', '+')}+{key}".lstrip("+")
         rows.append({
             "mods": mods,
@@ -83,6 +84,7 @@ def scan_rows(output):
             "options": options,
             "plugin": plugin,
             "ignore_mods": ignore_mods,
+            "non_consuming": non_consuming,
         })
     return rows
 
@@ -92,7 +94,7 @@ def semantic_scan_rows(rows):
     # default action. Everything else must match between the real config and the baseline scan.
     return Counter(tuple(row[key] for key in (
         "mods", "key", "description", "kind", "action", "repeat", "release", "locked",
-        "mouse", "signature", "options", "ignore_mods")) for row in rows)
+        "mouse", "signature", "options", "ignore_mods", "non_consuming")) for row in rows)
 
 
 def expected_global_command(action):
@@ -169,6 +171,31 @@ def command_result(row, expected, base_assignments, generated_assignments, impor
 
     identity = wanted_identity(row, importer)
     if identity is None:
+        return None
+
+    if row["non_consuming"] == "1":
+        for (section, name), keys in generated_assignments.items():
+            match = re.fullmatch(r"shortcut_keys_omarchy_(\d+)", name) if section == "scottland" else None
+            if not match or importer.normalized_combo(keys) != identity:
+                continue
+            index = match.group(1)
+            expected_flags = {
+                "repeat": row["repeat"] == "1",
+                "locked": row["locked"] == "1",
+                "release": row["release"] == "1",
+                "any_mods": row["ignore_mods"] == "1",
+                "non_consuming": True,
+            }
+            actual_flags = {
+                flag: generated_assignments.get(("scottland", f"shortcut_{flag}_omarchy_{index}")) == "true"
+                for flag in expected_flags
+            }
+            if actual_flags != expected_flags:
+                continue
+            command = generated_assignments.get(("scottland", f"shortcut_command_omarchy_{index}"))
+            if command == expected:
+                return f"[scottland] shortcut_keys_omarchy_{index}={keys} (non-consuming) -> " \
+                       f"shortcut_command_omarchy_{index}={command}"
         return None
 
     if row["release"] == "1" and row["kind"] in ("exec", "function"):
@@ -350,12 +377,13 @@ def write_audit(path, rows, diagnostics, scottland_revision="unknown"):
         writer = csv.writer(output, delimiter="\t", lineterminator="\n")
         writer.writerow(("keys", "description", "source", "action_kind", "action", "repeat",
                          "release", "locked", "mouse", "ignore_mods", "function_signature",
-                         "options", "status", "imported_result", "classification"))
+                         "options", "non_consuming", "status", "imported_result", "classification"))
         for row in rows:
             writer.writerow((row.get("label", ""), row.get("description", ""), "Omarchy default",
                              row.get("kind", ""), row.get("action", ""), row.get("repeat", ""),
                              row.get("release", ""), row.get("locked", ""), row.get("mouse", ""),
                              row.get("ignore_mods", ""), row.get("signature", ""), row.get("options", ""),
+                             row.get("non_consuming", ""),
                              row.get("status", "broken"), row.get("result", ""), row.get("reason", "")))
     return counts
 

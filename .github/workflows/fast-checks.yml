@@ -198,6 +198,14 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
+      - name: Check out Omarchy 4.5 binding source
+        uses: actions/checkout@v4
+        with:
+          repository: omacom/omarchy
+          ref: ac2690cd7be4f47e4a255f5e2e78d904d436b068
+          path: omarchy-v4.5.0
+          persist-credentials: false
+
       - name: Initialize OSD foundation evidence
         run: python3 tests/osd-foundation-smoke.py --initialize
 
@@ -215,7 +223,7 @@ jobs:
           FROM ${BASE_REF}
           ARG CI_UID
           RUN pacman -Syu --noconfirm --needed \
-                archlinux-keyring bubblewrap dbus foot gdk-pixbuf2 git glm grim gtk4 gtk4-layer-shell imagemagick inotify-tools jq lua \
+                archlinux-keyring bubblewrap dbus foot gdk-pixbuf2 git glm grim gtk4 gtk4-layer-shell hyprland imagemagick inotify-tools jq lua \
                 libglvnd libinput libxkbcommon mesa meson ninja pkgconf python python-cairo python-dbus python-gobject \
                 quickshell rust shadow vulkan-headers wayfire wayland wayland-protocols wlroots0.20 cairo \
             && useradd --uid "$CI_UID" --gid 0 --create-home ci \
@@ -241,7 +249,7 @@ jobs:
               . /etc/os-release
               printf "%s %s\n" "$NAME" "$VERSION_ID"
               python3 tests/osd-foundation-smoke.py --record-versions
-              pacman -Q wayfire wlroots0.20 meson gcc rust python bubblewrap quickshell gtk4-layer-shell imagemagick foot lua
+              pacman -Q wayfire wlroots0.20 meson gcc rust python bubblewrap quickshell gtk4-layer-shell hyprland imagemagick foot lua
               printf "C++ compiler: "
               g++ --version | sed -n "1p"
               rustc --version
@@ -348,7 +356,30 @@ jobs:
               SCOTTLAND_TEST_SCRATCH="$PWD/build/omarchy-global-actions-scratch" \
                 timeout --signal=TERM --kill-after=30s 2m \
                 python3 tests/omarchy-global-actions-test.py
+              mkdir -m 700 build/omarchy-non-consuming-scratch
+              non_consuming_log="$PWD/build/omarchy-non-consuming-console.log"
+              if OMARCHY_PATH=/work/omarchy-v4.5.0 \
+                SCOTTLAND_TEST_SCRATCH="$PWD/build/omarchy-non-consuming-scratch" \
+                timeout --signal=TERM --kill-after=30s 2m \
+                python3 tests/omarchy-non-consuming-test.py >"$non_consuming_log" 2>&1; then
+                cat "$non_consuming_log"
+              else
+                test_status=$?
+                cat "$non_consuming_log"
+                exit "$test_status"
+              fi
             '
+
+      - name: Upload non-consuming shortcut evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omarchy-non-consuming-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/omarchy-non-consuming-console.log
+            build/omarchy-non-consuming-fixture/
+            build/omarchy-non-consuming-scratch/
+          if-no-files-found: warn
 
       - name: Upload display mirroring evidence
         if: always()

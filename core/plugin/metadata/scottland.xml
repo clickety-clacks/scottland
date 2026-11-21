@@ -400,7 +400,7 @@
 		</option>
 		<option name="shortcuts" type="dynamic-list" type-hint="dict">
 			<_short>Shortcuts with flags</_short>
-			<_long>Run a command from a key combination, with flags that keep their meaning together: repeat while held, also run on the lock screen, run when the key is let go. A shortcut without the lock-screen flag runs only while the session is unlocked. A release shortcut runs only for a press it matched itself, while the same modifiers are still held.</_long>
+			<_long>Run a command from a key combination, with flags that keep their meaning together: repeat while held, also run on the lock screen, run when the key is let go, or pass the key to the focused client after running the action. A shortcut without the lock-screen flag runs only while the session is unlocked. A release shortcut runs only for a press it matched itself, while the same modifiers are still held. Keys are consumed by default.</_long>
 			<entry prefix="shortcut_keys_" type="activator" name="keys">
 				<_short>Keys</_short>
 				<_long>Key combination, e.g. KEY_F9 or &lt;super&gt; KEY_P.</_long>
@@ -427,6 +427,11 @@
 			<entry prefix="shortcut_any_mods_" type="bool" name="any_mods">
 				<_short>Whatever modifiers are held</_short>
 				<_long>Match the key (named without modifiers, e.g. KEY_LEFTMETA) whatever modifiers are held. The key also reaches the focused app.</_long>
+				<default>false</default>
+			</entry>
+			<entry prefix="shortcut_non_consuming_" type="bool" name="non_consuming">
+				<_short>Pass key to focused client</_short>
+				<_long>Run the action and let the key continue to the focused client instead of consuming it.</_long>
 				<default>false</default>
 			</entry>
 		</option>
