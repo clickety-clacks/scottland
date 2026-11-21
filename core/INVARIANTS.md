@@ -279,7 +279,7 @@ See [../docs/osd.md](../docs/osd.md): OSD1–OSD11.
 
 ## Window keys and contention-aware placement
 
-See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK42 (window mode: Alt-alone hold, hint holds and pairing, theme-derived Vimarchy hints with desktop text sizing, exterior widget attachment and independent hint-background opacity,
+See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK42 (window mode: Alt-alone hold, home-row-first capacity-adaptive Vimarchy labels, hint holds and pairing, theme-derived colors and desktop text sizing, exterior widget attachment and independent hint-background opacity,
 start-relative cycles, double-tap to rail, inertial arrows/center resize, input ownership, full screen and focused-window-anchored temporary visual exposure for interior window hints, Super+arrows navigation WK40, hint settling WK41 and hint-background opacity WK42)
 and WP1–WP8 (zone memory, including saved peripheral positions preserved when entering pairing, side choice, shared rectangle placement, and which zone a spot reads as). Statuses and verification are recorded there.
 

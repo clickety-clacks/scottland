@@ -231,7 +231,7 @@ try:
     width, height = output['width'], output['height']
     a = launch('Alpha')
     b = launch('Beta')
-    check(hint(a)['hint'] == 'a' and hint(b)['hint'] == 's', 'home-row hints assigned in opening order')
+    check(hint(a)['hint'] == 'a' and hint(b)['hint'] == 's', 'fresh small set uses single-letter home-row hints')
     focus(a)
     key('LEFTALT', True)
     time.sleep(.08)
@@ -679,7 +679,7 @@ try:
     check(hints()['active'] and all(h['visible'] for h in hints()['hints']), 'reloaded plugin renders hints and accepts physical Alt input')
     release()
     close_all()
-    # Capacity changes the label width, not the stable assignment slots.
+    # Capacity changes the common label width without reassigning stable slots.
     ids = [launch(f'Overflow{i:02}') for i in range(27)]
     check(hint(ids[0])['hint'] == 'aa' and hint(ids[-1])['hint'] == 'sa', '27 open windows use prefix-free two-letter hints')
     focus(ids[0]); hold()
@@ -690,8 +690,16 @@ try:
     check(view('Overflow26')['widgetized'], 'repeating complete two-letter hint sends overflow window to rail')
     release()
     ipc('window-rules/close-view', {'id': ids[-1]})
-    time.sleep(.3)
-    check(hint(ids[0])['hint'] == 'aa', 'two-letter labels stay stable when overflow window closes')
+    wait_for(lambda: len(hints()['hints']) == len(ids) - 1)
+    check(hint(ids[0])['hint'] == 'a', 'closing the overflow slot returns a fitting set to single-letter hints')
+    for identifier in ids[2:-1]:
+        ipc('window-rules/close-view', {'id': identifier})
+    wait_for(lambda: len(hints()['hints']) == 2)
+    check(hint(ids[0])['hint'] == 'a' and hint(ids[1])['hint'] == 's',
+          'later small set returns to single-letter home-row hints')
+    focus(ids[0]); hold(); choose(ids[1])
+    check(focused() == ids[1], 'single-letter selection remains usable after overflow closes')
+    release()
     close_all()
 
     # WP7: a window Scottland places keeps off the screen's edges by the halo width plus 5 pt.

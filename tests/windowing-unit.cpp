@@ -168,6 +168,10 @@ int main()
     mode.hint_peek_active=[&](uint64_t id){return peek_active && id==peeked_widget;};
     mode.move=[&](uint64_t,cycle_step d){moves.push_back(d);};
     mode.cycle_side=[&](uint64_t, bool){return false;}; mode.close=[&](uint64_t id){closed=id;};
+    mode.begin({{1,0,zone::center,false},{2,1,zone::center,false}},0);
+    check(mode.hint_width==1 && mode.label(0)=="a" && mode.label(1)=="s",
+        "fresh small set uses home-row-first single-letter hints");
+    mode.end();
     const std::vector<hint_entry> entries{{1,0,zone::center,false},{2,1,zone::right_periphery,false},{3,2,zone::left_rail,true}};
     mode.begin(entries,0);
     press('a'); check(selected==1 && moves.empty(),"unselected center first press only selects");
@@ -283,6 +287,13 @@ int main()
     check(moves.empty(), "repeated multi-letter prefix alone does not move");
     tap_at('a',clock+221);
     check(moves == std::vector<S>{widget(false)}, "repeating complete two-letter hint double-taps to rail");
+    mode.letter('s',clock+500); // Partial two-letter prefix before the overflow slot closes.
+    mode.refresh({{1,0,zone::center,false},{2,1,zone::center,false}});
+    check(mode.hint_width==1 && mode.label(0)=="a" && mode.label(1)=="s",
+        "closing overflow slots returns a small set to single-letter hints");
+    mode.letter('s',clock+1000);
+    check(selected==2,"single-letter selection works after overflow labels contract");
+    mode.release('s',clock+1080);
     mode.refresh({{1,0,zone::center,false},{677,676,zone::center,false}});
     check(mode.label(0)=="aaa" && mode.label(676)=="saa", "overflow grows hint width without dropping any window");
     mode.refresh({}); check(mode.hint_width==1,"empty desktop resets hint width");

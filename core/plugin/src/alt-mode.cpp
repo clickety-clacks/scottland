@@ -32,8 +32,8 @@ std::vector<cycle_step> cycle_order(destination start, bool start_left, bool wid
 }
 std::string alt_mode::label(unsigned slot) const
 {
-    // Prefix-free base-26 labels. Keep width until the desktop empties, so closing a
-    // high slot never relabels survivors. Additional width also avoids an artificial window cap.
+    // Prefix-free base-26 labels. Width follows the highest represented slot, while each
+    // window keeps its slot; closing overflow slots can shorten labels without reassigning slots.
     std::string result(hint_width, keys.front());
     for (unsigned i = hint_width; i > 0; --i)
     { result[i - 1] = keys[slot % keys.size()]; slot /= keys.size(); }
@@ -42,12 +42,18 @@ std::string alt_mode::label(unsigned slot) const
 void alt_mode::refresh(std::vector<hint_entry> windows)
 {
     entries = std::move(windows);
-    if (entries.empty()) hint_width = 1;
     std::sort(entries.begin(), entries.end(), [] (auto a, auto b) { return a.slot < b.slot; });
-    uint64_t capacity = 1;
-    for (unsigned i = 0; i < hint_width; ++i) capacity *= keys.size();
+    const unsigned previous_width = hint_width;
+    hint_width = 1;
+    uint64_t capacity = keys.size();
     while (!entries.empty() && entries.back().slot >= capacity)
     { ++hint_width; capacity *= keys.size(); }
+    if (hint_width != previous_width)
+    {
+        // A partial prefix and repeat belong to the old label width. Do not let either
+        // continue across the newly assigned prefix-free label set.
+        prefix.clear(); last_hint = 0; awaiting_release = repeat_candidate = false;
+    }
     if (std::none_of(entries.begin(), entries.end(), [&] (auto e) { return e.id == cycling; })) clear_cycle();
     if (std::none_of(entries.begin(), entries.end(), [&] (auto e) { return e.id == selected; })) selected = 0;
     if (std::none_of(entries.begin(), entries.end(), [&] (auto e) { return e.id == last_hint; })) last_hint = 0;
