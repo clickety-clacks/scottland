@@ -86,7 +86,8 @@ hl = setmetatable({
     local row = { mods, key, options.description or "", kind, argument,
                   (options["repeat"] or options.repeating) and "1" or "0",
                   release, options.locked and "1" or "0", options.mouse and "1" or "0",
-                  signature, option_signature(options), "0", options.ignore_mods and "1" or "0" }
+                  signature, option_signature(options), "0", options.ignore_mods and "1" or "0",
+                  options.non_consuming and "1" or "0" }
     if not bindings[id] then order[#order + 1] = id end
     bindings[id] = row
     return noop
