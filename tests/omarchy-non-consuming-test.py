@@ -11,6 +11,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+import gi
+
+gi.require_version("Gdk", "4.0")
+from gi.repository import Gdk  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from omarchy_fixture import REPO, Checks, Fixture, OMARCHY, Session  # noqa: E402
@@ -26,7 +30,7 @@ fixture = Fixture(
 o.window("foot", {{tag = "terminal"}})
 hl.bind("CTRL + F11", function() os.execute("{root}/bin/mark non-consuming") end,
         {{description = "Pass-through fixture", non_consuming = true}})
-hl.bind("SUPER + ENTER", function() os.execute("{root}/bin/mark command-collision") end,
+hl.bind("SUPER + Return", function() os.execute("{root}/bin/mark command-collision") end,
         {{description = "Pass-through command collision", non_consuming = true}})
 hl.bind("CTRL + F12", function() os.execute("{root}/bin/mark consuming") end,
         {{description = "Consuming fixture"}})
@@ -130,9 +134,10 @@ omarchy_commit = subprocess.run(
 print(f"Omarchy binding source: {omarchy_commit}", flush=True)
 print(subprocess.run(["python3", "--version"], check=True,
                      capture_output=True, text=True).stdout.strip(), flush=True)
-for package in ("wayfire", "foot", "gtk4", "gtk4-layer-shell", "lua", "wayland"):
+for package in ("wayfire", "hyprland", "foot", "gtk4", "gtk4-layer-shell", "lua", "wayland"):
     result = subprocess.run(["pacman", "-Q", package], check=True, capture_output=True, text=True)
     print(result.stdout.strip(), flush=True)
+assert shutil.which("hyprctl"), "the real hyprctl client is required for Lua-host activewindow queries"
 
 
 with Session(fixture, "omarchy-non-consuming") as session:
@@ -158,7 +163,7 @@ with Session(fixture, "omarchy-non-consuming") as session:
             check("imported non-consuming action runs", action_ran, calls)
             check("non-consuming chord reaches focused client on both edges",
                   received and [event["edge"] for event in f11] == ["down", "up"] and
-                  all(event["mods"] & 4 for event in f11), f11)
+                  all(event["mods"] & int(Gdk.ModifierType.CONTROL_MASK) for event in f11), f11)
 
             before = len(key_events(gtk_keys, 36))
             chord(session, "KEY_ENTER", "KEY_LEFTMETA")
@@ -171,7 +176,7 @@ with Session(fixture, "omarchy-non-consuming") as session:
                   collision_action_ran, calls)
             check("non-consuming terminal-default collision passes both key edges",
                   collision_received and [event["edge"] for event in collision] == ["down", "up"] and
-                  all(event["mods"] & 64 for event in collision), collision)
+                  all(event["mods"] & int(Gdk.ModifierType.SUPER_MASK) for event in collision), collision)
 
             before = len(key_events(gtk_keys, 96))
             chord(session, "KEY_F12")
@@ -190,7 +195,7 @@ with Session(fixture, "omarchy-non-consuming") as session:
             no_input_method_action, calls = no_call("fcitx5-remote", "--check -c", fcitx_before)
             check("Ctrl+Space outside a terminal passes through without switching input mode",
                   space_received and [event["edge"] for event in space] == ["down", "up"] and
-                  all(event["mods"] & 4 for event in space) and no_input_method_action,
+                  all(event["mods"] & int(Gdk.ModifierType.CONTROL_MASK) for event in space) and no_input_method_action,
                   {"events": space, "calls": calls})
     finally:
         alive = session.terminate(client_pid)
