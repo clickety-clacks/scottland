@@ -6,6 +6,7 @@ importer, then uses stipc input with GTK and terminal clients in an isolated hea
 """
 import json
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -97,6 +98,26 @@ def no_call(name, args, count_before=0, duration=0.5):
 
 def call_count(name, args):
     return fixture.calls().count((name, args))
+
+
+def capture_session_diagnostics(session):
+    """Keep the generated adapter state and shim logs with this isolated test's evidence."""
+    destination = root / "session-diagnostics"
+    destination.mkdir(exist_ok=True)
+    files = {
+        "wayfire.ini": session.dir / "wayfire.ini",
+        "omarchy-overrides.txt": session.dir / "state/scottland/omarchy-overrides.txt",
+        "luahost.log": session.dir / "state/scottland/luahost.log",
+        "hyprshim.log": session.dir / "state/scottland/hyprshim.log",
+    }
+    manifest = []
+    for name, source in files.items():
+        if source.is_file():
+            shutil.copyfile(source, destination / name)
+            manifest.append(f"captured {name}")
+        else:
+            manifest.append(f"missing {name}")
+    (destination / "manifest.txt").write_text("\n".join(manifest) + "\n")
 
 
 scottland_commit = subprocess.run(
@@ -192,6 +213,11 @@ with Session(fixture, "omarchy-non-consuming") as session:
             is_terminal = active.get("app-id") == "foot"
             check("focused client is the terminal", is_terminal, active)
             if is_terminal:
+                activewindow = session.hyprctl("-j", "activewindow", timeout=10)
+                diagnostics = root / "session-diagnostics"
+                diagnostics.mkdir(exist_ok=True)
+                (diagnostics / "hyprctl-activewindow.json").write_text(
+                    activewindow.stdout + activewindow.stderr)
                 chord(session, "KEY_SPACE")
                 action_ran, calls = fixture.wait_calls(
                     lambda current: ("fcitx5-remote", "--check -c") in current)
@@ -204,5 +230,6 @@ with Session(fixture, "omarchy-non-consuming") as session:
     finally:
         alive = session.terminate(terminal_pid)
         check("terminal client stops", not alive, alive)
+    capture_session_diagnostics(session)
 
 sys.exit(check.summary())
