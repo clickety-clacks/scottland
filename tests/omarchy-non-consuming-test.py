@@ -47,20 +47,16 @@ def focus(session, title):
     session.ipc("stipc/move_cursor", {"x": x, "y": y})
     session.ipc("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
     session.ipc("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "release"})
-    def focused_title():
-        active = active_title(session)
-        return active if active == title else None
+    def focused_view():
+        return (session.ipc("window-rules/get-focused-view").get("info") or {})
 
-    focused, active = session.wait(focused_title, timeout=3)
-    assert focused and active == title, f"focused-client click did not focus {title}: {active}"
+    def focused_target():
+        candidate = focused_view()
+        return candidate if candidate.get("id") == window.get("id") else None
 
-
-def active_title(session):
-    active = session.hyprctl("-j", "activewindow")
-    try:
-        return json.loads(active.stdout).get("title")
-    except (json.JSONDecodeError, AttributeError):
-        return None
+    did_focus, active = session.wait(focused_target, timeout=3)
+    assert did_focus, f"focused-client click did not focus {title}: {active}"
+    return active
 
 
 def chord(session, key, modifier="KEY_LEFTCTRL"):
@@ -192,14 +188,9 @@ with Session(fixture, "omarchy-non-consuming") as session:
         terminal_ready, _ = session.wait(lambda: view(session, "terminal input test"), timeout=15)
         check("real terminal client starts", terminal_ready)
         if terminal_ready:
-            focus(session, "terminal input test")
-            active = session.hyprctl("-j", "activewindow")
-            try:
-                tags = json.loads(active.stdout).get("tags", [])
-            except (json.JSONDecodeError, AttributeError):
-                tags = []
-            is_terminal = any(str(tag).removesuffix("*") == "terminal" for tag in tags)
-            check("focused terminal receives Omarchy terminal tag", is_terminal, tags)
+            active = focus(session, "terminal input test")
+            is_terminal = active.get("app-id") == "foot"
+            check("focused client is the terminal", is_terminal, active)
             if is_terminal:
                 chord(session, "KEY_SPACE")
                 action_ran, calls = fixture.wait_calls(
