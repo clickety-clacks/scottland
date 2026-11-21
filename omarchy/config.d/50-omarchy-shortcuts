@@ -1471,7 +1471,7 @@ def main():
                 continue  # this option is replaced by the imported activator below
             # Taking over the command of Scottland's binding keeps that binding's own flags, so
             # only when they match: otherwise it steps aside and the shortcut comes in whole.
-            same_flags = non_consuming != "1" and locked != "1" and option.startswith(
+            same_flags = not non_consuming and locked != "1" and option.startswith(
                 "repeatable_binding_" if repeat == "1" else "binding_")
             if (section == "command" and same_flags
                     and target[0] == "command" and not replaced_command):

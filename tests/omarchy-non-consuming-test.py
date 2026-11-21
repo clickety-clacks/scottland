@@ -25,6 +25,8 @@ fixture = Fixture(
 o.window("foot", {{tag = "terminal"}})
 hl.bind("CTRL + F11", function() os.execute("{root}/bin/mark non-consuming") end,
         {{description = "Pass-through fixture", non_consuming = true}})
+hl.bind("SUPER + ENTER", function() os.execute("{root}/bin/mark command-collision") end,
+        {{description = "Pass-through command collision", non_consuming = true}})
 hl.bind("CTRL + F12", function() os.execute("{root}/bin/mark consuming") end,
         {{description = "Consuming fixture"}})
 ''',
@@ -61,12 +63,12 @@ def active_title(session):
         return None
 
 
-def chord(session, key):
-    session.key("KEY_LEFTCTRL", True)
+def chord(session, key, modifier="KEY_LEFTCTRL"):
+    session.key(modifier, True)
     session.key(key, True)
     time.sleep(0.08)
     session.key(key, False)
-    session.key("KEY_LEFTCTRL", False)
+    session.key(modifier, False)
     time.sleep(0.15)
 
 
@@ -140,6 +142,19 @@ with Session(fixture, "omarchy-non-consuming") as session:
             check("non-consuming chord reaches focused client on both edges",
                   received and [event["edge"] for event in f11] == ["down", "up"] and
                   all(event["mods"] & 4 for event in f11), f11)
+
+            before = len(key_events(gtk_keys, 36))
+            chord(session, "KEY_ENTER", "KEY_LEFTMETA")
+            collision_action_ran, calls = fixture.wait_calls(
+                lambda current: ("mark", "command-collision") in current)
+            collision_received = session.wait(
+                lambda: len(key_events(gtk_keys, 36)) >= before + 2, timeout=3)[0]
+            collision = key_events(gtk_keys, 36)[before:]
+            check("non-consuming action runs on Scottland's terminal-default chord",
+                  collision_action_ran, calls)
+            check("non-consuming terminal-default collision passes both key edges",
+                  collision_received and [event["edge"] for event in collision] == ["down", "up"] and
+                  all(event["mods"] & 64 for event in collision), collision)
 
             before = len(key_events(gtk_keys, 96))
             chord(session, "KEY_F12")
